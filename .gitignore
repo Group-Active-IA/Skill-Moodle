@@ -1,0 +1,11 @@
+# Datos extraídos del campus / browser MCP — nunca commitear
+.playwright-mcp/
+*.json
+!package.json
+
+# Credenciales / secretos
+.env
+*.secret
+
+# SO
+.DS_Store
