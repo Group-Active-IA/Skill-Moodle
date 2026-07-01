@@ -1,6 +1,6 @@
 ---
 name: tup-campus-navigator
-description: Navegar y extraer datos del campus Moodle de la TUP (UTN) — Programación I, comisiones C1-23 y C1-25. Activar cuando el usuario menciona "campus TUP", "moodle TUP", "tup.sied", "comisión 23/25", "informe de seguimiento", entregas/parciales de alumnos, o necesita revisar entregas/calificaciones por grupo. También cubre **Active-IA** (`active-ia-correcion-automatica.vercel.app`) para corrección automática de TPs: importar entregas de Moodle, corregir con IA (Gemini) y devolver la nota a Moodle automáticamente vía el flujo "Subir corrección a Moodle" / "Por entregar". Usa Playwright MCP para login y operación con browser_evaluate. (El flujo de Drive quedó deprecado — el PDF de devolución ahora se hostea en el backend de Active-IA y se linkea solo en el comentario de Moodle.)
+description: Navegar y extraer datos del campus Moodle de la TUP (UTN) — Programación I (curso 38), II (curso 42) y III (curso 44). Activar cuando el usuario menciona "campus TUP", "moodle TUP", "tup.sied", "Programación 1/2/3", "comisión C1/C2/C3", "informe de seguimiento", entregas/parciales de alumnos, o necesita revisar entregas/calificaciones por grupo. También cubre **Active-IA** (`active-ia-correcion-automatica.vercel.app`) para corrección automática de TPs: importar entregas de Moodle, corregir con IA (Gemini) y devolver la nota a Moodle automáticamente vía el flujo "Subir corrección a Moodle" / "Por entregar". Usa Playwright MCP para login y operación con browser_evaluate. (El flujo de Drive quedó deprecado — el PDF de devolución ahora se hostea en el backend de Active-IA y se linkea solo en el comentario de Moodle.) También cubre **auditoría de corrección a nivel curso** (qué falta corregir / qué comisiones deben / quién tiene que corregir / cuántos pendientes, por TP/parcial/global y por tutor, sin importar comisión) usando el "Sumario de calificaciones" oficial de Moodle y reportes en PDF.
 ---
 
 # TUP Campus Navigator — Programación I
@@ -17,6 +17,7 @@ Skill para que **cualquier tutor de Programación I** opere el campus Moodle de 
 - Revisar entregas, calificar, ver parciales, bajar `.zip`
 - **"Active-IA" / "corregir TPs" / "evaluar entregas" / "rúbrica automática" / "importar entregas" / "subir corrección a Moodle" / "por entregar" / "devolución"** → arrancar el pipeline de corrección automática (ver sección "Active-IA — Pipeline de corrección automática")
 - Mapear participantes, último acceso, alumnos en peligro
+- **"Qué falta corregir" / "qué comisiones deben" / "quién tiene que corregir" / "cuántos pendientes" / "auditá todo el curso" / "sin importar comisión" / "por tutor"** → auditoría de corrección a nivel curso (ver sección "Auditoría de corrección a nivel CURSO")
 
 ## Paso 0 — Bootstrap (identidad + credenciales + verificación)
 
@@ -276,9 +277,151 @@ Cuando el usuario pide un informe de comisión, ejecutar este pipeline:
 
 ---
 
+## Auditoría de corrección a nivel CURSO (todas las comisiones)
+
+> Cuándo: el usuario pide **"qué falta corregir", "qué comisiones deben", "quién tiene que corregir", "cuántos pendientes", "auditá todo el curso", "sin importar comisión", "por tutor"**. A diferencia del informe de seguimiento (que mira deudas de alumnos), esto mira **lo que los DOCENTES no calificaron todavía**, en todas las comisiones. Requiere una cuenta con visión global del curso (coordinación) — una cuenta de tutor común solo ve sus grupos.
+
+### 🥇 Regla de oro: el conteo confiable es el "Sumario de calificaciones", NO contar filas
+
+Contar filas de la tabla de grading (estado "Enviado para calificar") es **INESTABLE y da números equivocados** (verificado: para un mismo TP el row-scan daba 6, 5 y 4 en lecturas consecutivas — por filas duplicadas, render parcial y drift en vivo). **La verdad es el campo oficial de Moodle:**
+
+- Abrir `mod/assign/view.php?id=<ASSIGN>` **SIN `action=grading`** → hay un "Sumario de calificaciones" (tabla de 2 columnas) con **Participantes / Enviados / Pendientes por calificar**.
+- **`Pendientes por calificar`** = lo que falta corregir de ese assign. Ese número es el bueno.
+
+### El sumario respeta el filtro por comisión (vía URL)
+
+- `view.php?id=<ASSIGN>&group=0` → **todas** las comisiones (total del curso).
+- `view.php?id=<ASSIGN>&group=<GROUP_ID>` → solo esa comisión (Participantes/Enviados/Pendientes de ESE grupo).
+- ⚠️ **Moodle deja FIJA tu última comisión seleccionada entre sesiones.** Si abrís el assign sin `group`, puede mostrarte solo TU comisión (no el total). **Siempre forzar `group=0`** para el global o `group=<id>` para una puntual.
+
+### El dato está VIVO (drift en tiempo real)
+
+Mientras auditás, otros docentes pueden estar corrigiendo → "Pendientes" baja en vivo (Enviados queda igual, Pendientes baja = alguien calificando). Por eso:
+- Leer **total (`group=0`) + desglose por comisión en UNA sola pasada** (un solo `browser_evaluate` con loop) para que sea internamente consistente (suma de comisiones = total).
+- Si la suma por comisión < total `group=0`, la diferencia son **alumnos sin comisión M26 C1 asignada** o **drift entre lecturas** (re-leer en una pasada lo desambigua).
+- **Ponerle fecha/hora al informe** y aclarar que es una foto que se mueve.
+
+### Barrido eficiente: `fetch()` en loop dentro de un `browser_evaluate`
+
+En vez de navegar página por página (decenas de `browser_navigate`), traé el HTML con `fetch(url, {credentials:'include'})` + `DOMParser` en un loop, en UNA llamada. Guardar resultados grandes con `filename`.
+
+```js
+// Pendientes por calificar OFICIAL, por instancia y por comisión, en una pasada
+async () => {
+  const G = {'C1-01':4149,'C1-02':4165,'C1-03':4206,'C1-04':4210,'C1-05':4214,'C1-06':4218,'C1-07':4222,'C1-08':4226,'C1-09':4230,'C1-10':4234,'C1-11':4238,'C1-12':4242,'C1-13':4246,'C1-14':4250,'C1-15':4261,'C1-16':4265,'C1-17':4269,'C1-18':4273,'C1-19':4277,'C1-20':4281,'C1-21':4285,'C1-22':4289,'C1-23':4292,'C1-24':4295,'C1-25':4299,'C1-26':4303,'C1-27':4307};
+  const pend = async (id,gid) => {
+    const r = await fetch(`https://tup.sied.utn.edu.ar/mod/assign/view.php?id=${id}&group=${gid}`,{credentials:'include'});
+    const doc = new DOMParser().parseFromString(await r.text(),'text/html');
+    let n=null;
+    doc.querySelectorAll('tr').forEach(tr=>{const c=[...tr.querySelectorAll('th,td')]; if(c.length===2 && /Pendientes por calificar/i.test(c[0].textContent)) n=parseInt(c[1].textContent.replace(/\D/g,''))||0;});
+    return n;
+  };
+  const id='17442'; // ejemplo: 2º Parcial (Entrega)
+  const total = await pend(id,0); const bd={}; let sum=0;
+  for (const [co,gid] of Object.entries(G)){ const p=await pend(id,gid); if(p>0){bd[co]=p; sum+=p;} }
+  return { total, sumaComisiones:sum, sinComision: total-sum, breakdown: bd };
+}
+```
+
+### Sacar los NOMBRES de los alumnos pendientes (y que cuadre)
+
+El sumario da conteos, no nombres. Para nombres: tabla de grading (`action=grading&group=<id>&perpage=100`), fila pendiente = **estado contiene "Enviado para calificar" Y la columna Calificación (c[4]) está en "-"** (sin nota). Validar que la cantidad coincida con el sumario oficial de ese grupo.
+
+```js
+// dentro del DOMParser de cada (assign, group): columnas → c[1]=Nombre, c[3]=Estado, c[4]=Calificación
+const grade = (c[4]?.textContent.replace(/\s+/g,' ').split('Acciones')[0]||'').trim();
+const pendiente = /Enviado para calificar/i.test(c[3].textContent) && (grade==='-' || grade==='');
+```
+
+- **Corregir solo REDUCE pendientes** (no entran entregas nuevas a un parcial cerrado) → alcanza con barrer las comisiones que ya marcaron pendiente en el sumario (superset seguro), no las 27.
+- ⚠️ **Gotcha de iniciales del avatar:** los alumnos **sin foto de perfil** muestran sus iniciales pegadas al nombre (`BMBAUTISTA MATTEI`, `NCNICOLAS RICARDO COMPAGNUCCI`) **tanto en grading como en el padrón** (`user/index.php`), así que cruzar contra el padrón NO lo arregla. Hay que **stripear el prefijo a mano** (son pocos; revisar uno por uno antes de mostrarlos en un informe).
+
+### Mapa alumno → comisión → tutor
+
+- **alumno → comisión:** `user/index.php?id=38&perpage=2000` trae TODO el padrón con la columna **"Grupos"** (incluye `M26 C1-XX`). Parsear el token `M26 C1-\d+`. (Cruzar nombres por `endsWith` por el tema del prefijo de iniciales.)
+- **comisión → tutor (docente):** `user/index.php?id=38&group=<GID>&perpage=200` y filtrar la fila con rol que contiene **"Profesor"** (el tutor figura como "Profesor sin permiso de edición"). Así sabés "quién tiene que corregir".
+
+### Caché de Group IDs — Programación I (curso 38, cohorte Marzo 2026)
+
+C1-01 `4149` · C1-02 `4165` · C1-03 `4206` · C1-04 `4210` · C1-05 `4214` · C1-06 `4218` · C1-07 `4222` · C1-08 `4226` · C1-09 `4230` · C1-10 `4234` · C1-11 `4238` · C1-12 `4242` · C1-13 `4246` · C1-14 `4250` · C1-15 `4261` · C1-16 `4265` · C1-17 `4269` · C1-18 `4273` · C1-19 `4277` · C1-20 `4281` · C1-21 `4285` · C1-22 `4289` · C1-23 `4292` · C1-24 `4295` · C1-25 `4299` · C1-26 `4303` · C1-27 `4307`
+
+(Verificar con Snippet 4; el combo de `user/index.php?id=38` lista TODAS las comisiones del curso, no solo las del tutor logueado.)
+
+### Inventario de assign IDs de parciales/globales (descubiertos con Snippet 3)
+
+| Instancia | assign id |
+|---|---:|
+| 1er Parcial | 11383 · Extensión 16687 · Recup 11381 · Extraord 11369/16559/17256 |
+| 2do Parcial | **Entrega 17442** · 8-23hs 11377 · Recup 11375/**17509** · Extraord 11373/17650 |
+| Global / Integrador (TIO) | anterior 11393 · **entrega 17595** · recup 17641 |
+
+> Ojo: hay **varias instancias por parcial** (entrega real, copia, instancia sin uso). Barré TODAS y quedate con las que tengan `Pendientes por calificar > 0`. En la corrida del 22/06/2026 las que tenían pendientes eran 17442, 17509 y 17650.
+
+### 🔁 Multi-curso: la MISMA auditoría aplica a Programación I, II y III
+
+El método (sumario oficial + `group=<id>` + fetch-loop + mapa tutor) es **idéntico en los 3 cursos**; solo cambian `course_id`, el prefijo de comisión y los IDs. **Cada curso usa un prefijo distinto** (no asumir): Prog I = `M26 C1-XX`, Prog II = `A25 C2-XX`, Prog III = `M25 C3-XX`. Verificar siempre con Snippet 4 / `mod/assign/index.php?id=<curso>` por si cambió la cohorte.
+
+| Curso | course_id | Comisiones | URL listado de assigns |
+|---|---|---|---|
+| Programación I | 38 | 27 · `M26 C1-XX` | `mod/assign/index.php?id=38` |
+| Programación II | 42 | 10 · `A25 C2-XX` | `mod/assign/index.php?id=42` |
+| Programación III | 44 | 15 · `M25 C3-XX` | `mod/assign/index.php?id=44` |
+
+> 💡 Truco: `mod/assign/index.php?id=<curso>` lista TODOS los assigns del curso de una (más confiable que el sidebar de `course/view.php`, que carga lazy y devuelve 0).
+
+**Programación II — Group IDs (curso 42):**
+C2-01 `4311` · C2-02 `4315` · C2-03 `4319` · C2-04 `4323` · C2-05 `4327` · C2-06 `4331` · C2-07 `4335` · C2-08 `4339` · C2-09 `4343` · C2-10 `4347`
+
+**Programación II — assigns (curso 42):** TPs Unidad 1-10 (Java): U1 `12138` · U2 `12162` · U3 `12184` · U4 `12207` · U5 `12230` · U6 `12252` · U7 `12272` · U8 `12291` · U9 `12306` · U10 `12321`. Integrador `12364`. Parciales: 1er `16578` · Recup 1er `16846` · Extraord 1er `17237` · 2do `17367` · Recup 2do `17579`.
+
+**Programación III — Group IDs (curso 44, no contiguos):**
+C3-01 `4137` · C3-02 `4138` · C3-03 `4145` · C3-04 `4153` · C3-05 `4157` · C3-06 `4251` · C3-07 `4169` · C3-08 `4255` · C3-09 `4178` · C3-10 `4182` · C3-11 `4186` · C3-12 `4190` · C3-13 `4194` · C3-14 `4195` · C3-15 `4199`
+
+**Programación III — assigns (curso 44):** TPs (web/Spring): U2 CSS `13179` · U3 JS `13599` · TP Auth TypeScript `13740` · U5 `13245` · U6 Lombok/DTO `13286` · U7 Func `13311` · U9 Spring Boot `13348` · U10 APIs REST `13363`. Integradores/globales: Integrador HTML `13164` · Integrador JPA `13807` · Trabajo Integrador `15424` · JPA Hospital `13367` · **Global Mutantes** `13368` · Proyecto Final `13369`. Parciales: 1er `16609` · Recup 1er `17128` · Extraord 1er `17648` · 2do `17459` · Recup 2do `17581` · Extraord 2do `17647`.
+
+> Caché tomada el 22/06/2026. La cuenta de coordinación ve TODAS las comisiones de los 3 cursos (acceso global). **Active-IA hoy solo cubre Prog I** (su combo de comisiones no tiene Prog II/III) → en Prog II/III la corrección es manual en Moodle; la auditoría funciona igual.
+
+### Mapa comisión → docente (tutores), Prog II y III (22/06/2026)
+
+Para informes "por docente" (quién debe corregir). Sacados del rol **Profesor** por comisión. ⚠️ **Gotcha:** algunos docentes NO figuran en el padrón global (`user/index.php?id=<curso>&perpage=2000`) porque no están como miembros del grupo en la columna "Grupos"; en esos casos hay que pedir el grupo puntual (`user/index.php?id=<curso>&group=<GID>&perpage=200`) y leer la fila Profesor. **Algunos tutores enseñan en los 2 cursos** (Sofia Raia, Juan Cruz Robledo, Renzo Sosa, Flor Gubiotti). **C3-07 tiene DOS docentes** (Matías Torres / Tomás Ferro).
+
+**Prog II (C2):** C2-01 Jerónimo Felipe Cortez · C2-02 Marcos Vega · C2-03 Emmanuel Avellaneda · C2-04 Sofia Raia · C2-05 Renzo Sosa · C2-06 Flor Camila Gubiotti · C2-07 Flor Camila Gubiotti · C2-08 Juan Cruz Robledo · C2-10 Ramiro Hualpa (C2-09 s/d)
+
+**Prog III (C3):** C3-01 Luciano Chiroli · C3-02 Luciano Chiroli · C3-03 Sofia Raia · C3-04 Sofia Raia · C3-05 Giuliano Espejo Mezzabotta · C3-06 Giuliano Espejo Mezzabotta · C3-07 Matías Torres / Tomás Ferro · C3-08 David Lopez · C3-09 Federico Frankenberger · C3-10 Federico Frankenberger · C3-11 Juan Cruz Robledo · C3-12 Juan Cruz Robledo · C3-13 Renzo Sosa · C3-14 Santiago Nicolás Videla · C3-15 Gianfranco Canciani
+
+### Método rápido para "nombres por docente" (multi-comisión)
+
+En vez de barrer comisión por comisión, es más eficiente:
+1. **1 fetch group=0 por assign** a la vista de grading (`action=grading&group=0&perpage=2000`) → sacar los alumnos pendientes (estado "Enviado para calificar" + Calificación en "—").
+2. Mapear cada alumno → comisión con el **padrón** del curso (`user/index.php?id=<curso>&perpage=2000`, columna "Grupos"; match exacto del nombre, ambos vienen de Moodle igual; fallback `endsWith` por el prefijo de iniciales).
+3. comisión → docente con el mapa de arriba. Agrupar por docente.
+
+### Gotchas específicos de Prog II / III (verificado 22/06/2026)
+
+- **"Entregó y sin nota" ≠ "Pendientes por calificar" oficial.** El filtro Calificación-en-"—" puede dar un toque MENOS que el sumario oficial, porque Moodle cuenta como pendiente las **re-entregas que ya tenían nota previa** (status "Enviado para calificar" pero con nota vieja en la columna). Para "alumno que entregó y le falta nota" el filtro "—" es lo correcto; aclararlo en el informe.
+- **Ítems sin campo "Pendientes por calificar":** en Prog III, `JPA del Hospital` (13367), `Global Mutantes` (13368) y `Proyecto Final` (13369) NO exponen ese campo en el sumario (otro tipo de calificación / no-entrega) → no entran al barrido automático; revisarlos a mano si interesan.
+- **El Integrador de Prog II** (12364) tampoco devolvió "Pendientes por calificar" — mismo caso.
+- **La sesión de Moodle se cae seguido** (de un día para otro y a veces dentro del día): si un barrido masivo devuelve TODO `None`/0, casi seguro la sesión expiró y los `fetch` cayeron al login → reloguear (Snippet de login: setear `#username`/`#password` y click `#loginbtn`) y reintentar.
+
+### Informe en PDF (skill `pdf-official` → reportlab)
+
+- `pip install reportlab --break-system-packages` si falta.
+- Usar **Platypus** (SimpleDocTemplate + Table/TableStyle/Paragraph) para tablas prolijas.
+- ⚠️ **Los emojis NO renderizan** con las fuentes default (salen como ☐). Usar caracteres simples coloreados (ej. `●` verde con `<font color="#1c7a4d">`), no `✅`.
+- Verificar el PDF leyéndolo con la tool Read (renderiza la página) antes de darlo por bueno.
+- Guardar en `~/Descargas/` si el usuario lo pide ("ponelo en descargas").
+
+### Gotchas operativos de la auditoría
+
+- **`perpage=2000`** en la URL de grading carga el padrón completo sin paginar (~663 alumnos; el resto son filas vacías de relleno).
+- La **sesión de Moodle expira de un día para el otro** → si `fetch`/navegación redirige a `login/index.php`, reloguear (DNI + pass) y reintentar.
+- El "Sumario de calificaciones" **solo aparece en la vista por defecto** del assign (sin `action=grading`); en `action=grading` no está.
+
+---
+
 ## Active-IA — Pipeline de corrección automática
 
-Active-IA (`https://active-ia-correcion-automatica.vercel.app`) es un corrector automático. **Cada tutor usa su PROPIA cuenta de Active-IA** (usuario + contraseña pedidos en el Paso 0.1, y API key de Gemini propia configurada en `/perfil` — ver abajo). **Flujo (verificado en vivo 2026-06-04)** — casi todo ocurre dentro de Active-IA, que se conecta a Moodle por sí mismo:
+Active-IA es un corrector automático. ⚠️ **Migró de dominio (verificado 2026-06-30):** `active-ia-correcion-automatica.vercel.app` ahora **redirige a `app.active-ia.com`** (la app), con API en `api.active-ia.com` y los PDF de devolución hosteados en `api.active-ia.com/api/v1/public/devoluciones/<jwt>`. El login por la URL vieja de Vercel sigue funcionando (redirige). **Cada tutor usa su PROPIA cuenta de Active-IA** (usuario + contraseña pedidos en el Paso 0.1, y API key de Gemini propia configurada en `/perfil` — ver abajo). **Flujo (verificado en vivo 2026-06-04)** — casi todo ocurre dentro de Active-IA, que se conecta a Moodle por sí mismo:
 
 > **Importar de Moodle → Corregir con IA → Devolver la nota a Moodle.**
 > Ya NO hace falta bajar el `.zip` del campus a mano, ni subir el PDF a Drive, ni pegar el feedback en Moodle a mano. El PDF de devolución se hostea en el backend de Active-IA (`active-ia-backend.3xzl86.easypanel.host`) y se linkea solo en el comentario de Moodle.
@@ -399,19 +542,20 @@ Las entregas "en espera" **no están en Active-IA todavía** (no salen en la tab
 
 #### Camino B (fallback) — Subir una entrega a mano
 
-Solo cuando "Importar" no agarra una entrega. Botón **"Subir Entrega"** (arriba a la derecha de `/entregas`):
-1. Modo **"Entrega Individual"**. Nombre del alumno tal como en Moodle.
-2. Drop zone + `browser_file_upload` con el `.zip`. (Para bajar el zip de Moodle: link "Ver en Moodle" de `/pendientes` → columna "Archivos enviados".)
-3. Modo de procesamiento: arrancar con **"Solo código"** (.py, etc.). Si alerta *"No se encontraron archivos válidos…"* → `unzip -l <path>`; si es `.ipynb`, modo **"Personalizado"** + agregar extensión `.ipynb`.
-4. Subir → queda **⚠️ Subida** → seguir desde Paso 2.
+Cuando "Importar" no agarra una entrega, o cuando hay que corregir una **reentrega** (ver abajo). Botón **"Subir Entrega"** (arriba a la derecha de `/entregas`):
+1. Modo **"Entrega Individual"**. **Nombre del alumno EXACTO como en Moodle** (Active-IA usa el nombre como key).
+2. ⭐ **(NUEVO 2026-06-30) Campo "URL de la entrega en Moodle (opcional)"**: pegá el grader URL del alumno (`mod/assign/view.php?id=<assign>&action=grader&userid=<X>`). **Habilita devolver la nota a Moodle desde Active-IA aun siendo carga manual** — resuelve el viejo TOPE del HTTP 400 (ver abajo).
+3. Drop zone + `browser_file_upload` con el `.zip`. ⚠️ **El path debe estar bajo `/home/juanisarmiento`** (el MCP de Playwright rechaza `/tmp`: *"outside allowed roots"*).
+4. ⚠️ **(NUEVO) Tras adjuntar aparece "Modo de Procesamiento" — paso OBLIGATORIO:** **Solo código** (.py, .java, .js, .ts, .c, .cpp, .go) / **Web completo** (+.html/.css/.json) / **Proyecto completo** (+.md/.txt/.yml/.xml) / **Personalizado**. Sin elegirlo, **"Subir Entrega" no envía** (parece colgado, no da error visible). Arrancar con **"Solo código"**; si es `.ipynb`, "Personalizado" + extensión `.ipynb`.
+5. Subir → queda **⚠️ Subida** → seguir desde Paso 2 (Corregir).
 
-> 🛑 **TOPE CRÍTICO (verificado 2026-06-05): una entrega cargada a mano NO se puede devolver a Moodle desde Active-IA.** No aparece en `/por-entregar`, y el botón ⋮ → "Subir corrección a Moodle" tira **HTTP 400** (`/api/v1/correcciones/<id>/moodle`) porque la corrección quedó **"no vinculada a Moodle"** (sin el `submission_id` original). La corrección queda hecha en Active-IA (con su PDF) pero **la nota hay que cargarla DIRECTO en Moodle**:
-> 1. Sacar el link de devolución del modal de Active-IA: abrir ⋮ → "Subir corrección a Moodle", leer `a[href*="devoluciones"]` y el comentario autogenerado, **Cancelar** (no enviar).
-> 2. En Moodle, ir al grading del assign+group, sacar el `userid` del link "Calificar" (`action=grader&userid=X`), navegar a `mod/assign/view.php?id=<assign>&rownum=0&action=grader&userid=<X>`.
-> 3. Setear el `<select id="id_grade">` a **Aprobado/Desaprobado** + escribir el comentario (con el link de devolución como `<a>`) en el editor TinyMCE (`#id_assignfeedbackcomments_editor` textarea **y** el iframe `#id_assignfeedbackcomments_editor_ifr`) → click **"Guardar cambios"** (`name=savechanges`).
-> 4. Verificar en el listado que quede **"Calificado"** + la nota.
+> 🟢 **EL TOPE DEL HTTP 400 YA SE PUEDE RESOLVER (actualizado 2026-06-30).** Antes una carga manual NO se podía devolver a Moodle (quedaba "no vinculada", ⋮ → "Subir corrección a Moodle" tiraba **HTTP 400**). Ahora, **si llenás el campo "URL de la entrega en Moodle" al subir** (paso 2), la corrección queda vinculada y el ⋮ → "Subir corrección a Moodle" funciona. Si igual querés cargarla **a mano en Moodle** (más determinístico, o si el tutor lo pide): sacá la nota binaria + comentario + link `a[href*="devoluciones"]` del modal, **Cancelá**, y escribí en el grader del assign (`#id_grade` Aprobado/Desaprobado + comentario con el link en TinyMCE `#id_assignfeedbackcomments_editor` y su iframe → `savechanges`).
 
-**Bajar el zip de Moodle por fetch (con la sesión Playwright ya logueada en el campus):** `browser_evaluate` async con `fetch(href, {credentials:'include'})` → `arrayBuffer` → base64 (`btoa`); escribir a disco con `base64 -d`, `unzip -l` para ver el contenido. Gotchas de import que obligan al Camino B: archivo **sin extensión** dentro del zip (renombrarlo a `.py` y re-zipear), o el alumno entregó **2 zips** y Active-IA agarró el de datos (subir solo el del código).
+> 🛑 **GOTCHA HTTP 409 al subir manual (verificado 2026-06-30):** si el alumno **ya tiene una entrega para esa rúbrica** (p.ej. una corrección previa), "Subir Entrega" tira **HTTP 409 Conflict** (`POST /api/v1/entregas/`). El checkbox **"Sobrescribir si ya existe" NO lo resuelve**, y **Archivar tampoco libera el nombre/vínculo**. Hay que **ELIMINAR la entrega vieja primero**: filtrar por estado (la vieja está en "Corregidas", o en "Archivadas" si la archivaste) → ⋮ → **Eliminar** → confirmar el aviso *"se perderá permanentemente"*. Recién ahí subís la nueva sin conflicto.
+
+> 🔁 **Reentregas (alumno volvió a entregar tras una corrección):** al **"Importar"**, Active-IA reporta *"N re-entregas — no se sobrescribieron, revisalas manualmente"* y **NO las auto-corrige** (la entrega sigue con la corrección vieja). Para calificar la versión nueva: **bajar el zip nuevo de Moodle** (la fila con la fecha de envío más reciente) → **eliminar la entrega vieja** (gotcha 409) → **Subir Entrega manual** con la URL de Moodle → Corregir.
+
+**Bajar el zip de Moodle por fetch (con la sesión Playwright ya logueada en el campus):** `browser_evaluate` async con `fetch(href, {credentials:'include'})` → `arrayBuffer` → base64 (`btoa`); guardarlo con `filename` (⚠️ el valor sale **entre comillas JSON** — sacarlas con `tr -d '"'` antes de `base64 -d`). ⚠️ **El zip del alumno puede traer un `.mp4` grande** (video de microteaching, decenas de MB) junto al `.py` → **subir solo el código** (extraer el `.py` y rezipear, o confiar en "Solo código"). ⚠️ **Evitar `?forcedownload=1` en el fetch** — puede cerrar la página del MCP (*"Connection closed"*). Otros gotchas: archivo **sin extensión** dentro del zip (renombrar a `.py` y re-zipear), o **2 zips** (subir solo el del código).
 
 #### Reporte final
 
