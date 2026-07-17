@@ -53,9 +53,12 @@ y setear las credenciales (`MOODLE_URL`, `MOODLE_USER`, `MOODLE_PASS`) como env 
 **Sin esto, nada funciona.** La skill no puede pedir pendientes ni informes si todavía
 no sabe cuáles son las comisiones del tutor. El orden es obligatorio:
 
-1. **Credenciales.** El usuario de Moodle (para muchos es el DNI, **pero no para
-   todos** — no lo asumas) y la contraseña van a las env vars del MCP; nunca se
-   escriben a disco ni se loguean.
+1. **Credenciales.** Pedile al tutor su usuario de Moodle (para muchos es el DNI,
+   **pero no para todos** — no lo asumas) y su contraseña, y llamá la tool
+   `configurar(moodle_user, moodle_pass)`. Esa tool guarda las credenciales en un
+   `.env` local (permisos 600, fuera del repo — no se versiona) y **valida el login
+   contra el campus** antes de darlo por bueno. El tutor NO setea variables de entorno
+   a mano. Si el login falla, la tool lo dice: revisá usuario/contraseña.
 2. **Descubrir en vivo.** Con `descubrir_cursos` y `descubrir_comisiones` traé del
    campus los cursos del tutor, sus comisiones (con el `group_id` REAL) y las tareas
    (`listar_tareas`). **No asumas IDs de ninguna tabla de referencia**: cambian por

@@ -40,20 +40,20 @@ pip install -r mcp/requirements.txt
 ```
 
 Después conectá el MCP en la config de Claude Code (bloque listo en
-`mcp/config.example.json`) y seteá tus credenciales como variables de entorno:
+`mcp/config.example.json`).
 
-```bash
-export MOODLE_URL="https://tup.sied.utn.edu.ar"
-export MOODLE_USER="tu-usuario-de-moodle"   # para muchos es el DNI, no para todos
-export MOODLE_PASS="tu-contraseña"
+**Las credenciales no se setean a mano.** En la primera sesión, decile a Claude tu
+usuario y contraseña de Moodle:
 
-# Opcional, solo si vas a corregir con Active-IA:
-export ACTIVEIA_URL="https://api.active-ia.com/api/v1"
-export ACTIVEIA_USER="tu-usuario-de-active-ia"
-export ACTIVEIA_PASS="tu-contraseña-de-active-ia"
-```
+> *"Configurá mis credenciales: usuario 12345678, contraseña …"*
 
-Tu contraseña **nunca** se escribe a disco: solo se usa para pedir el token.
+Claude llama la tool `configurar`, que valida el login contra el campus y guarda las
+credenciales en `~/.moodle-skill/.env` (permisos 600, fuera del repo — nunca se sube a
+git). Si vas a usar Active-IA, pasale también ese usuario y contraseña. Listo: no
+tocás variables de entorno.
+
+> El `.env` local tiene tu contraseña en texto: es tuyo, en tu máquina, con permisos
+> 600. No lo compartas ni lo subas a ningún lado.
 
 ## Uso
 

@@ -18,6 +18,7 @@ Correr:  python server.py   (transport stdio: lo lanza el propio Claude Code)
 
 import asyncio
 import os
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -26,31 +27,105 @@ from moodle.cliente import MobileWSClient
 
 mcp = FastMCP("moodle-tutor")
 
-# --- Un solo cliente global, de env vars (no multi-tenant) ---
-BASE = os.environ.get("MOODLE_URL", "https://tup.sied.utn.edu.ar").rstrip("/")
-_USER = os.environ.get("MOODLE_USER")
-_PASS = os.environ.get("MOODLE_PASS")
+_BASE_DEFAULT = "https://tup.sied.utn.edu.ar"
+# El .env vive junto a los datos locales (fuera del repo, nunca se versiona). Es la
+# forma amigable de configurar: el tutor le dice sus credenciales a Claude y la tool
+# `configurar` las escribe acá; no hace falta pelear con `export`.
+_ENV_PATH = Path(almacen.HOME) / ".env"
 
-# Techo del snapshot on-demand: un tutor con muchas comisiones×tareas dispara muchos
-# requests; si se pasa cortamos con un error legible en vez de colgar el request MCP.
+
+def _cargar_env() -> None:
+    """Puebla os.environ desde el .env local (KEY=valor por línea). El entorno real
+    gana sobre el .env (setdefault): quien ya exportó una var, la mantiene."""
+    if not _ENV_PATH.exists():
+        return
+    for linea in _ENV_PATH.read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if linea and not linea.startswith("#") and "=" in linea:
+            k, _, v = linea.partition("=")
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+_cargar_env()
 _REFRESCO_TIMEOUT_S = int(os.environ.get("REFRESCO_TIMEOUT_S", "300"))
-
-# El cliente se crea lazy: así importar el módulo (o correr py_compile) no exige
-# credenciales, y el error por credenciales faltantes sale claro en la primera tool.
 _cliente: MobileWSClient | None = None
 
 
 def _cli() -> MobileWSClient:
-    """Cliente REST del tutor (singleton). Falla claro si faltan las credenciales."""
+    """Cliente REST del tutor (singleton). Relee el .env por si se configuró en esta
+    sesión (Claude corrió `configurar`). Falla claro si aún no hay credenciales."""
     global _cliente
     if _cliente is None:
-        if not _USER or not _PASS:
+        _cargar_env()
+        base = os.environ.get("MOODLE_URL", _BASE_DEFAULT).rstrip("/")
+        user = os.environ.get("MOODLE_USER")
+        pw = os.environ.get("MOODLE_PASS")
+        if not user or not pw:
             raise RuntimeError(
-                "Faltan credenciales: seteá MOODLE_USER y MOODLE_PASS (y opcionalmente "
-                "MOODLE_URL) en el entorno antes de usar el MCP."
+                "Todavía no configuraste tus credenciales. Decile a Claude tu usuario "
+                "y contraseña de Moodle y pedile que llame a `configurar` — las guarda "
+                f"en {_ENV_PATH}. (No hace falta setear env vars a mano.)"
             )
-        _cliente = MobileWSClient(BASE, _USER, _PASS)
+        _cliente = MobileWSClient(base, user, pw)
     return _cliente
+
+
+def _escribir_env(vals: dict[str, str]) -> None:
+    """Escribe/actualiza el .env local con permisos 600 (solo el tutor lo lee).
+    Preserva las claves que ya estaban y no se pasan de nuevo."""
+    existentes: dict[str, str] = {}
+    if _ENV_PATH.exists():
+        for l in _ENV_PATH.read_text(encoding="utf-8").splitlines():
+            l = l.strip()
+            if l and not l.startswith("#") and "=" in l:
+                k, _, v = l.partition("=")
+                existentes[k.strip()] = v.strip()
+    existentes.update({k: v for k, v in vals.items() if v})
+    _ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cuerpo = "# Credenciales de la skill TUP Campus Navigator. NO subir a git.\n" + \
+             "\n".join(f"{k}={v}" for k, v in existentes.items()) + "\n"
+    _ENV_PATH.write_text(cuerpo, encoding="utf-8")
+    os.chmod(_ENV_PATH, 0o600)
+    for k, v in existentes.items():
+        os.environ[k] = v  # disponibles ya en esta sesión
+
+
+@mcp.tool()
+async def configurar(
+    moodle_user: str,
+    moodle_pass: str,
+    moodle_url: str = "",
+    activeia_user: str = "",
+    activeia_pass: str = "",
+) -> dict:
+    """Guardá las credenciales del tutor y dejá la skill lista para operar. Pedile al
+    tutor su usuario y contraseña de Moodle (y, si va a usar Active-IA, esas también) y
+    llamá esta tool: escribe un .env local (permisos 600, fuera del repo — la
+    contraseña NO se versiona) y VALIDA el login contra el campus antes de darlo por
+    bueno. Reemplaza el tener que setear variables de entorno a mano.
+
+    Si el login falla, NO deja las credenciales como válidas: devuelve el error para
+    que el tutor revise usuario/contraseña (ojo: el usuario de Moodle no siempre es el
+    DNI)."""
+    global _cliente
+    vals = {"MOODLE_USER": moodle_user.strip(), "MOODLE_PASS": moodle_pass,
+            "MOODLE_URL": (moodle_url or _BASE_DEFAULT).rstrip("/")}
+    if activeia_user:
+        vals["ACTIVEIA_USER"] = activeia_user.strip()
+    if activeia_pass:
+        vals["ACTIVEIA_PASS"] = activeia_pass
+    _escribir_env(vals)
+    _cliente = None  # forzar recreación con las credenciales nuevas
+    # Validar contra el campus: un token + un descubrimiento liviano.
+    try:
+        cursos = await ws_api.descubrir_cursos(_cli())
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"Guardé las credenciales pero el login falló "
+                f"({type(e).__name__}). Revisá usuario y contraseña (el usuario de "
+                f"Moodle no siempre es el DNI). Detalle: {str(e)[:150]}"}
+    return {"ok": True, "mensaje": f"Credenciales validadas y guardadas en {_ENV_PATH}. "
+            f"Veo {len(cursos)} cursos tuyos. Ya podés mapear tus comisiones.",
+            "cursos": len(cursos)}
 
 
 # ---------- MIS DATOS (config de la cohorte: la fuente de verdad de los IDs) ----------
