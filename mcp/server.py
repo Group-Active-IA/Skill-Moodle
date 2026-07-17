@@ -158,7 +158,7 @@ async def descubrir_cursos() -> list[dict]:
 async def descubrir_comisiones(course_id: int) -> list[dict]:
     """Descubre EN VIVO los grupos de un curso (group_id + nombre). OJO: incluye grupos
     auxiliares que NO son comisiones (Grupo_2, Entrego_1er_examen…); quedate con los del
-    patrón de comisión (ej. 'M26 C1-23'). Paso 2 del mapeo. Los group_id que devuelve son
+    patrón de comisión de tu cohorte (Prog I/II/III). Paso 2 del mapeo. Los group_id que devuelve son
     los ÚNICOS válidos para guardar_mis_datos (no inventes números). (API REST.)"""
     return await ws_api.descubrir_comisiones(_cli(), course_id)
 

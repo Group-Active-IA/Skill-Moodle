@@ -145,5 +145,4 @@ Active-IA — el tutor NO pasa una API key de Gemini.
 `confirmado=false` devuelve un preview de lo que va a hacer SIN ejecutar. Mostráselo
 al tutor y volvé a llamar con `confirmado=true` solo tras su OK explícito.
 
-El detalle de estados y modo híbrido está en **`references/active-ia.md`**; los
-snippets de la versión browser anterior, en `references/skill-v1-browser.md`.
+El detalle de estados y modo híbrido está en **`references/active-ia.md`**.
