@@ -21,7 +21,7 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
-from moodle import almacen, informes, snapshot, ws_api
+from moodle import active_ia, almacen, informes, snapshot, ws_api
 from moodle.cliente import MobileWSClient
 
 mcp = FastMCP("moodle-tutor")
@@ -230,6 +230,72 @@ async def armar_informe(course_id: int | None = None, group_id: int = 0) -> dict
         return {"error": True, "mensaje": "No sé de qué curso armar el informe: pasá "
                 "course_id o mapeá tus datos primero (descubrir_cursos -> guardar_mis_datos)."}
     return await informes.informe_pendientes(_cli(), cid, almacen.SALIDAS_DIR, group_id=group_id)
+
+
+# ---------- CORRECCIÓN AUTOMÁTICA (Active-IA / Gemini) ----------
+@mcp.tool()
+async def activeia_pendientes() -> dict:
+    """Mapa Moodle<->Active-IA: materias->unidades (con `cmid`=assign_id de Moodle y la
+    `rubrica_id` inferida por título)->comisiones (con `comision_id` de Active-IA y
+    `group_id` de Moodle). Sirve para resolver a mano comision_id/rubrica_id antes de
+    corregir. Trae contadores de en espera / corregidos / sin entrega. (API REST de
+    Active-IA, JWT — no toca Moodle.)"""
+    return await active_ia.activeia_pendientes()
+
+
+@mcp.tool()
+async def activeia_resolver(assign_id: str, group_id: int) -> dict:
+    """A partir del `cmid` (assign_id) + `group_id` de Moodle devuelve
+    `{comision_id, rubrica_id, unidad_titulo, moodle_grader_url}` cruzando
+    /pendientes/moodle y /rubricas de Active-IA. Es el paso previo a
+    `corregir_con_active_ia`. Si no puede inferir la rúbrica, devuelve el comision_id
+    igual y avisa que pases rubrica_id a mano. (API REST de Active-IA.)"""
+    return await active_ia.activeia_resolver(assign_id, group_id)
+
+
+@mcp.tool()
+async def corregir_con_active_ia(
+    assign_id: str,
+    email: str,
+    comision_id: int,
+    rubrica_id: int,
+    alumno_nombre: str | None = None,
+    moodle_url: str | None = None,
+    timeout_s: int = 180,
+    confirmado: bool = False,
+) -> dict:
+    """Corrige la entrega de un alumno con Active-IA (Gemini) de punta a punta: baja el
+    archivo de Moodle (API REST, sin navegador), lo sube a Active-IA, dispara la
+    corrección, espera el resultado y DESCARGA LOCAL el PDF de devolución.
+
+    Es una ESCRITURA (la corrección carga la nota/devolución del alumno): llamá primero
+    con confirmado=false para previsualizar qué se va a corregir; recién tras el OK del
+    tutor, confirmado=true. Antes conseguí comision_id/rubrica_id con
+    `activeia_resolver(assign_id, group_id)`.
+
+    Devuelve `{ok, nota, correccion_id, entrega_id, devolucion_pdf_url,
+    devolucion_pdf_local, estado}`. `devolucion_pdf_local` es la ruta del PDF de
+    devolución bajado a `$MOODLE_SKILL_HOME/salidas`. Casos que devuelve como dict (no
+    rompe): `conflicto=True` si ya existe la entrega; `error` con "timeout del servicio
+    de IA" si Gemini se satura (reintentá más tarde)."""
+    if not confirmado:
+        return {
+            "preview": {
+                "accion": "corregir_con_active_ia",
+                "alumno": alumno_nombre or email,
+                "email": email,
+                "assign_id": assign_id,
+                "comision_id": comision_id,
+                "rubrica_id": rubrica_id,
+            },
+            "aviso": "Esto baja la entrega, la corrige con Active-IA (Gemini) y carga la "
+                     "nota/devolución del alumno. Revisalo y volvé a llamar con "
+                     "confirmado=true para ejecutar.",
+        }
+    return await active_ia.corregir_con_active_ia(
+        _cli(), assign_id, email, comision_id, rubrica_id,
+        alumno_nombre=alumno_nombre, moodle_url=moodle_url, timeout_s=timeout_s,
+    )
 
 
 # ---------- ESCRITURA (con confirmación) ----------

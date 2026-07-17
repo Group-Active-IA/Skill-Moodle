@@ -19,7 +19,9 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
   corregir, por comisión, en todos tus cursos (Prog I, II y III).
 - **Informes en PDF** de pendientes por comisión.
 - **Carga notas** con su devolución, mostrándote qué va a escribir y esperando tu OK.
-- **Active-IA** (opcional): importar entregas → corregir con IA → devolver la nota.
+- **Corrección automática con Active-IA** (opcional): baja el trabajo del alumno,
+  lo corrige con IA (Gemini, contra la rúbrica) y **te descarga el PDF de devolución**
+  en tu carpeta `salidas/`. Todo con tu OK antes de escribir la nota.
 
 Reusa la lógica de API REST ya probada en producción (token `moodle_mobile_app`,
 `mod_assign_*`), empaquetada para correr **local**: cada tutor con sus credenciales,
@@ -44,6 +46,11 @@ Después conectá el MCP en la config de Claude Code (bloque listo en
 export MOODLE_URL="https://tup.sied.utn.edu.ar"
 export MOODLE_USER="tu-usuario-de-moodle"   # para muchos es el DNI, no para todos
 export MOODLE_PASS="tu-contraseña"
+
+# Opcional, solo si vas a corregir con Active-IA:
+export ACTIVEIA_URL="https://api.active-ia.com/api/v1"
+export ACTIVEIA_USER="tu-usuario-de-active-ia"
+export ACTIVEIA_PASS="tu-contraseña-de-active-ia"
 ```
 
 Tu contraseña **nunca** se escribe a disco: solo se usa para pedir el token.

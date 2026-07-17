@@ -82,7 +82,9 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Padrón de una comisión · buscar alumno | `padron` · `buscar_alumno` |
 | PDF de pendientes | `armar_informe` |
 | Cargar una nota (con devolución) | `cargar_nota` |
-| Corrección automática | `activeia_*` → ver `references/active-ia.md` |
+| Ver el mapa Moodle ↔ Active-IA | `activeia_pendientes` |
+| Resolver comisión/rúbrica de Active-IA | `activeia_resolver` |
+| **Corregir con Active-IA + PDF de devolución** | `corregir_con_active_ia` |
 
 ## Reglas de oro (no negociables)
 
@@ -123,8 +125,22 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 
 ## Corrección automática con Active-IA
 
-Pipeline opcional (importar entregas → corregir con IA/Gemini → devolver la nota).
-Requiere cuenta de Active-IA + API key de Gemini del tutor. El detalle (estados, modo
-híbrido, mapeo de rúbricas) está en **`references/active-ia.md`**: cargalo cuando el
-tutor pida corregir con Active-IA. Los snippets de la versión anterior (scraping con
-browser) quedan en `references/skill-v1-browser.md` como consulta histórica.
+Pipeline opcional, por API REST (JWT). Requiere cuenta de Active-IA (env vars
+`ACTIVEIA_URL`, `ACTIVEIA_USER`, `ACTIVEIA_PASS`). Gemini corre server-side en
+Active-IA — el tutor NO pasa una API key de Gemini.
+
+**Flujo** (para "corregí el TP X del alumno Y con Active-IA"):
+
+1. `activeia_pendientes` / `activeia_resolver(assign_id, group_id)` → obtené el
+   `comision_id` y `rubrica_id` de Active-IA para esa tarea.
+2. `corregir_con_active_ia(assign_id, email, comision_id, rubrica_id, confirmado=...)`:
+   baja el trabajo del alumno de Moodle (REST), lo sube a Active-IA, que lo corrige
+   con Gemini, y **descarga el PDF de devolución** a `$MOODLE_SKILL_HOME/salidas/`.
+   Devuelve `{ok, nota, devolucion_pdf_local, correccion_id, estado}`.
+
+**Es una ESCRITURA** (dispara la corrección y puede cargar la nota en Moodle): con
+`confirmado=false` devuelve un preview de lo que va a hacer SIN ejecutar. Mostráselo
+al tutor y volvé a llamar con `confirmado=true` solo tras su OK explícito.
+
+El detalle de estados y modo híbrido está en **`references/active-ia.md`**; los
+snippets de la versión browser anterior, en `references/skill-v1-browser.md`.
