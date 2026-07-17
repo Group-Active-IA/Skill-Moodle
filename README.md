@@ -1,53 +1,98 @@
-# TUP Campus Navigator — Programación I
+# TUP Campus Navigator
 
-Skill de [Claude Code](https://claude.com/claude-code) para tutores de **Programación I** de la Tecnicatura Universitaria en Programación (UTN), sobre el campus Moodle `https://tup.sied.utn.edu.ar` y el corrector automático **Active-IA**.
+Skill de [Claude Code](https://claude.com/claude-code) para **tutores** de la
+Tecnicatura Universitaria en Programación (UTN) que operan el campus Moodle
+`https://tup.sied.utn.edu.ar`. Ver pendientes, generar informes, cargar notas y
+(opcional) corregir con **Active-IA** — todo por la **API REST oficial** de Moodle,
+desde la terminal.
 
-Automatiza tareas de tutoría que de otra forma son repetitivas y propensas a error:
+> Habla con Moodle por **peticiones REST**, no por navegador: no se rompe cuando el
+> campus cambia el HTML, y verifica cada dato en vivo — nunca inventa un ID.
 
-- **Informes de seguimiento** por comisión: quién no entregó, deudas, entregas atrasadas, último acceso, alumnos en peligro.
-- **Mapeo de participantes** y entregas por grupo (comisión).
-- **Pipeline de corrección automática (Active-IA)**: importar entregas de Moodle → corregir con IA (Gemini) → devolver la nota a Moodle, con un modo **híbrido** que sube en lote lo aprobado y frena los casos borde para revisión humana.
+## ¿Qué hace?
 
-> Pensada para Programación I, pero los patrones de Moodle (URLs, snippets de extracción) sirven de base para otras materias del mismo campus.
+Un tutor le habla a Claude Code en castellano y la skill opera el campus por él:
 
-## Sin datos personales
+- **Mapea tus comisiones** (una sola vez): descubre en vivo tus cursos, comisiones y
+  tareas, y valida cada `group_id` contra el campus antes de guardarlo.
+- **Snapshot on-demand**: cuando se lo pedís, releva quién entregó y qué falta
+  corregir, por comisión, en todos tus cursos (Prog I, II y III).
+- **Informes en PDF** de pendientes por comisión.
+- **Carga notas** con su devolución, mostrándote qué va a escribir y esperando tu OK.
+- **Active-IA** (opcional): importar entregas → corregir con IA → devolver la nota.
 
-Esta skill **no trae credenciales ni IDs hardcodeados de ningún tutor**. Al arrancar ejecuta un **Paso 0 — Bootstrap** que:
-
-1. Pregunta tu **nombre** y tus **credenciales** (Moodle = DNI + contraseña; Active-IA = tu cuenta propia + tu API key de Gemini).
-2. **Descubre en vivo** desde el campus el course ID, tus comisiones (grupos) y los IDs de TPs/parciales — no asume los del documento.
-3. Verifica contra la caché de referencia; si cambió la cohorte, usa los valores reales.
-
-Resultado: la skill queda personalizada para vos sin editar un solo archivo. Tu contraseña **nunca** se escribe a disco ni a memoria — solo se usa en el form de login.
-
-## Requisitos
-
-- **Claude Code** instalado.
-- **Playwright MCP** configurado (la skill maneja el browser vía `browser_*`).
-- Cuenta de tutor en el campus Moodle de la TUP con permisos sobre al menos una comisión de Programación I.
-- *(Opcional, para corrección automática)* Cuenta en Active-IA + API key de Google Gemini propia.
+Reusa la lógica de API REST ya probada en producción (token `moodle_mobile_app`,
+`mod_assign_*`), empaquetada para correr **local**: cada tutor con sus credenciales,
+sin depender de ningún servidor central.
 
 ## Instalación
 
-Cloná el repo dentro de tu carpeta de skills de Claude Code:
-
 ```bash
-git clone <URL-DEL-REPO> ~/.claude/skills/tup-campus-navigator
+npx skills add https://github.com/Group-Active-IA/Skill-Moodle
 ```
 
-Listo. La skill se descubre sola. Para usarla, en una sesión de Claude Code decí algo como:
+La skill trae un MCP server (`mcp/`). Para activarlo:
 
-- "Entrá al campus TUP y hacé un informe de seguimiento de mi comisión"
-- "Corregí los TPs pendientes con Active-IA"
-- "¿Quién no entregó el TP7?"
+```bash
+pip install -r mcp/requirements.txt
+```
 
-Claude carga la skill, te pide identidad + credenciales, y opera.
+Después conectá el MCP en la config de Claude Code (bloque listo en
+`mcp/config.example.json`) y seteá tus credenciales como variables de entorno:
 
-## Privacidad y seguridad
+```bash
+export MOODLE_URL="https://tup.sied.utn.edu.ar"
+export MOODLE_USER="tu-usuario-de-moodle"   # para muchos es el DNI, no para todos
+export MOODLE_PASS="tu-contraseña"
+```
 
-- No commitees credenciales ni datos de alumnos. Los datos extraídos del campus se guardan localmente en `~/.playwright-mcp/` (fuera del repo).
-- El pipeline de Active-IA tiene **frenos humanos obligatorios**: no sube desaprobados, notas al límite, ni pisa notas manuales sin tu confirmación explícita.
+Tu contraseña **nunca** se escribe a disco: solo se usa para pedir el token.
+
+## Uso
+
+En una sesión de Claude Code, decí algo como:
+
+- *"Mapeá mis comisiones"* → la skill descubre y guarda tu cohorte (Paso 0).
+- *"¿Qué me falta corregir?"* → corre el snapshot y te da los pendientes.
+- *"Hacé el informe en PDF de la comisión 23"* → genera el PDF.
+- *"Ponele Aprobado al TP de tal alumno"* → carga la nota tras tu OK.
+
+La primera vez **siempre** hay que mapear (Paso 0 — Bootstrap en `SKILL.md`); sin eso
+la skill no sabe cuáles son tus comisiones.
+
+## Estructura
+
+```
+Skill-Moodle/
+├── SKILL.md                  # Lógica que sigue el agente (doctrina + reglas)
+├── README.md                 # Este archivo
+├── LICENSE                   # Apache-2.0
+├── mcp/                      # MCP server liviano (API REST)
+│   ├── server.py             # 11 tools (descubrir, snapshot, informe, cargar_nota…)
+│   ├── requirements.txt
+│   ├── config.example.json   # Bloque mcpServers para Claude Code
+│   └── moodle/
+│       ├── cliente.py        # MobileWSClient (token + REST)
+│       ├── ws_api.py         # Operaciones REST
+│       ├── snapshot.py       # Relevo on-demand, multi-curso
+│       ├── informes.py       # PDF (reportlab)
+│       └── almacen.py        # Persistencia local (mis_datos.json + SQLite)
+└── references/
+    ├── active-ia.md          # Pipeline de corrección automática
+    └── skill-v1-browser.md   # Versión anterior (scraping) — consulta histórica
+```
+
+## Por qué esta estructura
+
+- **MCP local, no servidor central.** Cada tutor corre lo suyo con sus credenciales.
+  Portable, sin cuentas que administrar, sin depender de un backend.
+- **API REST, no navegador.** JSON estructurado en vez de scraping de HTML: más
+  rápido y no se rompe con cambios de diseño del campus.
+- **Validar, no inventar.** El mapeo valida cada `group_id` contra el campus real —
+  la defensa contra IDs alucinados que corrompen los datos en silencio.
+- **`references/` para lo pesado.** Active-IA y el flujo viejo viven fuera del
+  `SKILL.md` (que se mantiene < 500 líneas), con pointers de cuándo cargarlos.
 
 ## Licencia
 
-MIT (ver `LICENSE`).
+Apache-2.0
