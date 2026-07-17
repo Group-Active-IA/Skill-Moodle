@@ -1,0 +1,450 @@
+"""Operaciones de alto nivel sobre la API REST de Moodle (token mobile).
+
+Reemplaza el scraping HTML por web services oficiales. Cada función recibe un cliente
+con `.ws(fn, params)` (HybridMoodleClient) y devuelve datos limpios; ninguna lanza:
+el error se devuelve como dict con "error" (mismo contrato que actions.py/foros.py).
+
+Gotcha central: los WS de assign usan el **instanceid** del assign, mientras que el
+copiloto identifica las tareas por **cmid** (el id de mod/assign/view.php?id=). Por eso
+`_assign_map` construye y cachea el mapa cmid -> {id, course, grade} una vez por cliente."""
+
+import html as _html
+import re
+
+from .cliente import MoodleWSError
+
+_TAGS_RE = re.compile(r"<[^>]+>")
+
+# Escalas conocidas del campus TUP: scaleid -> {etiqueta_normalizada: valor_a_guardar}.
+# La escala 5 (TPs de Prog I) se confirmó leyendo el <select> del grader real:
+# value 1 = "Aprobado", value 2 = "Desaprobado" (NO es guessable, van invertidos).
+_ESCALAS: dict[int, dict[str, int]] = {
+    5: {"aprobado": 1, "desaprobado": 2},
+}
+
+
+def _plano(texto: str, limite: int = 1500) -> str:
+    t = _html.unescape(_TAGS_RE.sub(" ", texto or ""))
+    return re.sub(r"\s+", " ", t).strip()[:limite]
+
+
+def _norm(texto: str) -> str:
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", str(texto or ""))
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return " ".join(t.lower().split())
+
+
+# ---------- Mapa cmid -> instanceid (cacheado por cliente) ----------
+
+async def _assign_map(client) -> dict:
+    """{cmid(str): {"id": instanceid, "course": courseid, "grade": gradeval, "name": str}}.
+    `grade` < 0 → escala (-scaleid); ≥ 0 → nota numérica (puntos máx)."""
+    cache = getattr(client, "_assign_map_cache", None)
+    if cache is not None:
+        return cache
+    data = await client.ws("mod_assign_get_assignments")
+    m: dict = {}
+    for c in (data or {}).get("courses", []):
+        for a in c.get("assignments", []):
+            m[str(a.get("cmid"))] = {
+                "id": a.get("id"),
+                "course": a.get("course"),
+                "grade": a.get("grade"),
+                "name": a.get("name", ""),
+            }
+    client._assign_map_cache = m
+    return m
+
+
+async def _instanceid(client, cmid: str) -> int | None:
+    return (await _assign_map(client)).get(str(cmid), {}).get("id")
+
+
+async def listar_tareas(client, course_id: int) -> list[dict]:
+    """Tareas del curso (TPs, parciales, integrador) con su cmid (=assign_id que usan
+    las tools) y título, por API REST (mod_assign_get_assignments, ya cacheado en
+    `_assign_map`). Reemplaza el scraping de mod/assign/index.php de actions.py."""
+    amap = await _assign_map(client)
+    tareas = [
+        {"id": cmid, "titulo": cfg.get("name", ""), "instanceid": cfg.get("id")}
+        for cmid, cfg in amap.items()
+        if cfg.get("course") == course_id
+    ]
+    tareas.sort(key=lambda t: t["titulo"].lower())
+    return tareas
+
+
+# ---------- email -> userid ----------
+
+async def _userid_por_email(client, email: str) -> tuple[int | None, str | None]:
+    try:
+        res = await client.ws(
+            "core_user_get_users_by_field", {"field": "email", "values": [email]}
+        )
+        if isinstance(res, list) and res:
+            return int(res[0]["id"]), res[0].get("fullname")
+    except MoodleWSError:
+        pass
+    return None, None
+
+
+# ---------- LECTURA de calificación (list_participants) ----------
+
+async def _participantes(client, cmid: str, group_id: int) -> list[dict] | dict:
+    inst = await _instanceid(client, cmid)
+    if inst is None:
+        return {"error": f"No encontré la tarea con cmid={cmid} (¿existe / es de tu curso?)."}
+    try:
+        return await client.ws(
+            "mod_assign_list_participants",
+            {"assignid": inst, "groupid": group_id, "filter": "", "skip": 0, "limit": 0,
+             "onlyids": 0, "includeenrolments": 0},
+        )
+    except MoodleWSError as e:
+        return {"error": f"list_participants falló: {e.errorcode}"}
+
+
+def _es_estudiante(p: dict) -> bool:
+    roles = p.get("roles") or []
+    return any(r.get("shortname") == "student" for r in roles) or not roles
+
+
+async def sumario(client, cmid: str, group_id: int = 0) -> dict:
+    """Conteo OFICIAL por API: participantes / enviados / pendientes por calificar.
+    Reemplaza el scraping del 'Sumario de calificaciones'. Cuenta solo estudiantes."""
+    ps = await _participantes(client, cmid, group_id)
+    if isinstance(ps, dict):
+        return ps
+    est = [p for p in ps if _es_estudiante(p)]
+    enviados = sum(1 for p in est if p.get("submitted"))
+    pendientes = sum(1 for p in est if p.get("submitted") and p.get("requiregrading"))
+    return {"assign_id": cmid, "group_id": group_id,
+            "participantes": len(est), "enviados": enviados, "pendientes": pendientes}
+
+
+async def pendientes_tarea(client, cmid: str, group_id: int = 0) -> dict:
+    """Alumnos que entregaron y siguen sin nota (requiregrading), por API."""
+    ps = await _participantes(client, cmid, group_id)
+    if isinstance(ps, dict):
+        return ps
+    alumnos = [
+        {"name": p.get("fullname"), "email": p.get("email"), "userid": p.get("id"),
+         "grupo": next((g.get("name") for g in p.get("groups", [])), None)}
+        for p in ps if _es_estudiante(p) and p.get("submitted") and p.get("requiregrading")
+    ]
+    return {"assign_id": cmid, "group_id": group_id, "pendientes": len(alumnos), "alumnos": alumnos}
+
+
+# ---------- ESCRITURA de nota (mod_assign_save_grade) ----------
+
+def _resolver_valor_nota(grade_cfg, nota) -> tuple[float | None, str | None, list | None]:
+    """Traduce la nota pedida al valor que espera save_grade.
+    - grade_cfg < 0 → ESCALA (-scaleid): 'Aprobado'/'Desaprobado' -> índice (1/2).
+    - grade_cfg ≥ 0 → NUMÉRICA: se usa el número tal cual (coma o punto).
+    Devuelve (valor, etiqueta, opciones_validas | None). valor None = no resuelto."""
+    try:
+        gc = int(grade_cfg)
+    except (TypeError, ValueError):
+        gc = 0
+    if gc < 0:
+        scaleid = -gc
+        mapa = _ESCALAS.get(scaleid)
+        if mapa is None:
+            return None, None, ["(escala desconocida id %d)" % scaleid]
+        idx = mapa.get(_norm(nota))
+        if idx is None:
+            # ¿pasaron el índice directo?
+            try:
+                if int(float(str(nota).replace(",", "."))) in mapa.values():
+                    idx = int(float(str(nota).replace(",", ".")))
+            except (TypeError, ValueError):
+                idx = None
+        if idx is None:
+            etiquetas = [k.capitalize() for k in mapa]
+            return None, None, etiquetas
+        etiqueta = next((k.capitalize() for k, v in mapa.items() if v == idx), str(idx))
+        return float(idx), etiqueta, None
+    # numérica
+    try:
+        val = float(str(nota).replace(",", "."))
+    except (TypeError, ValueError):
+        return None, None, ["(número, ej. 9.5)"]
+    return val, str(nota), None
+
+
+def nota_display(grade_cfg, grade_value) -> str | None:
+    """Convierte el valor crudo de una nota (get_grades) a texto legible según el tipo:
+    escala → 'Aprobado'/'Desaprobado'; numérica → el número limpio. None si no hay nota."""
+    if grade_value in (None, "", "-1.00000", "-1"):
+        return None
+    try:
+        gc = int(grade_cfg)
+    except (TypeError, ValueError):
+        gc = 0
+    if gc < 0:
+        mapa = _ESCALAS.get(-gc)
+        if mapa:
+            try:
+                idx = int(float(str(grade_value).replace(",", ".")))
+            except (TypeError, ValueError):
+                return str(grade_value)
+            for k, v in mapa.items():
+                if v == idx:
+                    return k.capitalize()
+        return str(grade_value)
+    try:
+        f = float(str(grade_value).replace(",", "."))
+        return str(int(f)) if f == int(f) else f"{f:g}"
+    except (TypeError, ValueError):
+        return str(grade_value)
+
+
+async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str, confirmado: bool = False) -> dict:
+    """Escribe nota + devolución por API REST (mod_assign_save_grade). Sin navegador.
+    Escala (TPs): pasar 'Aprobado'/'Desaprobado'. Numérica (TIO): el número. Verifica
+    con get_grades que la nota quedó guardada."""
+    amap = await _assign_map(client)
+    cfg = amap.get(str(cmid))
+    if cfg is None:
+        return {"error": f"No encontré la tarea cmid={cmid} en tus cursos."}
+    valor, etiqueta, opciones = _resolver_valor_nota(cfg.get("grade"), nota)
+    if valor is None:
+        return {"error": f"'{nota}' no es una nota válida para esta tarea.",
+                "es_escala": cfg.get("grade", 0) < 0, "opciones": opciones}
+    uid, nombre = await _userid_por_email(client, email)
+    if uid is None:
+        return {"error": f"No encontré al alumno {email} (¿entregó / está en el curso?)."}
+    if not confirmado:
+        return {"requiere_confirmacion": True,
+                "preview": {"alumno": nombre or email, "nota": etiqueta, "mensaje": mensaje},
+                "aviso": "Llamá de nuevo con confirmado=true para escribir en Moodle."}
+
+    inst = cfg["id"]
+    html_msg = "".join(f"<p>{_html.escape(p)}</p>" for p in str(mensaje).split("\n") if p.strip())
+    # GOTCHA: mod_assign_save_grade EXIGE plugindata (la devolución) presente y con
+    # contenido; sin ella tira dmlwriteexception. Si no hay mensaje, mandamos al menos
+    # la etiqueta de la nota para que el write no falle.
+    if not html_msg:
+        html_msg = f"<p>{_html.escape(str(etiqueta))}</p>"
+    try:
+        await client.ws("mod_assign_save_grade", {
+            "assignmentid": inst, "userid": uid, "grade": valor, "attemptnumber": -1,
+            "addattempt": 0, "workflowstate": "", "applytoall": 1,
+            "plugindata": {"assignfeedbackcomments_editor": {"text": html_msg, "format": 1}},
+        })
+    except MoodleWSError as e:
+        return {"error": f"No pude guardar la nota: {e.errorcode} — {e.message}"}
+
+    # Verificación: releer la nota por API.
+    verificado = False
+    try:
+        g = await client.ws("mod_assign_get_grades", {"assignmentids": [inst]})
+        for asg in (g or {}).get("assignments", []):
+            for gr in asg.get("grades", []):
+                if int(gr.get("userid")) == uid:
+                    verificado = abs(float(gr.get("grade")) - valor) < 0.001
+    except MoodleWSError:
+        pass
+    return {"ok": True, "alumno": nombre or email, "nota": etiqueta, "verificado": verificado}
+
+
+# ---------- FOROS (JSON, reemplaza el scraping) ----------
+
+async def listar_foros(client, course_id: int) -> dict:
+    try:
+        fs = await client.ws("mod_forum_get_forums_by_courses", {"courseids": [course_id]})
+    except MoodleWSError as e:
+        return {"error": f"No pude listar foros: {e.errorcode}"}
+    foros = [{"forum_id": f.get("id"), "nombre": _plano(f.get("name", ""), 80),
+              "discusiones": f.get("numdiscussions"), "cmid": f.get("cmid"), "tipo": f.get("type")}
+             for f in (fs or [])]
+    if not foros:
+        return {"error": "No encontré foros en el curso.", "course_id": course_id}
+    return {"ok": True, "course_id": course_id, "foros": foros}
+
+
+async def leer_foro(client, forum_id: int, limite: int = 25) -> dict:
+    try:
+        d = await client.ws("mod_forum_get_forum_discussions", {"forumid": forum_id})
+    except MoodleWSError as e:
+        return {"error": f"No pude abrir el foro {forum_id}: {e.errorcode}"}
+    disc = [{"discussion_id": x.get("discussion"), "titulo": _plano(x.get("name", ""), 120),
+             "autor": x.get("userfullname"), "replicas": x.get("numreplies", 0),
+             "ultimo_ts": x.get("timemodified"), "fijada": bool(x.get("pinned")),
+             "puede_responder": bool(x.get("canreply"))}
+            for x in (d or {}).get("discussions", [])]
+    return {"ok": True, "forum_id": forum_id, "total": len(disc), "discusiones": disc[: max(1, limite)]}
+
+
+async def leer_discusion(client, discussion_id: int) -> dict:
+    try:
+        d = await client.ws("mod_forum_get_discussion_posts", {"discussionid": discussion_id})
+    except MoodleWSError as e:
+        return {"error": f"No pude abrir la discusión {discussion_id}: {e.errorcode}"}
+    posts = []
+    for p in (d or {}).get("posts", []):
+        autor = p.get("author") or {}
+        posts.append({
+            "post_id": p.get("id"), "autor": autor.get("fullname"),
+            "autor_userid": autor.get("id"), "fecha_ts": p.get("timecreated"),
+            "asunto": _plano(p.get("subject", ""), 120), "texto": _plano(p.get("message", "")),
+            "responde_a_post": p.get("parentid") or None,
+        })
+    # Cronológico: el primer post es la consulta/aviso original, después las respuestas.
+    posts.sort(key=lambda x: x.get("fecha_ts") or 0)
+    if not posts:
+        return {"error": f"No encontré posts en la discusión {discussion_id}.", "discussion_id": discussion_id}
+    return {"ok": True, "discussion_id": discussion_id, "posts": posts}
+
+
+async def responder_foro(client, post_id: int, mensaje: str, asunto: str | None = None,
+                         confirmado: bool = False) -> dict:
+    """Responde a un post de un foro (mod_forum_add_discussion_post). Escritura: preview
+    primero, y con OK del tutor confirmado=true."""
+    if not confirmado:
+        return {"requiere_confirmacion": True, "preview": {"responde_a_post": post_id, "texto": mensaje},
+                "aviso": "Confirmá (confirmado=true) para publicar la respuesta en el foro."}
+    params = {"postid": post_id, "subject": asunto or "Re:", "message": mensaje,
+              "messageformat": 1}
+    try:
+        r = await client.ws("mod_forum_add_discussion_post", params)
+    except MoodleWSError as e:
+        return {"error": f"No pude publicar la respuesta: {e.errorcode} — {e.message}"}
+    return {"ok": True, "post_id": (r or {}).get("postid"), "responde_a": post_id}
+
+
+# ---------- MENSAJERÍA (core_message por token) ----------
+
+async def leer_mensajes(client, limite: int = 15) -> list[dict]:
+    """Conversaciones recientes por API REST (core_message_get_conversations)."""
+    try:
+        uid = await client.api.userid()
+        data = await client.ws("core_message_get_conversations", {
+            "userid": uid, "limitfrom": 0, "limitnum": limite,
+            "type": None, "favourites": None, "mergeself": True,
+        })
+    except MoodleWSError as e:
+        return [{"error": f"No pude leer las conversaciones: {e.errorcode}"}]
+    out = []
+    for conv in (data or {}).get("conversations", []):
+        otros = [m for m in conv.get("members", []) if m.get("id") != uid]
+        msgs = conv.get("messages", [])
+        ultimo = max(msgs, key=lambda m: m.get("timecreated", 0)) if msgs else None
+        out.append({
+            "conversacion_id": conv.get("id"),
+            "alumno": otros[0].get("fullname") if otros else "(yo)",
+            "no_leidos": conv.get("unreadcount") or 0,
+            "ultimo_mensaje": _plano(ultimo.get("text", ""), 400) if ultimo else "",
+            "de_quien": "tutor" if ultimo and ultimo.get("useridfrom") == uid else "alumno",
+            "timestamp": ultimo.get("timecreated") if ultimo else None,
+        })
+    return out
+
+
+async def _touserid(client, alumno: str) -> tuple[int | None, str | None]:
+    """Resuelve el destinatario: por email (exacto) o buscando en las conversaciones
+    del tutor por nombre (parcial). Devuelve (userid, nombre)."""
+    if "@" in alumno:
+        return await _userid_por_email(client, alumno.strip())
+    try:
+        uid = await client.api.userid()
+        convs = await client.ws("core_message_get_conversations", {
+            "userid": uid, "limitfrom": 0, "limitnum": 200,
+            "type": None, "favourites": None, "mergeself": True})
+    except MoodleWSError:
+        return None, None
+    buscado = alumno.strip().lower()
+    for conv in (convs or {}).get("conversations", []):
+        for m in conv.get("members", []):
+            if m.get("id") != uid and buscado in (m.get("fullname") or "").lower():
+                return m["id"], m.get("fullname")
+    return None, None
+
+
+async def responder_mensaje(client, alumno: str, texto: str, confirmado: bool = False) -> dict:
+    """Envía un mensaje privado a un alumno (core_message_send_instant_messages). Resuelve
+    el destinatario por email o por nombre entre las conversaciones. Escritura: preview
+    primero, y con OK del tutor confirmado=true."""
+    if not confirmado:
+        return {"requiere_confirmacion": True, "preview": {"alumno": alumno, "texto": texto},
+                "aviso": "Confirmá (confirmado=true) para enviar el mensaje."}
+    uid, nombre = await _touserid(client, alumno)
+    if uid is None:
+        return {"error": f"No encontré a '{alumno}' (probá con el email o revisá leer_mensajes)."}
+    import time
+    try:
+        res = await client.ws("core_message_send_instant_messages", {"messages": [
+            {"touserid": uid, "text": texto, "textformat": 1,
+             "clientmsgid": "copiloto-" + str(int(time.time() * 1000))}]})
+    except MoodleWSError as e:
+        return {"error": f"No pude enviar el mensaje: {e.errorcode} — {e.message}"}
+    enviado = (res or [{}])[0]
+    msgid = enviado.get("msgid")
+    if enviado.get("errormessage") or (msgid is not None and msgid < 0):
+        return {"error": f"Moodle no confirmó el envío: {enviado.get('errormessage') or res}"}
+    return {"ok": True, "alumno": nombre or alumno, "touserid": uid, "msgid": msgid}
+
+
+# ---------- DESCUBRIMIENTO (matrículas + grupos) ----------
+
+async def descubrir_cursos(client) -> list[dict]:
+    """Cursos donde el tutor está matriculado (core_enrol_get_users_courses)."""
+    try:
+        uid = await client.api.userid()
+        cursos = await client.ws("core_enrol_get_users_courses", {"userid": uid})
+    except MoodleWSError as e:
+        return [{"error": f"No pude descubrir cursos: {e.errorcode}"}]
+    return [{"course_id": c.get("id"), "nombre": c.get("fullname"), "shortname": c.get("shortname")}
+            for c in (cursos or [])]
+
+
+async def descubrir_comisiones(client, course_id: int) -> list[dict]:
+    """Grupos del curso (core_group_get_course_groups). Incluye auxiliares (Grupo_NNN,
+    Entrego_*); el caller filtra por el patrón de comisión (ej. 'M26 C1-')."""
+    try:
+        gs = await client.ws("core_group_get_course_groups", {"courseid": course_id})
+    except MoodleWSError as e:
+        return [{"error": f"No pude descubrir comisiones: {e.errorcode}"}]
+    return [{"group_id": g.get("id"), "nombre": g.get("name")} for g in (gs or [])]
+
+
+# ---------- ENTREGAS (descarga por token) ----------
+
+async def bajar_entrega(client, cmid: str, email: str, dest_dir: str) -> dict:
+    """Descarga el/los archivo(s) entregados por un alumno (mod_assign_get_submissions +
+    descarga con token). Devuelve el path del archivo principal."""
+    import os
+
+    inst = await _instanceid(client, cmid)
+    if inst is None:
+        return {"error": f"No encontré la tarea cmid={cmid}."}
+    uid, _ = await _userid_por_email(client, email)
+    if uid is None:
+        return {"error": f"No encontré al alumno {email}."}
+    try:
+        subs = await client.ws("mod_assign_get_submissions", {"assignmentids": [inst]})
+    except MoodleWSError as e:
+        return {"error": f"get_submissions falló: {e.errorcode}"}
+    files = []
+    for asg in (subs or {}).get("assignments", []):
+        for s in asg.get("submissions", []):
+            if int(s.get("userid", -1)) != uid:
+                continue
+            for pl in s.get("plugins", []):
+                for fa in pl.get("fileareas", []):
+                    for f in fa.get("files", []):
+                        if f.get("fileurl"):
+                            files.append((f.get("filename") or "entrega", f["fileurl"]))
+    if not files:
+        return {"error": f"No encontré archivo entregado de {email} en la tarea {cmid}."}
+    os.makedirs(dest_dir, exist_ok=True)
+    guardados = []
+    for fname, url in files:
+        data = await client.token_download(url)
+        path = os.path.join(dest_dir, f"{uid}_{fname}")
+        with open(path, "wb") as fh:
+            fh.write(data)
+        guardados.append({"archivo": path, "bytes": len(data)})
+    return {"ok": True, "archivos": guardados, "principal": guardados[0]["archivo"]}
