@@ -42,11 +42,54 @@ no HTML: por eso no se rompe cuando el campus cambia de diseño.
 - "Cargá 8 al TP de tal alumno" (escritura → pide OK antes)
 - "Corregí los TPs con Active-IA" / "importá entregas" / "devolución automática"
 
+## El menú — cómo guiar al tutor (hacé esto al activarte)
+
+Cuando la skill se activa **sin un pedido concreto** (el tutor dice "campus", "moodle",
+"hola" o abre la skill), NO le preguntes en abstracto qué necesita: **mostrale el menú**
+y llevalo de la mano. Un tutor no sabe qué tools existen; el menú es su interfaz.
+
+**Antes del menú, chequeá el estado con `mis_datos` y encadená el gate correcto:**
+
+- **Sin credenciales configuradas** (una tool falla pidiendo credenciales) → primero
+  `configurar`: pedile usuario y contraseña de Moodle. No sigas sin esto.
+- **Configurado pero `mis_datos` vacío** → primero el mapeo (Paso 0): descubrí y guardá
+  sus comisiones. Sin mapeo no hay sobre qué trabajar.
+- **Todo listo** → mostrá el menú:
+
+```
+📚 Campus TUP — ¿qué querés hacer?
+
+  1. 📊 Analizar mis comisiones   — cómo vienen, qué falta corregir
+  2. 👤 Analizar un alumno        — su avance, entregas y notas
+  3. 📥 Buscar entregas           — pendientes de una tarea o comisión
+  4. ⚙️  Mis datos                — ver mi configuración guardada
+  5. 🔄 Remapear mis comisiones   — redescubrir del campus (cambió la cohorte)
+
+Decime el número, o contame con tus palabras qué necesitás.
+```
+
+**Qué hace cada opción** (mapeo a tools; el tutor puede pedir por número o por palabras):
+
+1. **Analizar mis comisiones** → `actualizar_tableros` (refrescá primero, avisá que
+   tarda) y presentá los pendientes por comisión; ofrecé `armar_informe` (PDF) al final.
+2. **Analizar un alumno** → pedí nombre o email, `buscar_alumno`, y mostrá su avance,
+   entregas y notas. Si pide corregirle algo, va por el flujo de escritura (con OK).
+3. **Buscar entregas** → pedí la tarea/comisión y usá `pendientes_por_corregir` /
+   `sumario` para mostrar quién entregó y qué falta corregir.
+4. **Mis datos** → `mis_datos`: mostrale sus cursos, comisiones y tareas mapeadas.
+5. **Remapear mis comisiones** → corré el bootstrap de nuevo (`descubrir_cursos` →
+   `descubrir_comisiones` → validar → `guardar_mis_datos`). Útil cuando cambió la cohorte.
+
+Después de resolver una opción, ofrecé volver al menú ("¿algo más? volvemos al menú").
+El menú es una ayuda, no una jaula: si el tutor pide algo directo ("qué me falta en la
+23"), hacelo sin pasar por el menú.
+
 ## Instalación (para el tutor)
 
 Ver `README.md`. En resumen: instalar la skill, instalar las deps del MCP
-(`pip install -r mcp/requirements.txt`), conectar el MCP en la config de Claude Code
-y setear las credenciales (`MOODLE_URL`, `MOODLE_USER`, `MOODLE_PASS`) como env vars.
+(`pip install -r mcp/requirements.txt`), conectar el MCP en la config de Claude Code y
+configurar las credenciales con la tool `configurar` (el tutor se las dice a Claude; no
+hay que setear variables de entorno a mano).
 
 ## Paso 0 — Bootstrap (SIEMPRE primero, una sola vez)
 
