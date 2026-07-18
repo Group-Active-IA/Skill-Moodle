@@ -76,7 +76,8 @@ Skill-Moodle/
 ├── README.md                 # Este archivo
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 11 tools (descubrir, snapshot, informe, cargar_nota…)
+│   ├── server.py             # 15 tools (configurar, aulas, snapshot, informe, cargar_nota, Active-IA…)
+│   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
 │   ├── requirements.txt
 │   ├── config.example.json   # Bloque mcpServers para Claude Code
 │   └── moodle/
@@ -85,9 +86,9 @@ Skill-Moodle/
 │       ├── snapshot.py       # Relevo on-demand, multi-curso
 │       ├── informes.py       # PDF (reportlab)
 │       └── almacen.py        # Persistencia local (mis_datos.json + SQLite)
+├── install.sh               # Instalador de un comando (venv + claude mcp add)
 └── references/
-    ├── active-ia.md          # Pipeline de corrección automática
-    └── skill-v1-browser.md   # Versión anterior (scraping) — consulta histórica
+    └── active-ia.md          # Pipeline de corrección automática con Active-IA
 ```
 
 ## Por qué esta estructura
