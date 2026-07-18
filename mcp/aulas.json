@@ -1,0 +1,11 @@
+{
+  "_comentario": "Catálogo de aulas (materia → course_id) de la cohorte vigente. Le ahorra al tutor descubrir los cursos: elige la materia y la skill resuelve el curso. Las COMISIONES, ALUMNOS y ACTIVIDADES siguen SIEMPRE en vivo — esto es solo el curso.",
+  "_mantenimiento": "Cada cohorte nueva (~cada 6 meses): actualizar los course_id acá con los que devuelve descubrir_cursos, y mover 'vigente_hasta'. La skill valida en vivo: si un course_id ya no existe en la cuenta del tutor, avisa y cae a descubrimiento en vivo (no se rompe en silencio).",
+  "cohorte": "Agosto 2026",
+  "vigente_hasta": "2027-03",
+  "materias": [
+    { "materia": "Programación I", "course_id": 74 },
+    { "materia": "Programación II", "course_id": 81 },
+    { "materia": "Programación III", "course_id": 82 }
+  ]
+}

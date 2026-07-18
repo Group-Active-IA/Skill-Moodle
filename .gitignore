@@ -2,6 +2,8 @@
 .playwright-mcp/
 *.json
 !package.json
+!mcp/aulas.json
+!mcp/config.example.json
 
 # Credenciales / secretos
 .env

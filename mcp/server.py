@@ -17,6 +17,7 @@ Correr:  python server.py   (transport stdio: lo lanza el propio Claude Code)
 """
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -147,10 +148,58 @@ async def mis_datos() -> dict:
     return {"actualizado_at": await almacen.mis_datos_actualizada(), "datos": datos}
 
 
+_AULAS_PATH = Path(__file__).parent / "aulas.json"
+
+
+@mcp.tool()
+async def aulas() -> dict:
+    """Aulas (materia → curso) de la cohorte vigente, del catálogo, VALIDADAS contra los
+    cursos reales del tutor. Usá esto PRIMERO al mapear: en vez de que el tutor descubra
+    cursos, mostrale estas materias y que elija la suya. Devuelve las materias del catálogo
+    que el tutor efectivamente tiene (course_id confirmado en su cuenta).
+
+    Red de seguridad (la lección de no confiar en IDs fijos): si un course_id del catálogo
+    ya NO existe en la cuenta del tutor, o el catálogo venció, se avisa y hay que caer a
+    `descubrir_cursos` en vivo. NUNCA se mapea un aula que el tutor no tiene."""
+    import datetime
+    try:
+        cat = json.loads(_AULAS_PATH.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"No pude leer el catálogo de aulas: {e}. Usá descubrir_cursos."}
+
+    reales = {c["course_id"]: c["nombre"] for c in await ws_api.descubrir_cursos(_cli())}
+    vigentes, faltantes = [], []
+    for m in cat.get("materias", []):
+        cid = m.get("course_id")
+        if cid in reales:
+            vigentes.append({"materia": m["materia"], "course_id": cid,
+                             "nombre_campus": reales[cid]})
+        else:
+            faltantes.append(m)
+
+    vencido = False
+    vh = cat.get("vigente_hasta", "")
+    try:
+        vencido = datetime.date.today().strftime("%Y-%m") > vh
+    except Exception:  # noqa: BLE001
+        pass
+
+    out = {"cohorte": cat.get("cohorte"), "materias": vigentes}
+    if vencido:
+        out["aviso"] = (f"El catálogo de aulas venció ({vh}). Toca el mantenimiento de "
+                        "6 meses: actualizá mcp/aulas.json. Mientras, usá descubrir_cursos.")
+    if faltantes:
+        out["faltan_en_tu_cuenta"] = [m["materia"] for m in faltantes]
+    if not vigentes:
+        out["aviso"] = (out.get("aviso", "") + " Ninguna aula del catálogo está en tu "
+                        "cuenta: mapeá con descubrir_cursos en vivo.").strip()
+    return out
+
+
 @mcp.tool()
 async def descubrir_cursos() -> list[dict]:
     """Descubre EN VIVO los cursos del campus donde el tutor está matriculado
-    (course_id + nombre). Paso 1 del mapeo de "Mis datos". (API REST.)"""
+    (course_id + nombre). Fallback de `aulas` si el catálogo no sirve. (API REST.)"""
     return await ws_api.descubrir_cursos(_cli())
 
 

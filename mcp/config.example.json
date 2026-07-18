@@ -1,0 +1,12 @@
+{
+  "_nota": "Pegá el bloque mcpServers en tu config de Claude Code (~/.claude.json, o el .mcp.json del proyecto). Reemplazá RUTA_A_LA_SKILL por la carpeta donde quedó instalada la skill (ej ~/.claude/skills/tup-campus-navigator). Las credenciales NO van acá: se las decís a Claude y él llama la tool `configurar` (las guarda en ~/.moodle-skill/.env).",
+  "mcpServers": {
+    "moodle-tutor": {
+      "command": "python3",
+      "args": ["RUTA_A_LA_SKILL/mcp/server.py"],
+      "env": {
+        "MOODLE_URL": "https://tup.sied.utn.edu.ar"
+      }
+    }
+  }
+}

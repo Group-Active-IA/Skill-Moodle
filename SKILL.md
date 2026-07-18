@@ -77,7 +77,7 @@ Decime el número, o contame con tus palabras qué necesitás.
 3. **Buscar entregas** → pedí la tarea/comisión y usá `pendientes_por_corregir` /
    `sumario` para mostrar quién entregó y qué falta corregir.
 4. **Mis datos** → `mis_datos`: mostrale sus cursos, comisiones y tareas mapeadas.
-5. **Remapear mis comisiones** → corré el bootstrap de nuevo (`descubrir_cursos` →
+5. **Remapear mis comisiones** → corré el bootstrap de nuevo (`aulas` → elegir materia →
    `descubrir_comisiones` → validar → `guardar_mis_datos`). Útil cuando cambió la cohorte.
 
 Después de resolver una opción, ofrecé volver al menú ("¿algo más? volvemos al menú").
@@ -102,10 +102,12 @@ no sabe cuáles son las comisiones del tutor. El orden es obligatorio:
    `.env` local (permisos 600, fuera del repo — no se versiona) y **valida el login
    contra el campus** antes de darlo por bueno. El tutor NO setea variables de entorno
    a mano. Si el login falla, la tool lo dice: revisá usuario/contraseña.
-2. **Descubrir en vivo.** Con `descubrir_cursos` y `descubrir_comisiones` traé del
-   campus los cursos del tutor, sus comisiones (con el `group_id` REAL) y las tareas
-   (`listar_tareas`). **No asumas IDs de ninguna tabla de referencia**: cambian por
-   cohorte.
+2. **Elegir la materia (aulas).** Llamá `aulas`: trae las materias de la cohorte
+   vigente (Prog I/II/III) ya resueltas a su curso, así el tutor NO tiene que descubrir
+   cursos — solo elige su materia. `aulas` valida cada curso contra la cuenta del tutor,
+   así que nunca ofrece un aula que no tenga. Si `aulas` avisa que venció o no encuentra
+   nada, caé a `descubrir_cursos` en vivo. Con la materia elegida, `descubrir_comisiones`
+   trae sus comisiones (group_id REAL) y `listar_tareas` sus actividades.
 3. **Validar antes de guardar.** Mostrá el mapeo propuesto y confirmá con el tutor.
    Cada `group_id` que vayas a guardar **tiene que estar en la lista que devolvió
    `descubrir_comisiones`**. Si proponés uno que no está, es un ID inventado:
@@ -120,7 +122,8 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Querés… | Tool |
 |---|---|
 | Ver tu config guardada | `mis_datos` |
-| Descubrir cursos / comisiones / tareas | `descubrir_cursos`, `descubrir_comisiones`, `listar_tareas` |
+| Elegir materia (aulas pre-cargadas) | `aulas` (fallback: `descubrir_cursos`) |
+| Descubrir comisiones / tareas | `descubrir_comisiones`, `listar_tareas` |
 | Guardar el mapeo (validado) | `guardar_mis_datos` |
 | **Refrescar los datos (snapshot on-demand)** | `actualizar_tableros` |
 | Conteo confiable de una tarea | `sumario` |
