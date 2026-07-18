@@ -27,20 +27,21 @@ Reusa la lógica de API REST ya probada en producción (token `moodle_mobile_app
 `mod_assign_*`), empaquetada para correr **local**: cada tutor con sus credenciales,
 sin depender de ningún servidor central.
 
-## Instalación
+## Instalación (un comando)
 
 ```bash
-npx skills add https://github.com/Group-Active-IA/Skill-Moodle
+git clone git@github.com:Group-Active-IA/Skill-Moodle.git ~/.claude/skills/tup-campus-navigator
+bash ~/.claude/skills/tup-campus-navigator/install.sh
 ```
 
-La skill trae un MCP server (`mcp/`). Para activarlo:
+El `install.sh` hace todo solo: crea un entorno Python aislado (no toca tu Python del
+sistema), instala las dependencias del MCP, y **enchufa el MCP a Claude Code con
+`claude mcp add`** — sin que tengas que editar ningún JSON. Después **reiniciá Claude
+Code** para que cargue el MCP.
 
-```bash
-pip install -r mcp/requirements.txt
-```
-
-Después conectá el MCP en la config de Claude Code (bloque listo en
-`mcp/config.example.json`).
+> Instalación manual (si preferís): `pip install -r mcp/requirements.txt` en un venv,
+> y `claude mcp add moodle-tutor -s user -- <python-del-venv> <ruta>/mcp/server.py`. El
+> bloque JSON equivalente está en `mcp/config.example.json`.
 
 **Las credenciales no se setean a mano.** En la primera sesión, decile a Claude tu
 usuario y contraseña de Moodle:
