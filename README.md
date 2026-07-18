@@ -30,7 +30,7 @@ sin depender de ningún servidor central.
 ## Instalación (un comando)
 
 ```bash
-git clone git@github.com:Group-Active-IA/Skill-Moodle.git ~/.claude/skills/tup-campus-navigator
+git clone https://github.com/Group-Active-IA/Skill-Moodle.git ~/.claude/skills/tup-campus-navigator
 bash ~/.claude/skills/tup-campus-navigator/install.sh
 ```
 

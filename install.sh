@@ -4,7 +4,7 @@
 # Necesitás: acceso al repo Group-Active-IA/Skill-Moodle, Claude Code, y python3.
 set -euo pipefail
 
-REPO="git@github.com:Group-Active-IA/Skill-Moodle.git"
+REPO="https://github.com/Group-Active-IA/Skill-Moodle.git"
 DIR="$HOME/.claude/skills/tup-campus-navigator"
 VENV="$DIR/.venv"
 
