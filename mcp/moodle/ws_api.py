@@ -477,6 +477,44 @@ async def leer_mensajes(client, limite: int = 15) -> list[dict]:
     return out
 
 
+async def leer_conversacion(client, conversacion_id: int, limite: int = 30) -> dict:
+    """Mensajes de una conversación, en orden cronológico. `leer_mensajes` solo trae el
+    último de cada una: para contestar con contexto hay que abrir el hilo."""
+    try:
+        uid = await client.api.userid()
+        d = await client.ws("core_message_get_conversation_messages", {
+            "currentuserid": uid, "convid": conversacion_id,
+            "limitfrom": 0, "limitnum": limite, "newest": 1})
+    except MoodleWSError as e:
+        return {"error": f"No pude abrir la conversación {conversacion_id}: {e.errorcode}"}
+    nombres = {m.get("id"): m.get("fullname") for m in (d or {}).get("members", [])}
+    msgs = [{"mensaje_id": m.get("id"), "de_quien": "tutor" if m.get("useridfrom") == uid else "alumno",
+             "autor": nombres.get(m.get("useridfrom")), "fecha_ts": m.get("timecreated"),
+             "texto": _plano(m.get("text", ""))}
+            for m in (d or {}).get("messages", [])]
+    msgs.sort(key=lambda m: m.get("fecha_ts") or 0)
+    otros = [n for i, n in nombres.items() if i != uid]
+    return {"ok": True, "conversacion_id": conversacion_id,
+            "alumno": otros[0] if otros else None, "total": len(msgs), "mensajes": msgs}
+
+
+async def mensajes_pendientes(client, limite: int = 50) -> dict:
+    """Conversaciones privadas que esperan respuesta del tutor: el último mensaje lo
+    escribió el alumno. Es el "qué me falta contestar" de la mensajería.
+
+    Se separan las que además tienen no leídos, que son las que el tutor ni abrió."""
+    convs = await leer_mensajes(client, limite)
+    if convs and isinstance(convs[0], dict) and convs[0].get("error"):
+        return {"error": convs[0]["error"]}
+    pendientes = [c for c in convs if c.get("de_quien") == "alumno"]
+    orden = lambda c: -(c.get("timestamp") or 0)  # noqa: E731
+    return {"ok": True,
+            "sin_leer": sorted([c for c in pendientes if c["no_leidos"]], key=orden),
+            "leidas_sin_responder": sorted([c for c in pendientes if not c["no_leidos"]], key=orden),
+            "resumen": {"conversaciones_revisadas": len(convs),
+                        "esperando_respuesta": len(pendientes)}}
+
+
 async def _touserid(client, alumno: str) -> tuple[int | None, str | None]:
     """Resuelve el destinatario: por email (exacto) o buscando en las conversaciones
     del tutor por nombre (parcial). Devuelve (userid, nombre)."""

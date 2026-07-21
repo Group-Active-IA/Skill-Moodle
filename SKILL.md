@@ -144,6 +144,9 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Padrón de una comisión · buscar alumno | `padron` · `buscar_alumno` |
 | PDF de pendientes | `armar_informe` |
 | Cargar una nota (con devolución) | `cargar_nota` |
+| **Mensajes privados que te faltan contestar** | `mensajes_pendientes` |
+| Bandeja de conversaciones · hilo completo | `leer_mensajes` · `leer_conversacion` |
+| Mandar un privado a un alumno (pide OK) | `responder_mensaje` |
 | **Consultas de foro que te faltan contestar** | `foros_pendientes` |
 | Foros del curso · hilos de un foro | `listar_foros` · `leer_foro` |
 | Mensajes de una discusión | `leer_discusion` |
@@ -194,6 +197,17 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
   eso `foros_pendientes` filtra en positivo: solo foros de consultas/dudas, y saltea el
   de "buscar dupla" (que es entre alumnos). Lo salteado se informa en `foros_salteados`,
   nunca en silencio.
+- **`leer_mensajes` NO trae el hilo**, solo el último mensaje de cada conversación.
+  Antes de contestar un privado, abrí `leer_conversacion`: responder con el último
+  mensaje como único contexto lleva a repetir lo ya dicho.
+- **"Último mensaje del alumno" ≠ "necesita respuesta".** `mensajes_pendientes` marca
+  como pendiente todo hilo cuya última palabra fue del alumno, y ahí caen muchos
+  "gracias!" de cierre. Es a propósito: preferimos que sobre y el tutor descarte, antes
+  que esconder una consulta real. No lo presentes como "tenés N mensajes sin contestar"
+  sin haberlos mirado.
+- **Por nombre solo se encuentra a quien ya escribió.** `responder_mensaje` resuelve el
+  destinatario entre las conversaciones existentes; para escribirle por primera vez a
+  alguien hace falta su email (`buscar_alumno`).
 - **Ordenar antes de cortar.** Al toparse la cantidad de discusiones, hay que ordenar
   por fecha primero: cortar en el orden que devuelve el campus escondía pendientes
   viejos sin avisar.

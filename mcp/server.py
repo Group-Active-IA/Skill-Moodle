@@ -300,6 +300,50 @@ async def mi_comision(nombre: str) -> dict:
     return out
 
 
+# ---------- MENSAJERÍA PRIVADA ----------
+
+@mcp.tool()
+async def mensajes_pendientes(limite: int = 50) -> dict:
+    """Mensajes privados de alumnos que esperan respuesta del tutor: aquellos cuya última
+    palabra la tuvo el alumno. Es el "qué me falta contestar" de la mensajería.
+
+    Separa `sin_leer` (el tutor ni las abrió — lo más urgente) de `leidas_sin_responder`
+    (las vio y quedaron colgadas). Cada una trae `conversacion_id`: abrila con
+    `leer_conversacion` para ver el hilo antes de contestar."""
+    return await ws_api.mensajes_pendientes(_cli(), limite)
+
+
+@mcp.tool()
+async def leer_mensajes(limite: int = 15) -> dict:
+    """Conversaciones privadas recientes: con quién, cuántos sin leer, el último mensaje
+    y quién lo escribió. Vista de bandeja. Para el hilo completo, `leer_conversacion`."""
+    return {"conversaciones": await ws_api.leer_mensajes(_cli(), limite)}
+
+
+@mcp.tool()
+async def leer_conversacion(conversacion_id: int, limite: int = 30) -> dict:
+    """Mensajes de una conversación en orden cronológico. LEELA ANTES DE CONTESTAR:
+    `leer_mensajes` solo trae el último mensaje, y responder sin el hilo lleva a repetir
+    lo ya dicho o a contestar otra cosa. El `conversacion_id` sale de `leer_mensajes` o
+    de `mensajes_pendientes`."""
+    return await ws_api.leer_conversacion(_cli(), conversacion_id, limite)
+
+
+@mcp.tool()
+async def responder_mensaje(alumno: str, texto: str, confirmado: bool = False) -> dict:
+    """Manda un mensaje privado a un alumno. `alumno` puede ser su email (exacto) o parte
+    de su nombre, que se busca entre las conversaciones del tutor.
+
+    ESCRITURA — le llega al alumno y no se puede borrar. Llamala primero SIN `confirmado`:
+    devuelve un preview con el texto. Mostráselo al tutor y recién con su OK explícito
+    repetí con `confirmado=true`. Nunca mandes un mensaje sin ese OK.
+
+    OJO: por nombre solo encuentra a quien YA tiene conversación con el tutor. Para
+    escribirle por primera vez a alguien, pasá su email (lo conseguís con
+    `buscar_alumno`)."""
+    return await ws_api.responder_mensaje(_cli(), alumno, texto, confirmado)
+
+
 # ---------- FOROS ----------
 
 @mcp.tool()
