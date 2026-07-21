@@ -3,6 +3,7 @@
 *.json
 !package.json
 !mcp/aulas.json
+!mcp/comisiones.json
 !mcp/config.example.json
 
 # Credenciales / secretos

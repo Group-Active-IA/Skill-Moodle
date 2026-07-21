@@ -1,0 +1,692 @@
+{
+  "_comentario": "Catálogo de asignaciones tutor → comisión y de actividades de cursada (cmid) por materia. Le ahorra al tutor todo el mapeo: dice su nombre y la skill ya sabe su comisión y qué tiene que corregir. Los ALUMNOS, ENTREGAS y NOTAS siguen SIEMPRE en vivo — esto es solo el mapa del aula.",
+  "_mantenimiento": "Cada cohorte nueva (~6 meses): regenerar group_id con descubrir_comisiones y cmid con listar_tareas, actualizar el reparto de tutores y mover 'vigente_hasta'. La tool `mi_comision` valida cada group_id contra el campus antes de devolverlo: si el catálogo quedó viejo, avisa en vez de mentir.",
+  "_convencion_nombres": "La etiqueta del grupo lleva la COHORTE DE INGRESO del alumno, no el cuatrimestre del aula. Por eso Prog II de Agosto 2026 tiene comisiones 'M26 C2-*' (alumnos que ingresaron en Marzo 2026) y Prog III tiene 'A25 C3-*'. 'comN' del reparto interno = comisión N = sufijo -0N del nombre en el campus.",
+  "cohorte": "Agosto 2026",
+  "vigente_hasta": "2027-03",
+  "_actividades_criterio": "'Actividades de cursada' = cierres de unidad + integradores/TPs/prácticas. NO incluye parciales, recuperatorios de parcial ni instancias extraordinarias: esos se miran aparte porque tienen calendario propio y variantes que ensucian los listados de pendientes.",
+  "materias": [
+    {
+      "materia": "Programación I",
+      "course_id": 74,
+      "patron_comision": "A26 C1-NN",
+      "comisiones": [
+        {
+          "comision": "com1",
+          "nombre_campus": "A26 C1-01",
+          "group_id": 7723,
+          "tutor": "Martina Zabala"
+        },
+        {
+          "comision": "com2",
+          "nombre_campus": "A26 C1-02",
+          "group_id": 7726,
+          "tutor": "Sofia Fernandez"
+        },
+        {
+          "comision": "com3",
+          "nombre_campus": "A26 C1-03",
+          "group_id": 7727,
+          "tutor": "Maxi Sar Fernandez"
+        },
+        {
+          "comision": "com4",
+          "nombre_campus": "A26 C1-04",
+          "group_id": 7734,
+          "tutor": "Neyen Bianchi"
+        },
+        {
+          "comision": "com5",
+          "nombre_campus": "A26 C1-05",
+          "group_id": 7738,
+          "tutor": "Matias Torres"
+        },
+        {
+          "comision": "com6",
+          "nombre_campus": "A26 C1-06",
+          "group_id": 7740,
+          "tutor": "Juan Sarmiento"
+        },
+        {
+          "comision": "com7",
+          "nombre_campus": "A26 C1-07",
+          "group_id": 7746,
+          "tutor": "Virginia Cimino"
+        },
+        {
+          "comision": "com8",
+          "nombre_campus": "A26 C1-08",
+          "group_id": 7750,
+          "tutor": "Tomás García"
+        },
+        {
+          "comision": "com9",
+          "nombre_campus": "A26 C1-09",
+          "group_id": 7751,
+          "tutor": "Guada Maricchiolo"
+        }
+      ],
+      "_comisiones_sin_tutor": "El aula tiene además A26 C1-10 … C1-15 (group_id 7755, 7759, 7763, 7770, 7771, 7775), sin tutor asignado en este reparto.",
+      "actividades_cursada": [
+        {
+          "cmid": "17703",
+          "titulo": "Actividad de cierre unidad 1 - Estructuras Secuenciales",
+          "unidad": 1
+        },
+        {
+          "cmid": "17727",
+          "titulo": "Actividad de cierre de la unidad 2 - Estructuras Condicionales",
+          "unidad": 2
+        },
+        {
+          "cmid": "17749",
+          "titulo": "Actividad de cierre unidad 3 - Estructuras Repetitivas",
+          "unidad": 3
+        },
+        {
+          "cmid": "17768",
+          "titulo": "Actividad de cierre de la unidad 4 - Git",
+          "unidad": 4
+        },
+        {
+          "cmid": "17792",
+          "titulo": "Actividad de cierre unidad 5",
+          "unidad": 5
+        },
+        {
+          "cmid": "17814",
+          "titulo": "Actividad de cierre unidad 6",
+          "unidad": 6
+        },
+        {
+          "cmid": "17838",
+          "titulo": "Actividad de cierre unidad 7",
+          "unidad": 7
+        },
+        {
+          "cmid": "17854",
+          "titulo": "Actividad de cierre unidad 8",
+          "unidad": 8
+        },
+        {
+          "cmid": "17876",
+          "titulo": "Actividad de cierre unidad 9 - Manejo de Archivos",
+          "unidad": 9
+        },
+        {
+          "cmid": "17891",
+          "titulo": "Actividad de cierre unidad 10 - Recursividad",
+          "unidad": 10
+        },
+        {
+          "cmid": "17910",
+          "titulo": "Entrega del Trabajo Integrador",
+          "tipo": "integrador"
+        },
+        {
+          "cmid": "17911",
+          "titulo": "Entrega del Trabajo Integrador 1",
+          "tipo": "integrador"
+        },
+        {
+          "cmid": "17909",
+          "titulo": "Recuperatorio Entrega del Trabajo Integrador",
+          "tipo": "integrador"
+        }
+      ],
+      "foros": [
+        {
+          "forum_id": 1711,
+          "cmid": 17682,
+          "nombre": "Avisos generales 📢",
+          "tipo": "news"
+        },
+        {
+          "forum_id": 1712,
+          "cmid": 17683,
+          "nombre": "🚀💻 Punto de Partida: Instalaciones y Ayuda",
+          "tipo": "social"
+        },
+        {
+          "forum_id": 1713,
+          "cmid": 17684,
+          "nombre": "Avisos de la comision 📌",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1714,
+          "cmid": 17691,
+          "nombre": "Espacio para Consultas y Dudas ❓ Estructuras Secuenciales",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1715,
+          "cmid": 17714,
+          "nombre": "Espacio para Consultas y Dudas ❓ Estructuras Condicionales",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1716,
+          "cmid": 17738,
+          "nombre": "Espacio para consultas y dudas ❓ Estructuras Repetitivas",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1717,
+          "cmid": 17758,
+          "nombre": "Espacio para Consultas y Dudas ❓ Git",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1718,
+          "cmid": 17778,
+          "nombre": "Espacio para consultas y dudas ❓ Listas",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1719,
+          "cmid": 17804,
+          "nombre": "Espacio para Consultas y Dudas ❓ Funciones",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1720,
+          "cmid": 17826,
+          "nombre": "Espacio para consultas y dudas ❓ Estructuras de datos complejas",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1721,
+          "cmid": 17846,
+          "nombre": "Espacio para consultas y dudas ❓ Manejo de errores",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1722,
+          "cmid": 17863,
+          "nombre": "Espacio para consultas y dudas ❓ Manejo de Archivos",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1723,
+          "cmid": 17883,
+          "nombre": "Espacio para Consultas y Dudas ❓ Recursividad",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1724,
+          "cmid": 17902,
+          "nombre": "🚀Foro para conseguir dupla para el TP Integrador",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1725,
+          "cmid": 17906,
+          "nombre": "💬 Foro de consultas – Trabajo Práctico Integrador",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1726,
+          "cmid": 17915,
+          "nombre": "📝 Foro de consultas - 1er Examen Parcial",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1727,
+          "cmid": 17916,
+          "nombre": "📝 Foro de consultas - 2do Examen Parcial",
+          "tipo": "general"
+        }
+      ]
+    },
+    {
+      "materia": "Programación II",
+      "course_id": 81,
+      "patron_comision": "M26 C2-NN",
+      "comisiones": [
+        {
+          "comision": "com1",
+          "nombre_campus": "M26 C2-01",
+          "group_id": 7814,
+          "tutor": "Juan Cruz Robledo"
+        },
+        {
+          "comision": "com2",
+          "nombre_campus": "M26 C2-02",
+          "group_id": 7818,
+          "tutor": "Ramiro Hualpa"
+        },
+        {
+          "comision": "com3",
+          "nombre_campus": "M26 C2-03",
+          "group_id": 7822,
+          "tutor": "Ramiro Hualpa"
+        },
+        {
+          "comision": "com4",
+          "nombre_campus": "M26 C2-04",
+          "group_id": 7826,
+          "tutor": "Renzo"
+        },
+        {
+          "comision": "com5",
+          "nombre_campus": "M26 C2-05",
+          "group_id": 7830,
+          "tutor": "Neyen Bianchi"
+        },
+        {
+          "comision": "com6",
+          "nombre_campus": "M26 C2-06",
+          "group_id": 7834,
+          "tutor": "David Lopez"
+        },
+        {
+          "comision": "com7",
+          "nombre_campus": "M26 C2-07",
+          "group_id": 7838,
+          "tutor": "Jeronimo Cortez"
+        },
+        {
+          "comision": "com8",
+          "nombre_campus": "M26 C2-08",
+          "group_id": 7842,
+          "tutor": "Marcos Vega"
+        },
+        {
+          "comision": "com9",
+          "nombre_campus": "M26 C2-09",
+          "group_id": 7846,
+          "tutor": "Nicolás Avellaneda"
+        },
+        {
+          "comision": "com10",
+          "nombre_campus": "M26 C2-10",
+          "group_id": 7854,
+          "tutor": "Tomas Ferro"
+        }
+      ],
+      "_comisiones_sin_tutor": "El aula tiene además M26 C2-11 … C2-16 (group_id 7850, 7858, 7862, 7866, 7870, 7877), sin tutor asignado. Ojo: C2-10 es 7854 y C2-11 es 7850 — los id NO van en orden, vale el nombre.",
+      "_dato": "Ramiro Hualpa figura con dos comisiones (com2 y com3). Es intencional según el reparto recibido.",
+      "actividades_cursada": [
+        {
+          "cmid": "19330",
+          "titulo": "Actividad de cierre Unidad 1 - Introduccion a Java",
+          "unidad": 1
+        },
+        {
+          "cmid": "19354",
+          "titulo": "Actividad de cierre de Unidad 2 - Programación Estructurada",
+          "unidad": 2
+        },
+        {
+          "cmid": "19375",
+          "titulo": "Actividad de cierre de la Unidad III - Introduccion a POO",
+          "unidad": 3
+        },
+        {
+          "cmid": "19396",
+          "titulo": "Actividad de cierre de la Unidad 4 - POO",
+          "unidad": 4
+        },
+        {
+          "cmid": "19420",
+          "titulo": "Actividad de cierre de la Unidad 5 - UML Basico",
+          "unidad": 5
+        },
+        {
+          "cmid": "19441",
+          "titulo": "Actividad de cierre Unidad 6 - Colecciones",
+          "unidad": 6
+        },
+        {
+          "cmid": "19462",
+          "titulo": "Actividad de cierre Unidad 7 - Herencia y Polimorfismo",
+          "unidad": 7
+        },
+        {
+          "cmid": "19481",
+          "titulo": "Actividad de cierre Unidad 8 - Interfaces y Excepciones",
+          "unidad": 8
+        },
+        {
+          "cmid": "19496",
+          "titulo": "Actividad de cierre Unidad 9 - Genericos",
+          "unidad": 9
+        },
+        {
+          "cmid": "19511",
+          "titulo": "Actividad de cierre de la Unidad 10 - Acceso a Base de Datos",
+          "unidad": 10
+        },
+        {
+          "cmid": "19526",
+          "titulo": "Entrega del Trabajo Integrador",
+          "tipo": "integrador"
+        },
+        {
+          "cmid": "19527",
+          "titulo": "Entrega RECUPERATORIO del Trabajo Integrador",
+          "tipo": "integrador"
+        }
+      ],
+      "foros": [
+        {
+          "forum_id": 1781,
+          "cmid": 19308,
+          "nombre": "Avisos 📢",
+          "tipo": "news"
+        },
+        {
+          "forum_id": 1782,
+          "cmid": 19309,
+          "nombre": "🚀💻 Punto de Partida: Instalaciones y Ayuda",
+          "tipo": "social"
+        },
+        {
+          "forum_id": 1783,
+          "cmid": 19310,
+          "nombre": "Avisos de la comision 📌",
+          "tipo": "social"
+        },
+        {
+          "forum_id": 1784,
+          "cmid": 19315,
+          "nombre": "Espacio para Consultas y Dudas ❓- Introduccion a Java",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1785,
+          "cmid": 19338,
+          "nombre": "Espacio para Consultas y Dudas ❓- Programacion Estructurada",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1786,
+          "cmid": 19362,
+          "nombre": "Espacio para Consultas y Dudas ❓ - Introducción a POO",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1787,
+          "cmid": 19384,
+          "nombre": "Espacio para Consultas y Dudas ❓- POO",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1788,
+          "cmid": 19405,
+          "nombre": "Espacio para Consultas y Dudas ❓ - UML Básico",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1789,
+          "cmid": 19428,
+          "nombre": "Espacio para Consultas y Dudas ❓- Colecciones",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1790,
+          "cmid": 19449,
+          "nombre": "Espacio para Consultas y Dudas ❓- Herencia y Polimorfismo",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1791,
+          "cmid": 19470,
+          "nombre": "Espacio para Consultas y Dudas ❓- Interfaces y Exepciones",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1792,
+          "cmid": 19489,
+          "nombre": "Espacio para Consultas y Dudas ❓ - Genericos",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1793,
+          "cmid": 19502,
+          "nombre": "Espacio para Consultas y Dudas ❓- Acceso a Base de Datos con Jdbc",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1794,
+          "cmid": 19518,
+          "nombre": "🤔 Foro de Consultas - Trabajo Práctico Integrador",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1795,
+          "cmid": 19520,
+          "nombre": "🚀Foro para formar equipo para el TP Integrador",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1796,
+          "cmid": 19532,
+          "nombre": "📝 Foro de consultas - 2do Examen Parcial",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1797,
+          "cmid": 19540,
+          "nombre": "📝 Foro de consultas - 1er Examen Parcial",
+          "tipo": "general"
+        }
+      ]
+    },
+    {
+      "materia": "Programación III",
+      "course_id": 82,
+      "patron_comision": "A25 C3-NN",
+      "comisiones": [
+        {
+          "comision": "com1",
+          "nombre_campus": "A25 C3-01",
+          "group_id": 7779,
+          "tutor": "Juan Cruz Robledo"
+        },
+        {
+          "comision": "com2",
+          "nombre_campus": "A25 C3-02",
+          "group_id": 7786,
+          "tutor": "Luciano Chiroli"
+        },
+        {
+          "comision": "com3",
+          "nombre_campus": "A25 C3-03",
+          "group_id": 7790,
+          "tutor": "Federico Frankerberger"
+        },
+        {
+          "comision": "com4",
+          "nombre_campus": "A25 C3-04",
+          "group_id": 7794,
+          "tutor": "Guada Maricchiolo"
+        },
+        {
+          "comision": "com5",
+          "nombre_campus": "A25 C3-05",
+          "group_id": 7798,
+          "tutor": "Emiliano Cáceres"
+        }
+      ],
+      "_comisiones_sin_tutor": "El aula tiene además A25 C3-06, C3-07 y C3-08 (group_id 7802, 7806, 7810), sin tutor asignado.",
+      "_dato": "Al aula le FALTAN los cierres de las unidades 1, 4 y 8: no existen como tarea en el campus (no es un filtro de este catálogo). Si aparecen, agregarlas acá con listar_tareas.",
+      "actividades_cursada": [
+        {
+          "cmid": "19606",
+          "titulo": "Actividad de cierre unidad 2 - CSS",
+          "unidad": 2
+        },
+        {
+          "cmid": "19622",
+          "titulo": "Actividad de cierre unidad 3 - JavaScript",
+          "unidad": 3
+        },
+        {
+          "cmid": "19657",
+          "titulo": "Actividad de cierre unidad 5 - ToString, Equals, HashCode y Colecciones",
+          "unidad": 5
+        },
+        {
+          "cmid": "19677",
+          "titulo": "Actividad de cierre unidad 6 - Lombok y DTO",
+          "unidad": 6
+        },
+        {
+          "cmid": "19699",
+          "titulo": "Actividad de cierre unidad 7 - Programacion Funcional",
+          "unidad": 7
+        },
+        {
+          "cmid": "19740",
+          "titulo": "Actividad de cierre unidad 9 - Fundamentos Spring Boot",
+          "unidad": 9
+        },
+        {
+          "cmid": "19762",
+          "titulo": "Actividad de cierre unidad 10 - APIs REST con Spring Boot",
+          "unidad": 10
+        },
+        {
+          "cmid": "19589",
+          "titulo": "Entrega Integrador HTML",
+          "tipo": "integrador"
+        },
+        {
+          "cmid": "19641",
+          "titulo": "Entrega — TP: Autenticación y Rutas Protegidas - TypeScript",
+          "tipo": "tp"
+        },
+        {
+          "cmid": "19722",
+          "titulo": "Entrega Integrador JPA",
+          "tipo": "integrador"
+        },
+        {
+          "cmid": "19772",
+          "titulo": "Entrega del Trabajo Integrador",
+          "tipo": "integrador"
+        },
+        {
+          "cmid": "19798",
+          "titulo": "Entrega Jpa del Hospital",
+          "tipo": "tp"
+        },
+        {
+          "cmid": "19799",
+          "titulo": "Global Mutantes",
+          "tipo": "tp"
+        },
+        {
+          "cmid": "19800",
+          "titulo": "Entrega del Proyecto Final",
+          "tipo": "proyecto"
+        },
+        {
+          "cmid": "20652",
+          "titulo": "Practica - Actividad 1 - HTML",
+          "tipo": "practica"
+        },
+        {
+          "cmid": "20666",
+          "titulo": "Practica - Actividad 2 - HTML",
+          "tipo": "practica"
+        }
+      ],
+      "foros": [
+        {
+          "forum_id": 1798,
+          "cmid": 19570,
+          "nombre": "Avisos generales 📢",
+          "tipo": "news"
+        },
+        {
+          "forum_id": 1799,
+          "cmid": 19571,
+          "nombre": "🚀💻 Punto de Partida: Instalaciones y Ayuda",
+          "tipo": "social"
+        },
+        {
+          "forum_id": 1800,
+          "cmid": 19572,
+          "nombre": "Avisos de la comision 📌",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1801,
+          "cmid": 19578,
+          "nombre": "Espacio para Consultas y Dudas ❓ HTML",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1802,
+          "cmid": 19595,
+          "nombre": "Espacio para Consultas y Dudas ❓ CSS",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1803,
+          "cmid": 19612,
+          "nombre": "Espacio para Consultas y Dudas ❓ Javascript",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1804,
+          "cmid": 19628,
+          "nombre": "Espacio para consultas y dudas ❓ Typescript",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1805,
+          "cmid": 19645,
+          "nombre": "Espacio para consultas y dudas ❓ ToString, Equals y hashCode",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1806,
+          "cmid": 19666,
+          "nombre": "Espacio para consultas y dudas ❓ Foro de Consultas - Lombok y DTO",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1807,
+          "cmid": 19685,
+          "nombre": "Espacio para Consultas y Dudas ❓ Programación Funcional",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1808,
+          "cmid": 19705,
+          "nombre": "Espacio para consultas y dudas ❓ Foro de Consultas - JPA",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1809,
+          "cmid": 19728,
+          "nombre": "Espacio para consultas y dudas ❓- Fundamentos de Spring Boot",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1810,
+          "cmid": 19748,
+          "nombre": "Espacio para consultas y dudas ❓- APIs REST",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1811,
+          "cmid": 19774,
+          "nombre": "🤔 Foro de Consultas - Trabajo Práctico Integrador",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1812,
+          "cmid": 19779,
+          "nombre": "Consultas Segundo Examen",
+          "tipo": "general"
+        }
+      ]
+    }
+  ],
+  "_foros_criterio": "Foros del aula con forum_id (el que usa leer_foro/responder_foro) y cmid (el modulo en el curso). Los DOS: no son intercambiables. El tipo news/social/general viene del campus; \"Avisos de la comision\" es el foro por comision."
+}

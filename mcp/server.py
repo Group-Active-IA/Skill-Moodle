@@ -196,6 +196,110 @@ async def aulas() -> dict:
     return out
 
 
+_COMISIONES_PATH = Path(__file__).parent / "comisiones.json"
+
+
+def _clave_nombre(texto: str) -> str:
+    """Normaliza un nombre para comparar: sin acentos, sin dobles espacios, minúsculas.
+    Así 'Tomás García' matchea con 'tomas garcia' escrito a las apuradas."""
+    import unicodedata
+    sin_tildes = "".join(c for c in unicodedata.normalize("NFD", texto)
+                         if unicodedata.category(c) != "Mn")
+    return " ".join(sin_tildes.lower().split())
+
+
+@mcp.tool()
+async def mi_comision(nombre: str) -> dict:
+    """Resuelve, a partir del NOMBRE del tutor, qué comisión le toca en cada materia y
+    qué actividades de cursada tiene para corregir (con su cmid). Es el atajo del mapeo:
+    el tutor dice su nombre y no hace falta que descubra cursos, grupos ni tareas.
+
+    Devuelve, por materia: course_id, comisión (nombre en el campus + group_id) y la
+    lista de actividades de cursada (cierres de unidad + integradores/TPs). NO incluye
+    parciales ni recuperatorios: esos tienen calendario propio, pedilos con listar_tareas.
+
+    Matchea por nombre completo o por parte (apellido, nombre de pila), sin distinguir
+    acentos ni mayúsculas. Si el nombre es ambiguo devuelve los candidatos para que el
+    tutor elija — nunca elige por él.
+
+    VALIDACIÓN (la regla de la skill: verificar en vivo, nunca inventar): cada group_id
+    del catálogo se coteja contra los grupos reales del curso antes de devolverlo. Si el
+    catálogo quedó viejo, lo dice y manda a descubrir_comisiones en vivo."""
+    try:
+        cat = json.loads(_COMISIONES_PATH.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"No pude leer el catálogo de comisiones: {e}. "
+                         "Mapeá en vivo con descubrir_comisiones + listar_tareas."}
+
+    buscado = _clave_nombre(nombre)
+    if not buscado:
+        return {"error": "Decime el nombre del tutor para buscar su comisión."}
+
+    # Exacto primero; si no hay, por coincidencia parcial (apellido o nombre suelto).
+    exactos, parciales = [], []
+    for m in cat.get("materias", []):
+        for c in m.get("comisiones", []):
+            clave = _clave_nombre(c.get("tutor", ""))
+            if not clave:
+                continue
+            fila = {"materia": m["materia"], "course_id": m["course_id"], **c}
+            if clave == buscado:
+                exactos.append(fila)
+            elif buscado in clave or clave in buscado:
+                parciales.append(fila)
+
+    encontradas = exactos or parciales
+    if not encontradas:
+        tutores = sorted({c["tutor"] for m in cat.get("materias", [])
+                          for c in m.get("comisiones", [])})
+        return {"sin_resultado": True,
+                "aviso": f"No encontré a '{nombre}' en el reparto de {cat.get('cohorte')}. "
+                         "Puede que la comisión no esté asignada todavía, o que el nombre "
+                         "esté escrito distinto en el catálogo.",
+                "tutores_del_catalogo": tutores}
+
+    # Si el parcial matcheó a más de una persona distinta, no adivinamos: preguntamos.
+    distintos = {_clave_nombre(f["tutor"]) for f in encontradas}
+    if not exactos and len(distintos) > 1:
+        return {"ambiguo": True,
+                "aviso": f"'{nombre}' matchea con más de un tutor. Decime cuál es.",
+                "candidatos": sorted({f["tutor"] for f in encontradas})}
+
+    # Validación en vivo: el group_id del catálogo tiene que existir en el curso real.
+    asignaciones, desfasadas = [], []
+    grupos_por_curso: dict[int, dict[int, str]] = {}
+    for f in encontradas:
+        cid = f["course_id"]
+        if cid not in grupos_por_curso:
+            try:
+                gs = await ws_api.descubrir_comisiones(_cli(), cid)
+                grupos_por_curso[cid] = {g["group_id"]: g["nombre"] for g in gs}
+            except Exception:  # noqa: BLE001
+                grupos_por_curso[cid] = {}
+        reales = grupos_por_curso[cid]
+        if reales and f["group_id"] not in reales:
+            desfasadas.append({"materia": f["materia"], "comision": f["nombre_campus"],
+                               "group_id_catalogo": f["group_id"]})
+            continue
+        materia = next(m for m in cat["materias"] if m["course_id"] == cid)
+        asignaciones.append({
+            "materia": f["materia"],
+            "course_id": cid,
+            "comision": f["comision"],
+            "nombre_campus": reales.get(f["group_id"], f["nombre_campus"]),
+            "group_id": f["group_id"],
+            "actividades_cursada": materia.get("actividades_cursada", []),
+        })
+
+    out = {"tutor": encontradas[0]["tutor"], "cohorte": cat.get("cohorte"),
+           "asignaciones": asignaciones}
+    if desfasadas:
+        out["aviso"] = ("Estas comisiones del catálogo ya no existen en el campus — quedó "
+                        "viejo. Mapealas en vivo con descubrir_comisiones.")
+        out["desfasadas"] = desfasadas
+    return out
+
+
 @mcp.tool()
 async def descubrir_cursos() -> list[dict]:
     """Descubre EN VIVO los cursos del campus donde el tutor está matriculado

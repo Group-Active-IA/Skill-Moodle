@@ -102,18 +102,30 @@ no sabe cuáles son las comisiones del tutor. El orden es obligatorio:
    `.env` local (permisos 600, fuera del repo — no se versiona) y **valida el login
    contra el campus** antes de darlo por bueno. El tutor NO setea variables de entorno
    a mano. Si el login falla, la tool lo dice: revisá usuario/contraseña.
-2. **Elegir la materia (aulas).** Llamá `aulas`: trae las materias de la cohorte
+2. **Preguntale el nombre y usá `mi_comision`.** Es el atajo: con el nombre del tutor,
+   `mi_comision(nombre)` devuelve —de una— su comisión en cada materia (`group_id` real)
+   y sus actividades de cursada con `cmid`. El tutor no descubre cursos, ni grupos, ni
+   tareas: dice cómo se llama y ya está. Matchea sin acentos ni mayúsculas y acepta el
+   apellido suelto; si el nombre da ambiguo devuelve los candidatos —**preguntá cuál es,
+   no elijas vos**— y si no está en el reparto, lo dice y caés al mapeo manual del punto
+   siguiente. Cada `group_id` se valida contra el campus antes de devolverse, así que un
+   catálogo viejo avisa en vez de mentir.
+
+   Un tutor puede tener **varias comisiones** (misma materia o distintas): devolvelas
+   todas, no te quedes con la primera.
+
+3. **Si `mi_comision` no lo encuentra — mapeo manual.** Llamá `aulas`: trae las materias de la cohorte
    vigente (Prog I/II/III) ya resueltas a su curso, así el tutor NO tiene que descubrir
    cursos — solo elige su materia. `aulas` valida cada curso contra la cuenta del tutor,
    así que nunca ofrece un aula que no tenga. Si `aulas` avisa que venció o no encuentra
    nada, caé a `descubrir_cursos` en vivo. Con la materia elegida, `descubrir_comisiones`
    trae sus comisiones (group_id REAL) y `listar_tareas` sus actividades.
-3. **Validar antes de guardar.** Mostrá el mapeo propuesto y confirmá con el tutor.
+4. **Validar antes de guardar.** Mostrá el mapeo propuesto y confirmá con el tutor.
    Cada `group_id` que vayas a guardar **tiene que estar en la lista que devolvió
    `descubrir_comisiones`**. Si proponés uno que no está, es un ID inventado:
    rechazalo y volvé a preguntar. (Pasó de verdad: un modelo "mapeó" la comisión 8
    con un group_id que no existía, y TODOS los datos quedaron mal en silencio.)
-4. **Guardar** con `guardar_mis_datos`. De ahí en más el tutor no mapea más.
+5. **Guardar** con `guardar_mis_datos`. De ahí en más el tutor no mapea más.
 
 Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes de nada.
 
@@ -122,6 +134,7 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Querés… | Tool |
 |---|---|
 | Ver tu config guardada | `mis_datos` |
+| **Saber tu comisión y actividades diciendo tu nombre** | `mi_comision` |
 | Elegir materia (aulas pre-cargadas) | `aulas` (fallback: `descubrir_cursos`) |
 | Descubrir comisiones / tareas | `descubrir_comisiones`, `listar_tareas` |
 | Guardar el mapeo (validado) | `guardar_mis_datos` |
