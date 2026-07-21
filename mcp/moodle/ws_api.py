@@ -273,6 +273,7 @@ async def leer_foro(client, forum_id: int, limite: int = 25) -> dict:
     disc = [{"discussion_id": x.get("discussion"), "titulo": _plano(x.get("name", ""), 120),
              "autor": x.get("userfullname"), "replicas": x.get("numreplies", 0),
              "ultimo_ts": x.get("timemodified"), "fijada": bool(x.get("pinned")),
+             "group_id": x.get("groupid"),
              "puede_responder": bool(x.get("canreply"))}
             for x in (d or {}).get("discussions", [])]
     return {"ok": True, "forum_id": forum_id, "total": len(disc), "discusiones": disc[: max(1, limite)]}
@@ -313,6 +314,139 @@ async def responder_foro(client, post_id: int, mensaje: str, asunto: str | None 
     except MoodleWSError as e:
         return {"error": f"No pude publicar la respuesta: {e.errorcode} — {e.message}"}
     return {"ok": True, "post_id": (r or {}).get("postid"), "responde_a": post_id}
+
+
+_RE_CONSULTAS = re.compile(r"consulta|duda", re.I)
+# Foros que NO son para que conteste el tutor, aunque digan "consulta": el de buscar
+# dupla es alumno-con-alumno (200+ hilos de "busco compañero" que nadie debe responder).
+_RE_NO_DOCENTE = re.compile(r"dupla|compañer|equipo", re.I)
+
+
+async def foros_pendientes(client, course_id: int, group_ids: list[int] | None = None,
+                           solo_consultas: bool = True, incluir_avisos: bool = False,
+                           max_discusiones: int = 120) -> dict:
+    """Consultas de foro que el tutor todavía no respondió, en todo el curso.
+
+    Dos categorías, porque no son lo mismo y conviene atacarlas distinto:
+      - `sin_responder`: nadie contestó (0 réplicas). Son las urgentes.
+      - `respondio_otro`: alguien contestó, pero el tutor no. Puede estar resuelta por un
+        compañero o necesitar que un docente confirme.
+
+    Criterio de "respondida por vos": hay al menos un post cuyo autor es el userid del
+    tutor logueado. NO se infiere por rol — el WS de foros no devuelve roles, y adivinar
+    quién es docente por el nombre sería justo el tipo de invento que la skill no hace.
+
+    `group_ids`: comisiones del tutor. Los foros del campus son compartidos por TODO el
+    curso (27 comisiones en Prog I), así que sin este filtro te llegan los hilos de los
+    alumnos de los otros 26 tutores. Las discusiones "para todos" (groupid <= 0) entran
+    siempre. Si no se pasa, se revisa el curso entero y se avisa.
+
+    Los foros de avisos se saltean salvo `incluir_avisos`: son de una vía, el tutor
+    publica y nadie espera respuesta suya. Se descartan por tipo `news` Y por nombre —
+    en este campus "Avisos de la comision" está declarado `general`, pero de hecho es un
+    tablón de anuncios: filtrarlo solo por tipo dejaba entrar cientos de avisos de otros
+    tutores como si fueran consultas sin responder.
+    """
+    import asyncio
+
+    fs = await listar_foros(client, course_id)
+    if fs.get("error"):
+        return fs
+    foros, salteados = [], []
+    for f in fs["foros"]:
+        nombre = f.get("nombre") or ""
+        if not incluir_avisos and (f.get("tipo") == "news" or "aviso" in nombre.lower()):
+            salteados.append(nombre); continue
+        if solo_consultas and (not _RE_CONSULTAS.search(nombre)
+                               or _RE_NO_DOCENTE.search(nombre)):
+            salteados.append(nombre); continue
+        foros.append(f)
+
+    # Solo abrimos los foros que tienen actividad: numdiscussions viene en el listado.
+    con_hilos = [f for f in foros if (f.get("discusiones") or 0) > 0]
+    if not con_hilos:
+        return {"ok": True, "course_id": course_id, "sin_responder": [], "respondio_otro": [],
+                "resumen": {"foros_revisados": len(foros), "discusiones": 0},
+                "aviso": "Ningún foro del curso tiene discusiones todavía."}
+
+    uid = await client.api.userid()
+    sem = asyncio.Semaphore(5)  # el campus es compartido: no lo martillamos
+
+    async def _hilos(f):
+        async with sem:
+            r = await leer_foro(client, f["forum_id"], limite=max_discusiones)
+        if r.get("error"):
+            return []
+        return [(f, d) for d in r.get("discusiones", [])]
+
+    pares = [x for sub in await asyncio.gather(*[_hilos(f) for f in con_hilos]) for x in sub]
+    total_curso = len(pares)
+    if group_ids:
+        gs = set(group_ids)
+        # groupid <= 0 = discusión visible para todo el curso: siempre entra.
+        pares = [(f, d) for f, d in pares if (d.get("group_id") or 0) <= 0
+                 or d.get("group_id") in gs]
+    # Ordenar ANTES de cortar: si no, el tope se come discusiones recientes según el orden
+    # en que respondió el campus y quedan pendientes invisibles (pasó: de 351 hilos se
+    # clasificaban 120 arbitrarios y los sin responder del resto no aparecían nunca).
+    pares.sort(key=lambda p: -(p[1].get("ultimo_ts") or 0))
+    truncado = len(pares) > max_discusiones
+    pares = pares[:max_discusiones]
+
+    sin_responder, dudosas = [], []
+    for f, d in pares:
+        fila = {"foro": f["nombre"], "forum_id": f["forum_id"],
+                "discussion_id": d["discussion_id"], "titulo": d["titulo"],
+                "autor": d["autor"], "replicas": d["replicas"],
+                "ultimo_ts": d["ultimo_ts"], "puede_responder": d["puede_responder"]}
+        (sin_responder if not d["replicas"] else dudosas).append(fila)
+
+    # Las que tienen réplicas: hay que abrirlas para saber si el tutor ya pasó por ahí.
+    async def _mia(fila):
+        async with sem:
+            r = await leer_discusion(client, fila["discussion_id"])
+        if r.get("error"):
+            fila["aviso"] = "No pude abrirla para ver si respondiste."
+            return fila
+        posts = r.get("posts", [])
+        if any(p.get("autor_userid") == uid for p in posts):
+            return None  # ya respondiste
+        ult = posts[-1] if posts else {}
+        fila["ultimo_post_id"] = ult.get("post_id")
+        fila["ultimo_autor"] = ult.get("autor")
+        return fila
+
+    respondio_otro = [x for x in await asyncio.gather(*[_mia(f) for f in dudosas]) if x]
+
+    # El primer post de la discusión es al que hay que responder: lo resolvemos para las
+    # que no tienen réplicas, así el tutor puede encadenar directo con responder_foro.
+    async def _primer_post(fila):
+        async with sem:
+            r = await leer_discusion(client, fila["discussion_id"])
+        if not r.get("error") and r.get("posts"):
+            fila["responder_a_post"] = r["posts"][0]["post_id"]
+            fila["texto"] = r["posts"][0]["texto"][:400]
+        return fila
+
+    sin_responder = list(await asyncio.gather(*[_primer_post(f) for f in sin_responder]))
+
+    orden = lambda x: -(x.get("ultimo_ts") or 0)  # noqa: E731 — más reciente primero
+    out = {"ok": True, "course_id": course_id,
+           "sin_responder": sorted(sin_responder, key=orden),
+           "respondio_otro": sorted(respondio_otro, key=orden),
+           "resumen": {"foros_revisados": len(foros), "foros_con_hilos": len(con_hilos),
+                       "discusiones_del_curso": total_curso, "discusiones_tuyas": len(pares),
+                       "sin_responder": len(sin_responder),
+                       "respondio_otro": len(respondio_otro)},
+           "foros_salteados": salteados}
+    if not group_ids:
+        out["aviso"] = ("Sin filtro de comisión: estás viendo los hilos de TODO el curso, "
+                        "incluidos los alumnos de otros tutores. Pasá `group_ids` (o mapeá "
+                        "tus comisiones con mi_comision / guardar_mis_datos).")
+    if truncado:
+        out["aviso"] = (out.get("aviso", "") + f" Corté en {max_discusiones} discusiones: "
+                        "hay más, subí max_discusiones si necesitás verlas todas.").strip()
+    return out
 
 
 # ---------- MENSAJERÍA (core_message por token) ----------

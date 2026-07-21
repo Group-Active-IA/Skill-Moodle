@@ -144,6 +144,10 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Padrón de una comisión · buscar alumno | `padron` · `buscar_alumno` |
 | PDF de pendientes | `armar_informe` |
 | Cargar una nota (con devolución) | `cargar_nota` |
+| **Consultas de foro que te faltan contestar** | `foros_pendientes` |
+| Foros del curso · hilos de un foro | `listar_foros` · `leer_foro` |
+| Mensajes de una discusión | `leer_discusion` |
+| Responder en el foro (pide OK) | `responder_foro` |
 | Ver el mapa Moodle ↔ Active-IA | `activeia_pendientes` |
 | Resolver comisión/rúbrica de Active-IA | `activeia_resolver` |
 | **Corregir con Active-IA + PDF de devolución** | `corregir_con_active_ia` |
@@ -177,6 +181,22 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
   (Aprobado=1, Desaprobado=2). NO hardcodear: leer la opción por texto.
 - **"Pendiente de corregir" ≠ "deuda del alumno".** El que no entregó nada tiene 0
   para corregir y NO está al día: es el que más debe.
+- **`forum_id` ≠ `cmid`.** `leer_foro` quiere el `forum_id`; el `cmid` es el módulo en
+  el aula. Los dos vienen en `listar_foros` y no son intercambiables.
+- **Los foros de consultas NO están separados por comisión.** Vienen con `groupid`
+  vacío: son de todo el curso (27 comisiones en Prog I). El único group-separado es
+  "Avisos de la comisión". Por eso `foros_pendientes` no puede decir "estas consultas
+  son de TUS alumnos" en los foros de dudas — las muestra todas, y está bien: cualquier
+  tutor puede contestarlas.
+- **Filtrar foros por tipo no alcanza.** "Avisos de la comision" está declarado
+  `general`, no `news`: filtrar solo por tipo metía cientos de avisos de otros tutores
+  como si fueran consultas sin responder (106 falsos positivos en una prueba real). Por
+  eso `foros_pendientes` filtra en positivo: solo foros de consultas/dudas, y saltea el
+  de "buscar dupla" (que es entre alumnos). Lo salteado se informa en `foros_salteados`,
+  nunca en silencio.
+- **Ordenar antes de cortar.** Al toparse la cantidad de discusiones, hay que ordenar
+  por fecha primero: cortar en el orden que devuelve el campus escondía pendientes
+  viejos sin avisar.
 
 ## Cosas que NO hacer
 

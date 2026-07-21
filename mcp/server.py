@@ -300,6 +300,79 @@ async def mi_comision(nombre: str) -> dict:
     return out
 
 
+# ---------- FOROS ----------
+
+@mcp.tool()
+async def foros_pendientes(course_id: int, group_ids: list[int] | None = None,
+                           solo_consultas: bool = True, incluir_avisos: bool = False) -> dict:
+    """Consultas de foro del curso que el tutor TODAVÍA NO respondió. Es el "qué me falta
+    contestar", el equivalente en foros de `pendientes_por_corregir`.
+
+    Devuelve dos listas separadas, porque no son la misma urgencia:
+      - `sin_responder`: nadie contestó (0 réplicas). Trae `responder_a_post` y un extracto
+        del texto, así podés encadenar directo con `responder_foro`.
+      - `respondio_otro`: contestó alguien más (un compañero), pero vos no.
+
+    "Respondida por vos" = hay un post tuyo en la discusión. No se infiere por rol: el WS
+    de foros no devuelve roles y adivinar quién es docente sería inventar.
+
+    FILTRO POR COMISIÓN: los foros son de todo el curso (Prog I tiene 27 comisiones), así
+    que sin filtrar ves los hilos de los alumnos de los demás tutores. Si no pasás
+    `group_ids`, se toman los de `mis_datos` para ese curso; si tampoco hay, se revisa el
+    curso entero y se avisa.
+
+    QUÉ FOROS MIRA: por defecto solo los de consultas/dudas. Los de avisos son de una vía
+    (`incluir_avisos=true` para verlos) y el de "buscar dupla/compañero" es entre alumnos:
+    tiene cientos de hilos que ningún tutor debe contestar. `solo_consultas=false` mira
+    todos. La lista de lo salteado vuelve en `foros_salteados`, para que no haya recortes
+    silenciosos."""
+    if not group_ids:
+        await almacen.init_db()
+        datos = await almacen.get_mis_datos() or {}
+        for c in datos.get("cursos", []):
+            if c.get("course_id") == course_id:
+                group_ids = [x["group_id"] for x in c.get("comisiones_del_tutor", [])]
+                break
+    return await ws_api.foros_pendientes(_cli(), course_id, group_ids, solo_consultas,
+                                         incluir_avisos)
+
+
+@mcp.tool()
+async def listar_foros(course_id: int) -> dict:
+    """Foros del curso con `forum_id`, `cmid`, nombre, tipo y cuántas discusiones tiene
+    cada uno. OJO: `forum_id` es lo que pide `leer_foro`; `cmid` es el módulo en el aula.
+    No son intercambiables. (API REST.)"""
+    return await ws_api.listar_foros(_cli(), course_id)
+
+
+@mcp.tool()
+async def leer_foro(forum_id: int, limite: int = 25) -> dict:
+    """Discusiones de un foro (título, autor, cuántas réplicas, si podés responder).
+    El `forum_id` sale de `listar_foros`. Para leer los mensajes de una discusión,
+    seguí con `leer_discusion`. (API REST.)"""
+    return await ws_api.leer_foro(_cli(), forum_id, limite)
+
+
+@mcp.tool()
+async def leer_discusion(discussion_id: int) -> dict:
+    """Mensajes de una discusión, en orden cronológico: el primero es la consulta original
+    y después las respuestas. Cada post trae su `post_id` — ese es el que necesitás para
+    contestar con `responder_foro`. (API REST.)"""
+    return await ws_api.leer_discusion(_cli(), discussion_id)
+
+
+@mcp.tool()
+async def responder_foro(post_id: int, mensaje: str, asunto: str | None = None,
+                         confirmado: bool = False) -> dict:
+    """Publica una respuesta en un foro, colgando del post `post_id` (sale de
+    `leer_discusion` o del `responder_a_post` que da `foros_pendientes`).
+
+    ESCRITURA — va al campus y lo ven los alumnos. Llamala primero SIN `confirmado`:
+    devuelve un preview. Mostráselo al tutor y recién con su OK explícito repetí la
+    llamada con `confirmado=true`. Nunca publiques sin ese OK."""
+    return await ws_api.responder_foro(_cli(), post_id, mensaje, asunto, confirmado)
+
+
 @mcp.tool()
 async def descubrir_cursos() -> list[dict]:
     """Descubre EN VIVO los cursos del campus donde el tutor está matriculado
