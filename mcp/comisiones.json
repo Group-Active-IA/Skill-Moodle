@@ -686,6 +686,76 @@
           "tipo": "general"
         }
       ]
+    },
+    {
+      "materia": "Programación I - Marzo 2026",
+      "course_id": 38,
+      "patron_comision": "M26 C1-*",
+      "comisiones": [
+        {
+          "comision": "com23",
+          "nombre_campus": "M26 C1-23",
+          "group_id": 4292,
+          "tutor": "Juani Sarmiento"
+        }
+      ],
+      "actividades_cursada": [
+        {
+          "cmid": "11169",
+          "titulo": "Actividad de cierre unidad 1 - Estructuras Secuenciales",
+          "unidad": 1
+        },
+        {
+          "cmid": "11214",
+          "titulo": "Actividad de cierre de la unidad 2 - Estructuras Condicionales",
+          "unidad": 2
+        },
+        {
+          "cmid": "11237",
+          "titulo": "Actividad de cierre unidad 3 - Estructuras Repetitivas",
+          "unidad": 3
+        },
+        {
+          "cmid": "11191",
+          "titulo": "Actividad de cierre de la unidad 4 - Git",
+          "unidad": 4
+        },
+        {
+          "cmid": "11261",
+          "titulo": "Actividad de cierre unidad 5",
+          "unidad": 5
+        },
+        {
+          "cmid": "11286",
+          "titulo": "Actividad de cierre unidad 6",
+          "unidad": 6
+        },
+        {
+          "cmid": "11312",
+          "titulo": "Actividad de cierre unidad 7",
+          "unidad": 7
+        },
+        {
+          "cmid": "13761",
+          "titulo": "Actividad de cierre unidad 8",
+          "unidad": 8
+        },
+        {
+          "cmid": "11337",
+          "titulo": "Actividad de cierre unidad 9 - Manejo de Archivos",
+          "unidad": 9
+        },
+        {
+          "cmid": "11355",
+          "titulo": "Actividad de cierre unidad 10 - Recursividad",
+          "unidad": 10
+        },
+        {
+          "cmid": "11393",
+          "titulo": "Entrega del Trabajo Integrador 1",
+          "unidad": 11
+        }
+      ]
     }
   ],
   "_foros_criterio": "Foros del aula con forum_id (el que usa leer_foro/responder_foro) y cmid (el modulo en el curso). Los DOS: no son intercambiables. El tipo news/social/general viene del campus; \"Avisos de la comision\" es el foro por comision."
