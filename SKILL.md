@@ -6,8 +6,10 @@ description: >-
   TUP", "moodle TUP", "tup.sied", "Programación 1/2/3", una "comisión" (C1/C2/C3),
   "informe de seguimiento", "qué me falta corregir", "quién no entregó", "cargar
   nota", "pendientes", "mapeá mis comisiones", "actualizá mis datos", o pida revisar
-  entregas / calificaciones / parciales por comisión. También cubre corrección
-  automática con Active-IA (importar entregas → corregir con IA → devolver la nota).
+  entregas / calificaciones / parciales por comisión. También cubre **auditoría de aula
+  virtual** ("auditá el aula", "puesta a punto del Moodle", "links rotos", "revisá cómo
+  está armada el aula", "planilla de auditoría") y corrección automática con Active-IA
+  (importar entregas → corregir con IA → devolver la nota).
   La skill habla con Moodle por peticiones REST (token moodle_mobile_app), NO por
   navegador. NO la uses para campus que no sean el de la TUP, ni para tareas de
   Moodle como administrador (crear cursos, matricular): es para el trabajo de un
@@ -143,6 +145,7 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Quién entregó y falta corregir | `pendientes_por_corregir` |
 | Padrón de una comisión · buscar alumno | `padron` · `buscar_alumno` |
 | PDF de pendientes | `armar_informe` |
+| **Auditar cómo está armada un aula** (read-only) | `auditar_aula` |
 | Cargar una nota (con devolución) | `cargar_nota` |
 | **Mensajes privados que te faltan contestar** | `mensajes_pendientes` |
 | Bandeja de conversaciones · hilo completo | `leer_mensajes` · `leer_conversacion` |
@@ -218,6 +221,55 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 - No correr snapshots automáticos ni de otros tutores: solo el actual, a pedido.
 - No escribir en el campus sin el OK del tutor.
 - No dar por bueno un dato que no se pudo verificar en vivo.
+
+## Auditoría de aula virtual (read-only)
+
+`auditar_aula(course_id, materia, evaluador, rol, con_navegador, unidad)` releva cómo está
+**armada** un aula (no "quién entregó qué") y escribe un **worksheet `.md`** en `salidas/` —
+un BORRADOR basado en evidencia que el evaluador humano completa. Pensada para la "puesta a
+punto del Moodle" con la planilla oficial de 6 hojas (Aula Virtual, Unidades, Evaluaciones,
+Equipo, Checklist, Desarrollo).
+
+**PREGUNTÁ QUÉ UNIDAD antes de auditar.** Un tutor audita SU unidad, no las 10 — y auditar
+todo tarda mucho más (testea todos los links y cuestionarios). Cuando el tutor pida auditar,
+ofrecele: "¿qué unidad? (1-10)" o "todo el aula". Con la respuesta corré `auditar_aula` con
+`unidad=N` (o sin `unidad` para el aula entera). Si el número no existe, la tool devuelve
+`unidades_disponibles` para reintentar.
+
+**La regla que la ordena (la misma de la skill): un agente verifica presencia / ausencia
+/ consistencia, NUNCA calidad.** Puntaje autolimitado: `0` = ausente (verificado), `3` =
+presente, **vacío** = no verificable sin leer contenido → "sin dato", jamás se infiere.
+La calidad y los puntajes finos los pone la persona que firma.
+
+Cómo trabaja:
+
+- **Matriz de unidades** (el 80% del valor): agrupa las secciones por cabecera numerada
+  (`1- …`, `10- …`) con sus hijas (Actividades, Práctica, Microteaching, Autoevaluación,
+  Encuesta) y marca presencia de los 9 componentes. Los nombres de unidad salen del aula,
+  no se hardcodean: vale para Prog I/II/III aunque cambien los temas.
+- **Links**: testea los externos (404 real = roto; otro campus; href con espacio). Los del
+  propio campus no se piden (su existencia la confirma la API). **Las apps de Google
+  (NotebookLM/Colab/YouTube) NO se juzgan por un GET** —siempre parece login o rate-limit—:
+  se marcan "requiere navegador" y las resuelve el pase navegador.
+- **Hallazgos**: componente faltante sistemático, hueco en un patrón (9 de 10), instancia
+  extraordinaria con `visible=1` (posible fuga de examen — se enmarca como *verificar*).
+
+**Pase navegador (`con_navegador=True`, opcional):** para lo que la API no ve. Loguea por
+navegador (Playwright, sesión persistida) y cuenta las **preguntas** de cada cuestionario
+abriendo su edición (mini=4 / autoeval=10 según la planilla → hallazgo si difiere) y
+clasifica las **apps Google** en *abren* (Colab público) vs *piden cuenta* (NotebookLM).
+Requiere `pip install playwright && playwright install chromium`; si falta, se saltea con
+aviso y la auditoría por API igual corre. `mod/quiz/edit.php` necesita rol docente sobre
+el quiz (el tutor de la TUP lo tiene). Tarda: abre una página por cuestionario.
+
+Guardrails (no negociables):
+
+1. **Read-only sobre Moodle.** No corrige, no publica, no mensajea. Solo escribe el `.md`.
+2. **La hoja EQUIPO se deja VACÍA.** Un agente no evalúa el desempeño de personas.
+3. **Describe el hecho y su impacto, no juzga a la persona.** "El foro U6 tiene 12
+   consultas sin responder" ✅, no "el tutor no atiende" ❌.
+4. **El worksheet es un BORRADOR, no un veredicto.** Lo dice el propio archivo.
+5. **Lo no verificado va a "a revisar", nunca a "Sí".** Un link no testeado no funciona.
 
 ## Corrección automática con Active-IA
 

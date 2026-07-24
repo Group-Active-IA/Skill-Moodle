@@ -23,7 +23,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from moodle import active_ia, almacen, informes, snapshot, ws_api
+from moodle import active_ia, almacen, auditoria, informes, snapshot, ws_api
 from moodle.cliente import MobileWSClient
 
 mcp = FastMCP("moodle-tutor")
@@ -555,6 +555,42 @@ async def buscar_alumno(texto: str) -> list[dict]:
     nombre es ambiguo."""
     await almacen.init_db()
     return await almacen.buscar_alumnos(texto)
+
+
+# ---------- AUDITORÍA DE AULA (read-only, presencia/ausencia) ----------
+@mcp.tool()
+async def auditar_aula(course_id: int, materia: str = "", evaluador: str = "",
+                       rol: str = "", con_navegador: bool = False,
+                       unidad: int | None = None) -> dict:
+    """Audita cómo está ARMADA un aula (no "quién entregó qué"): releva el curso por API
+    REST, testea los links (rotos / piden login / a otro campus / con espacio), arma la
+    matriz de unidades × 9 componentes en modo PRESENCIA/AUSENCIA y detecta hallazgos
+    (componente faltante sistemático, hueco en un patrón, instancia extraordinaria visible,
+    fechas de ciclos viejos). Escribe un worksheet .md en salidas/ y devuelve un resumen.
+
+    PREGUNTÁ QUÉ UNIDAD antes de correr: un tutor audita SU unidad, no las 10. Ofrecé el
+    número de unidad (1-10) o "todo el aula". Pasá `unidad=N` para auditar solo esa unidad
+    (más rápido: testea solo sus links y cuestionarios). Sin `unidad`, releva el aula entera.
+    Si la unidad no existe, devuelve `unidades_disponibles` para reintentar.
+
+    REGLA (la misma de la skill): el agente verifica presencia/ausencia/consistencia, NO
+    calidad. Puntaje 0=ausente, 3=presente, vacío=sin dato (no se infiere). La calidad y
+    los puntajes finos los pone el evaluador humano sobre el borrador. La hoja EQUIPO se
+    deja vacía a propósito: un agente no evalúa personas.
+
+    `con_navegador=True` suma el PASO 2 (Playwright): loguea por navegador, cuenta las
+    preguntas de cada cuestionario (mini=4 / autoeval=10 según la planilla) y clasifica las
+    apps Google (NotebookLM/Colab) en abren / piden cuenta. Requiere Playwright instalado
+    (`pip install playwright && playwright install chromium`); si no está, se saltea con
+    aviso y la auditoría por API igual corre. Tarda más (abre una página por cuestionario).
+
+    Es READ-ONLY sobre Moodle: no escribe nada en el campus, solo el worksheet local.
+    `course_id` sale de `aulas` / `descubrir_cursos`. `materia` es el nombre para el
+    encabezado (ej. 'Programación 2'); `evaluador`/`rol` son opcionales (dejá `evaluador`
+    vacío para firmar como Celda de Control de Calidad)."""
+    return await auditoria.auditar_aula(
+        _cli(), course_id, almacen.SALIDAS_DIR, materia=materia, evaluador=evaluador,
+        rol=rol, con_navegador=con_navegador, unidad=unidad)
 
 
 # ---------- INFORME (PDF) ----------
