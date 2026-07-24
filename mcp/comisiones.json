@@ -64,9 +64,15 @@
           "nombre_campus": "A26 C1-09",
           "group_id": 7751,
           "tutor": "Guada Maricchiolo"
+        },
+        {
+          "comision": "com12",
+          "nombre_campus": "A26 C1-12",
+          "group_id": 7763,
+          "tutor": "Juan Sarmiento"
         }
       ],
-      "_comisiones_sin_tutor": "El aula tiene además A26 C1-10 … C1-15 (group_id 7755, 7759, 7763, 7770, 7771, 7775), sin tutor asignado en este reparto.",
+      "_comisiones_sin_tutor": "El aula tiene además A26 C1-10, C1-11, C1-13, C1-14, C1-15 (group_id 7755, 7759, 7770, 7771, 7775), sin tutor asignado en este reparto. C1-12 (7763) la toma Juan Sarmiento (com12).",
       "actividades_cursada": [
         {
           "cmid": "17703",
@@ -696,7 +702,7 @@
           "comision": "com23",
           "nombre_campus": "M26 C1-23",
           "group_id": 4292,
-          "tutor": "Juani Sarmiento"
+          "tutor": "Juan Sarmiento"
         }
       ],
       "actividades_cursada": [
