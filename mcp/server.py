@@ -547,6 +547,22 @@ async def pendientes_por_corregir(assign_id: str, group_id: int = 0) -> dict:
 
 
 @mcp.tool()
+async def entregas_tarea(assign_id: str, group_id: int = 0) -> dict:
+    """Padrón COMPLETO de una tarea EN VIVO: TODOS los alumnos con nombre, email, estado
+    ("Sin entrega" / "Enviado para calificar" / "Calificado") y nota. group_id=0 = todo el
+    curso; si no, el group_id de la comisión (el de "Mis datos", no un número inventado).
+
+    Usá ESTA cuando el tutor pregunte "quiénes entregaron / quiénes me deben la tarea X":
+    son dos requests y responde en segundos. NO corras actualizar_tableros para eso — el
+    snapshot recorre todas tus comisiones × todas tus tareas y tarda minutos.
+
+    Devuelve `sin_entrega` aparte de `pendientes_por_corregir` a propósito: el que no
+    entregó nada tiene 0 para corregir y NO está al día, es el que más debe. Lee la nota
+    por texto de la escala (respeta el Aprobado/Desaprobado invertido). (API REST.)"""
+    return await ws_api.entregas_tarea(_cli(), assign_id, group_id)
+
+
+@mcp.tool()
 async def buscar_alumno(texto: str) -> list[dict]:
     """Busca un alumno por NOMBRE (o email) en el caché del snapshot y devuelve su
     situación: comisión, último acceso, entregas por tarea (estado y nota) y pendientes.

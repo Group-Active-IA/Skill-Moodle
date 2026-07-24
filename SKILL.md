@@ -76,8 +76,9 @@ Decime el número, o contame con tus palabras qué necesitás.
    tarda) y presentá los pendientes por comisión; ofrecé `armar_informe` (PDF) al final.
 2. **Analizar un alumno** → pedí nombre o email, `buscar_alumno`, y mostrá su avance,
    entregas y notas. Si pide corregirle algo, va por el flujo de escritura (con OK).
-3. **Buscar entregas** → pedí la tarea/comisión y usá `pendientes_por_corregir` /
-   `sumario` para mostrar quién entregó y qué falta corregir.
+3. **Buscar entregas** → pedí la tarea/comisión y usá `entregas_tarea`: te da de una el
+   padrón completo (quién entregó, quién no y con qué nota) en segundos. `sumario` para el
+   conteo oficial. NO corras el snapshot para esto.
 4. **Mis datos** → `mis_datos`: mostrale sus cursos, comisiones y tareas mapeadas.
 5. **Remapear mis comisiones** → corré el bootstrap de nuevo (`aulas` → elegir materia →
    `descubrir_comisiones` → validar → `guardar_mis_datos`). Útil cuando cambió la cohorte.
@@ -142,8 +143,9 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Guardar el mapeo (validado) | `guardar_mis_datos` |
 | **Refrescar los datos (snapshot on-demand)** | `actualizar_tableros` |
 | Conteo confiable de una tarea | `sumario` |
+| **Quiénes entregaron y quiénes deben, con nombre** | `entregas_tarea` |
 | Quién entregó y falta corregir | `pendientes_por_corregir` |
-| Padrón de una comisión · buscar alumno | `padron` · `buscar_alumno` |
+| Buscar un alumno (caché del snapshot) | `buscar_alumno` |
 | PDF de pendientes | `armar_informe` |
 | **Auditar cómo está armada un aula** (read-only) | `auditar_aula` |
 | Cargar una nota (con devolución) | `cargar_nota` |
@@ -186,7 +188,9 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 - **Escala invertida.** En Aprobado/Desaprobado los valores están invertidos
   (Aprobado=1, Desaprobado=2). NO hardcodear: leer la opción por texto.
 - **"Pendiente de corregir" ≠ "deuda del alumno".** El que no entregó nada tiene 0
-  para corregir y NO está al día: es el que más debe.
+  para corregir y NO está al día: es el que más debe. `pendientes_por_corregir` solo ve la
+  cola de corrección: si devuelve 0, eso NO significa "todos entregaron". Para el padrón
+  completo con nombres, `entregas_tarea`.
 - **`forum_id` ≠ `cmid`.** `leer_foro` quiere el `forum_id`; el `cmid` es el módulo en
   el aula. Los dos vienen en `listar_foros` y no son intercambiables.
 - **Los foros de consultas NO están separados por comisión.** Vienen con `groupid`

@@ -75,25 +75,6 @@ def _fmt_acceso(ts: int | None) -> str:
     return f"hace {dias} días"
 
 
-async def _grades_map(client, inst: int) -> dict:
-    """{userid: valor_de_nota} de una tarea (última por usuario). {} ante error."""
-    try:
-        g = await client.ws("mod_assign_get_grades", {"assignmentids": [inst]})
-    except Exception as e:  # noqa: BLE001
-        log.warning("get_grades(%s) falló: %s", inst, type(e).__name__)
-        return {}
-    m: dict = {}
-    for a in (g or {}).get("assignments", []):
-        for gr in a.get("grades", []):
-            u = gr.get("userid")
-            if u is None:
-                continue
-            tm = gr.get("timemodified", 0) or 0
-            if u not in m or tm > m[u][1]:
-                m[u] = (gr.get("grade"), tm)
-    return {u: v[0] for u, v in m.items()}
-
-
 async def _cursos_a_relevar(course_ids: list[int] | None) -> list[int]:
     """course_ids a relevar. Si el caller no los pasa, se leen TODOS los que el tutor
     mapeó en `mis_datos.json` (la lección de hoy: no un course_id fijo)."""
@@ -159,7 +140,7 @@ async def tomar_snapshot(client, course_ids: list[int] | None = None) -> dict:
 
                 est = [p for p in lp if ws_api._es_estudiante(p)]
                 if t["inst"] not in grades_cache:
-                    grades_cache[t["inst"]] = await _grades_map(client, t["inst"])
+                    grades_cache[t["inst"]] = await ws_api.grades_map(client, t["inst"])
                 gmap = grades_cache[t["inst"]]
 
                 rows = []

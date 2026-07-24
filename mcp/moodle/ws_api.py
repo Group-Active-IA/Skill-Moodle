@@ -9,9 +9,12 @@ copiloto identifica las tareas por **cmid** (el id de mod/assign/view.php?id=). 
 `_assign_map` construye y cachea el mapa cmid -> {id, course, grade} una vez por cliente."""
 
 import html as _html
+import logging
 import re
 
 from .cliente import MoodleWSError
+
+log = logging.getLogger("skill.ws_api")
 
 _TAGS_RE = re.compile(r"<[^>]+>")
 
@@ -135,6 +138,88 @@ async def pendientes_tarea(client, cmid: str, group_id: int = 0) -> dict:
         for p in ps if _es_estudiante(p) and p.get("submitted") and p.get("requiregrading")
     ]
     return {"assign_id": cmid, "group_id": group_id, "pendientes": len(alumnos), "alumnos": alumnos}
+
+
+async def grades_map(client, inst: int) -> dict:
+    """{userid: valor_de_nota} de una tarea (la última por usuario). {} ante error.
+
+    Vive acá (y no en `snapshot`) porque la usan los dos: el snapshot para persistir y
+    `entregas_tarea` para responder en vivo. `snapshot` importa `ws_api`, nunca al revés."""
+    try:
+        g = await client.ws("mod_assign_get_grades", {"assignmentids": [inst]})
+    except Exception as e:  # noqa: BLE001
+        log.warning("get_grades(%s) falló: %s", inst, type(e).__name__)
+        return {}
+    m: dict = {}
+    for a in (g or {}).get("assignments", []):
+        for gr in a.get("grades", []):
+            u = gr.get("userid")
+            if u is None:
+                continue
+            tm = gr.get("timemodified", 0) or 0
+            if u not in m or tm > m[u][1]:
+                m[u] = (gr.get("grade"), tm)
+    return {u: v[0] for u, v in m.items()}
+
+
+async def entregas_tarea(client, cmid: str, group_id: int = 0) -> dict:
+    """Padrón COMPLETO de una tarea: quién entregó, quién no, y con qué nota.
+
+    Es el atajo en vivo del snapshot: dos requests (list_participants + get_grades) para
+    UNA tarea, en vez de recorrer todas las comisiones × todas las tareas del tutor.
+    No escribe caché: lee del campus y responde.
+
+    La distinción que importa (y que `pendientes_por_corregir` no da): "0 pendientes de
+    corregir" NO es "todos al día" — el que no entregó nada tiene 0 para corregir y es el
+    que más debe. Por eso acá `sin_entrega` viene separado y con nombre y apellido.
+    """
+    amap = await _assign_map(client)
+    cfg = amap.get(str(cmid))
+    if not cfg or not cfg.get("id"):
+        return {"error": f"No encontré la tarea con cmid={cmid} (¿existe / es de tu curso?)."}
+
+    ps = await _participantes(client, cmid, group_id)
+    if isinstance(ps, dict):
+        return ps
+
+    gmap = await grades_map(client, cfg["id"])
+    est = [p for p in ps if _es_estudiante(p)]
+
+    alumnos = []
+    for p in est:
+        entregado = bool(p.get("submitted"))
+        requiere = bool(p.get("requiregrading"))
+        nota = nota_display(cfg.get("grade"), gmap.get(p.get("id")))
+        if not entregado:
+            estado = "Sin entrega"
+        elif requiere:
+            estado = "Enviado para calificar"
+        else:
+            estado = "Calificado"
+        alumnos.append({
+            "nombre": p.get("fullname"),
+            "email": (p.get("email") or "").lower(),
+            "userid": p.get("id"),
+            "estado": estado,
+            "nota": nota,
+            "entregado": entregado,
+            "pendiente": entregado and requiere,
+        })
+
+    # Los que deben primero, después la cola de corrección, y al final los cerrados.
+    _orden = {"Sin entrega": 0, "Enviado para calificar": 1, "Calificado": 2}
+    alumnos.sort(key=lambda a: (_orden[a["estado"]], _norm(a["nombre"] or "")))
+
+    return {
+        "assign_id": str(cmid),
+        "group_id": group_id,
+        "tarea": cfg.get("name", ""),
+        "participantes": len(est),
+        "entregados": sum(1 for a in alumnos if a["entregado"]),
+        "pendientes_por_corregir": sum(1 for a in alumnos if a["pendiente"]),
+        "sin_entrega": sum(1 for a in alumnos if not a["entregado"]),
+        "alumnos": alumnos,
+    }
 
 
 # ---------- ESCRITURA de nota (mod_assign_save_grade) ----------
