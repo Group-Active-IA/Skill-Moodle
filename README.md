@@ -17,6 +17,10 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
   tareas, y valida cada `group_id` contra el campus antes de guardarlo.
 - **Snapshot on-demand**: cuando se lo pedís, releva quién entregó y qué falta
   corregir, por comisión, en todos tus cursos (Prog I, II y III).
+- **Mensajes y foros**: qué alumnos te escribieron y qué posts están sin responder, con
+  la respuesta previsualizada antes de publicarla.
+- **Auditoría de aula**: chequea que el aula esté bien armada (presencia, ausencia y
+  consistencia de actividades), con un pase por navegador para lo que la API no expone.
 - **Informes en PDF** de pendientes por comisión.
 - **Carga notas** con su devolución, mostrándote qué va a escribir y esperando tu OK.
 - **Corrección automática con Active-IA** (opcional): baja el trabajo del alumno,
@@ -76,8 +80,9 @@ Skill-Moodle/
 ├── README.md                 # Este archivo
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 15 tools (configurar, aulas, snapshot, informe, cargar_nota, Active-IA…)
+│   ├── server.py             # 28 tools (configurar, aulas, mensajes, foros, snapshot, informe, auditoría, cargar_nota, Active-IA…)
 │   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
+│   ├── comisiones.json       # Catálogo tutor→comisión y cmid de actividades por materia
 │   ├── requirements.txt
 │   ├── config.example.json   # Bloque mcpServers para Claude Code
 │   └── moodle/
@@ -85,6 +90,9 @@ Skill-Moodle/
 │       ├── ws_api.py         # Operaciones REST
 │       ├── snapshot.py       # Relevo on-demand, multi-curso
 │       ├── informes.py       # PDF (reportlab)
+│       ├── auditoria.py      # Auditoría de aula por REST (presencia/ausencia/consistencia)
+│       ├── navegador.py      # Pase con Playwright para lo que la API REST no expone
+│       ├── active_ia.py      # Cliente de la API de Active-IA (corrección con Gemini)
 │       └── almacen.py        # Persistencia local (mis_datos.json + SQLite)
 ├── install.sh               # Instalador de un comando (venv + claude mcp add)
 └── references/
