@@ -434,6 +434,178 @@ async def buscar_alumnos(client, texto: str, cursos: list[dict], limite: int = 8
     return salida
 
 
+# ---------- ALUMNOS EN RIESGO (cruce de señales, lógica pura + consulta) ----------
+
+_RIESGO_DIAS_ALERTA = 14
+_RIESGO_DIAS_AVISO = 7
+
+# Las actividades de cierre de unidad son la cadencia semanal de la cursada: dejar de
+# entregarlas ES la señal de abandono. El Integrador (grupal, con dupla, una sola entrega
+# al final) y los parciales tienen otra dinámica — medido en vivo, 13 de 16 alumnos de una
+# comisión no habían entregado el Integrador, así que contarlo en la racha marcaba en
+# amarillo a gente que venía entrando y entregando todo al día. Ruido que hace que después
+# nadie mire el tablero.
+_RE_CIERRE_UNIDAD = re.compile(r"actividad\s+de\s+cierre|unidad\s*\d+", re.I)
+
+
+def es_actividad_de_cierre(titulo: str) -> bool:
+    """Si una tarea es de la cadencia semanal (cuenta para la racha) o no."""
+    t = _norm(titulo)
+    if any(p in t for p in ("integrador", "parcial", "recuperatorio", "tio", "extraordinari")):
+        return False
+    return bool(_RE_CIERRE_UNIDAD.search(t))
+
+
+def _racha_final_sin_entregar(estados: list[str]) -> int:
+    """Cuántas tareas seguidas quedaron sin entregar CONTANDO DESDE LA ÚLTIMA.
+
+    Se mira la racha final y no el total a propósito: alguien que no entregó el TP1 hace
+    tres meses pero viene entregando los últimos cinco NO está abandonando. El que dejó de
+    entregar las últimas dos, sí. El total esconde esa diferencia; la racha la muestra."""
+    racha = 0
+    for estado in reversed(estados):
+        if estado == "Sin entrega":
+            racha += 1
+        else:
+            break
+    return racha
+
+
+def _clasificar_riesgo(dias_sin_entrar: int | None, racha: int,
+                       dias_alerta: int = _RIESGO_DIAS_ALERTA,
+                       dias_aviso: int = _RIESGO_DIAS_AVISO) -> tuple[str, list[str]]:
+    """(nivel, motivos). nivel: 'rojo' | 'amarillo' | 'verde' | 'sin_datos'.
+
+    `dias_sin_entrar=None` significa que nunca entró al campus o no se pudo leer: eso es
+    rojo, no verde — es el caso más extremo de desconexión, y tratarlo como "sin datos
+    silencioso" sería perder justo al que más lo necesita."""
+    motivos: list[str] = []
+    if dias_sin_entrar is None:
+        motivos.append("nunca entró al campus (o no se pudo leer su último acceso)")
+        if racha:
+            motivos.append(f"{racha} tarea(s) seguidas sin entregar")
+        return "rojo", motivos
+
+    if dias_sin_entrar > dias_alerta:
+        motivos.append(f"{dias_sin_entrar} días sin entrar")
+    elif dias_sin_entrar > dias_aviso:
+        motivos.append(f"{dias_sin_entrar} días sin entrar")
+    if racha >= 2:
+        motivos.append(f"{racha} tareas seguidas sin entregar")
+    elif racha == 1:
+        motivos.append("la última tarea sin entregar")
+
+    # Dos tareas seguidas en cero pesan más que los días: alguien puede no entrar una
+    # semana por trabajo y estar al día, pero dejar de entregar es abandono empezando.
+    if racha >= 2:
+        return "rojo", motivos
+    if dias_sin_entrar > dias_alerta and racha >= 1:
+        return "rojo", motivos
+    if dias_sin_entrar > dias_alerta or racha == 1 or dias_sin_entrar > dias_aviso:
+        return "amarillo", motivos
+    return "verde", motivos
+
+
+async def alumnos_en_riesgo(client, course_id: int, group_id: int, tareas: list[dict],
+                            dias_alerta: int = _RIESGO_DIAS_ALERTA,
+                            dias_aviso: int = _RIESGO_DIAS_AVISO) -> dict:
+    """Cruza último acceso + entregas faltantes para detectar abandono temprano.
+
+    El problema #1 de una tecnicatura a distancia no es la calidad de la corrección, es la
+    deserción — y avisa antes de pasar. Las dos señales ya estaban en el campus y nadie las
+    cruzaba: se veía "quién no entregó el TP7" o "quién no entra hace mucho", nunca a la
+    misma persona en las dos listas.
+
+    Va EN VIVO (no del caché del snapshot): una alerta de abandono no puede depender de que
+    alguien se haya acordado de correr un comando antes. `tareas` en el orden del curso —
+    la racha se cuenta desde la última."""
+    import asyncio
+
+    alumnos = await _alumnos_de_comision(client, course_id, group_id)
+    if isinstance(alumnos, dict):
+        return alumnos
+    if not tareas:
+        return {"error": "No tengo tareas mapeadas para este curso, así que no puedo ver "
+                         "quién dejó de entregar.",
+                "siguiente_paso": "Corré listar_tareas y guardalas con guardar_mis_datos."}
+
+    sem = asyncio.Semaphore(5)
+
+    async def _una(t):
+        async with sem:
+            return t, await entregas_tarea(client, str(t.get("assign_id")), group_id)
+
+    crudos = await asyncio.gather(*(_una(t) for t in tareas), return_exceptions=True)
+
+    # email -> {assign_id: estado}
+    por_alumno: dict[str, dict] = {}
+    avisos: list[str] = []
+    orden_ok: list[str] = []
+    for res in crudos:
+        if isinstance(res, BaseException):
+            avisos.append(f"Una tarea falló: {type(res).__name__}: {res}")
+            continue
+        t, r = res
+        if r.get("error"):
+            avisos.append(f"{t.get('titulo', t.get('assign_id'))}: {r['error']}")
+            continue
+        aid = str(t.get("assign_id"))
+        orden_ok.append(aid)
+        for a in r.get("alumnos", []):
+            por_alumno.setdefault((a.get("email") or "").lower(), {})[aid] = a.get("estado")
+
+    # Respetar el orden de `tareas`, no el de llegada de las respuestas (van en paralelo).
+    orden = [str(t.get("assign_id")) for t in tareas if str(t.get("assign_id")) in orden_ok]
+
+    filas = []
+    for u in alumnos:
+        email = (u.get("email") or "").lower()
+        estados = [por_alumno.get(email, {}).get(aid) for aid in orden]
+        estados = [e for e in estados if e is not None]
+        racha = _racha_final_sin_entregar(estados)
+        dias = _dias_desde(u.get("lastaccess"))
+        nivel, motivos = _clasificar_riesgo(dias, racha, dias_alerta, dias_aviso)
+        if nivel == "verde":
+            continue
+        filas.append({
+            "nombre": u.get("fullname"),
+            "email": email,
+            "userid": u.get("id"),
+            "nivel": nivel,
+            "dias_sin_entrar": dias,
+            "tareas_seguidas_sin_entregar": racha,
+            "sin_entregar_total": sum(1 for e in estados if e == "Sin entrega"),
+            "motivos": motivos,
+        })
+
+    _peso = {"rojo": 0, "amarillo": 1}
+    filas.sort(key=lambda f: (_peso.get(f["nivel"], 2), -(f["dias_sin_entrar"] or 9999)))
+    rojos = sum(1 for f in filas if f["nivel"] == "rojo")
+
+    return {
+        "ok": True,
+        "course_id": course_id,
+        "group_id": group_id,
+        "alumnos_totales": len(alumnos),
+        "en_riesgo": len(filas),
+        "rojo": rojos,
+        "amarillo": len(filas) - rojos,
+        "alumnos": filas,
+        "criterio": {
+            "rojo": f"2+ tareas seguidas sin entregar, o >{dias_alerta} días sin entrar con "
+                    "al menos 1 sin entregar, o nunca entró",
+            "amarillo": f">{dias_aviso} días sin entrar, o la última tarea sin entregar",
+        },
+        "_meta": {
+            "fuente": "vivo",
+            "tareas_revisadas": len(orden),
+            "tareas_pedidas": len(tareas),
+            "degradado": bool(avisos),
+            "avisos": avisos,
+        },
+    }
+
+
 async def traza_alumno(client, alumno: dict, tareas: list[dict]) -> dict:
     """Qué entregó y qué nota sacó UN alumno, tarea por tarea, en vivo.
 

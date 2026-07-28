@@ -665,6 +665,90 @@ async def buscar_alumno(texto: str, traza: bool = False) -> dict:
 
 
 @mcp.tool()
+async def alumnos_en_riesgo(course_id: int | None = None, group_id: int = 0,
+                            dias_alerta: int = 14, dias_aviso: int = 7) -> dict:
+    """Quiénes están abandonando, ANTES de que se note. Cruza dos señales que ya estaban
+    en el campus y que ninguna vista junta: hace cuántos días que no entra + cuántas
+    tareas seguidas dejó de entregar.
+
+    🔴 rojo: 2+ tareas SEGUIDAS sin entregar · o >`dias_alerta` días sin entrar con al
+       menos una sin entregar · o nunca entró al campus.
+    🟡 amarillo: >`dias_aviso` días sin entrar, o la última tarea sin entregar.
+    (Los verdes no se devuelven: la lista es para actuar, no para leer 30 nombres.)
+
+    Sin `course_id` toma el primero de "Mis datos"; con `group_id=0` recorre TODAS tus
+    comisiones de ese curso. Va en vivo, sin depender del snapshot.
+
+    La racha se cuenta desde la ÚLTIMA tarea, no sobre el total: quien no entregó el TP1
+    hace tres meses pero viene entregando los últimos cinco no está abandonando; quien
+    dejó de entregar los dos últimos, sí."""
+    await almacen.init_db()
+    datos = await almacen.get_mis_datos()
+    if not datos:
+        return {"error": "No tengo tus cursos mapeados.",
+                "siguiente_paso": "Corré mi_comision(tu nombre) y guardá con guardar_mis_datos."}
+
+    cursos = datos.get("cursos", [])
+    curso = (next((c for c in cursos if c.get("course_id") == course_id), None)
+             if course_id else (cursos[0] if cursos else None))
+    if curso is None:
+        return {"error": f"No encontré el curso {course_id} en tus datos.",
+                "cursos_disponibles": [c.get("course_id") for c in cursos]}
+
+    # Sólo las actividades de cierre: el Integrador y los parciales tienen otra dinámica y
+    # contarlos en la racha marcaba a media comisión sin que hubiera pasado nada.
+    todas = curso.get("tareas", [])
+    tareas = [t for t in todas if ws_api.es_actividad_de_cierre(t.get("titulo", ""))]
+    excluidas = [t.get("titulo", "") for t in todas if t not in tareas]
+    if not tareas:
+        return {"error": "No encontré actividades de cierre de unidad en este curso.",
+                "tareas_mapeadas": [t.get("titulo") for t in todas],
+                "siguiente_paso": "Revisá el mapeo con listar_tareas / guardar_mis_datos."}
+
+    grupos = ([{"comision": "(pedida)", "group_id": group_id}] if group_id
+              else curso.get("comisiones_del_tutor", []))
+    if not grupos:
+        return {"error": f"No tenés comisiones mapeadas en {curso.get('nombre')}."}
+
+    por_comision, avisos = [], []
+    for g in grupos:
+        r = await ws_api.alumnos_en_riesgo(
+            _cli(), curso["course_id"], g["group_id"], tareas, dias_alerta, dias_aviso)
+        if r.get("error"):
+            avisos.append(f"{g['comision']}: {r['error']}")
+            continue
+        avisos.extend(r.get("_meta", {}).get("avisos", []))
+        por_comision.append({"comision": g["comision"], **r})
+
+    total_rojo = sum(c["rojo"] for c in por_comision)
+    total_amarillo = sum(c["amarillo"] for c in por_comision)
+    salida = {
+        "ok": True,
+        "curso": curso.get("nombre"),
+        "course_id": curso["course_id"],
+        "rojo": total_rojo,
+        "amarillo": total_amarillo,
+        "comisiones": por_comision,
+        "_meta": {
+            "fuente": "vivo",
+            "tareas_consideradas": [t.get("titulo") for t in tareas],
+            "tareas_excluidas": excluidas,
+            "nota_criterio": ("La racha se cuenta sólo sobre actividades de cierre de "
+                              "unidad. El Integrador y los parciales quedan afuera: son "
+                              "otra dinámica y contarlos marcaba a media comisión."),
+            "degradado": bool(avisos),
+            "avisos": avisos,
+        },
+    }
+    if not total_rojo and not total_amarillo:
+        salida["resumen"] = "Nadie en riesgo: todos vienen entrando y entregando."
+    else:
+        salida["resumen"] = (f"{total_rojo} en rojo y {total_amarillo} en amarillo. "
+                             "Los rojos son los que hay que contactar esta semana.")
+    return salida
+
+
+@mcp.tool()
 async def ver_entrega(assign_id: str, email: str, max_chars: int = 20000) -> dict:
     """Muestra QUÉ entregó un alumno: baja la entrega y devuelve su contenido.
 
