@@ -171,6 +171,12 @@ async def actualizar() -> dict:
             "siguiente_paso": "Guardá o descartá esos cambios y volvé a intentar.",
         }
 
+    # HEAD ANTES del pull. No se usa el reflog (`HEAD@{1}`) para esto: el reflog se mueve
+    # con cualquier operación —un commit del propio tutor, un checkout—, así que después
+    # de commitear algo el "diff del pull" mostraba los archivos de ESE commit y la tool
+    # decía "actualizado" y pedía reiniciar cuando el pull no había traído nada.
+    _, head_antes, _ = await _git("rev-parse", "HEAD")
+
     rc, out, err = await _git("pull", "--ff-only")
     if rc != 0:
         return {"ok": False,
@@ -178,12 +184,15 @@ async def actualizar() -> dict:
                 "siguiente_paso": "Puede que el repo local haya divergido. Revisalo a mano."}
 
     despues = version_local()
-    rc, cambiados, _ = await _git("diff", "--name-only", "HEAD@{1}", "HEAD")
-    toca_deps = "mcp/requirements.txt" in (cambiados or "")
+    _, head_despues, _ = await _git("rev-parse", "HEAD")
+    # "Hubo cambios" = el pull movió HEAD. Un pull puede traer commits sin subir el
+    # VERSION, así que comparar sólo el número de versión no alcanza.
+    bajo_algo = bool(head_antes) and bool(head_despues) and head_antes != head_despues
 
-    # `git pull` puede traer commits sin que suba el VERSION, así que "hubo cambios" se
-    # mide por lo que movió git, no sólo por el número de versión.
-    bajo_algo = bool(cambiados.strip()) if rc == 0 else (despues != antes)
+    cambiados = ""
+    if bajo_algo:
+        _, cambiados, _ = await _git("diff", "--name-only", head_antes, head_despues)
+    toca_deps = "mcp/requirements.txt" in (cambiados or "")
 
     salida = {
         "ok": True,
