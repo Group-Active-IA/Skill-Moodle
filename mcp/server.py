@@ -18,13 +18,16 @@ Correr:  python server.py   (transport stdio: lo lanza el propio Claude Code)
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from moodle import active_ia, almacen, auditoria, informes, snapshot, ws_api
+from moodle import active_ia, almacen, auditoria, informes, snapshot, version, ws_api
 from moodle.cliente import MobileWSClient
+
+log = logging.getLogger("skill.server")
 
 mcp = FastMCP("moodle-tutor")
 
@@ -129,6 +132,32 @@ async def configurar(
             "cursos": len(cursos)}
 
 
+# ---------- VERSIÓN Y ACTUALIZACIÓN ----------
+@mcp.tool()
+async def version_skill(forzar: bool = False) -> dict:
+    """Versión instalada de la skill y si hay una nueva publicada en GitHub.
+
+    La skill vive en un clon local en la máquina de cada tutor: sin esto, quien la
+    instaló hace dos meses sigue con los bugs de hace dos meses sin manera de enterarse.
+    El chequeo se cachea 24 h para no pegarle a GitHub en cada consulta (`forzar=true`
+    lo saltea).
+
+    `disponible` tiene TRES valores: true (hay una nueva), false (estás al día) y null
+    (no se pudo averiguar, p. ej. sin red). Null NO significa que estés al día."""
+    return await version.chequear(forzar=forzar)
+
+
+@mcp.tool()
+async def actualizar_skill() -> dict:
+    """Actualiza la skill a la última versión publicada (`git pull --ff-only`).
+
+    Si el tutor tiene cambios sin commitear NO toca nada y avisa: pisar trabajo ajeno es
+    peor que quedarse desactualizado. Después de actualizar HAY QUE REINICIAR Claude Code
+    — el MCP se carga al arrancar la sesión, así que hasta entonces sigue corriendo la
+    versión vieja."""
+    return await version.actualizar()
+
+
 # ---------- MIS DATOS (config de la cohorte: la fuente de verdad de los IDs) ----------
 @mcp.tool()
 async def mis_datos() -> dict:
@@ -139,13 +168,29 @@ async def mis_datos() -> dict:
     guardar_mis_datos."""
     await almacen.init_db()
     datos = await almacen.get_mis_datos()
+
+    # Aviso de versión acá y no en una tool aparte: SKILL.md manda consultar `mis_datos`
+    # primero, así que es el único lugar por el que todos los tutores pasan sí o sí. Va
+    # cacheado 24 h y nunca rompe esta tool: si el chequeo falla, se sigue sin él.
+    aviso_version = None
+    try:
+        v = await version.chequear()
+        if v.get("disponible"):
+            aviso_version = v["aviso"]
+    except Exception as e:  # noqa: BLE001
+        log.warning("Chequeo de versión falló: %s: %s", type(e).__name__, e)
+
     if not datos:
-        return {
+        salida = {
             "vacio": True,
             "aviso": "Sin datos guardados. Corré descubrir_cursos / descubrir_comisiones / "
                      "listar_tareas, confirmá el mapeo con el tutor y guardalo con guardar_mis_datos.",
         }
-    return {"actualizado_at": await almacen.mis_datos_actualizada(), "datos": datos}
+    else:
+        salida = {"actualizado_at": await almacen.mis_datos_actualizada(), "datos": datos}
+    if aviso_version:
+        salida["actualizacion_disponible"] = aviso_version
+    return salida
 
 
 _AULAS_PATH = Path(__file__).parent / "aulas.json"
@@ -542,7 +587,13 @@ async def sumario(assign_id: str, group_id: int = 0) -> dict:
 @mcp.tool()
 async def pendientes_por_corregir(assign_id: str, group_id: int = 0) -> dict:
     """Alumnos que ENTREGARON una tarea y siguen SIN NOTA. group_id=0 = todo el curso.
-    (API REST: mod_assign_list_participants.)"""
+
+    Devuelve DOS motivos distintos, y el segundo no lo muestra ninguna otra vista:
+      - `requiere_correccion`: la cola normal de corrección (`requiregrading`).
+      - `calificado_sin_nota`: se guardó la devolución pero la calificación quedó vacía.
+        Moodle los da por corregidos, así que salen de la cola SIN nota y nadie los
+        espera. Si aparece alguno, hay que cargarle la nota a mano.
+    (API REST: mod_assign_list_participants + mod_assign_get_grades.)"""
     return await ws_api.pendientes_tarea(_cli(), assign_id, group_id)
 
 
@@ -563,14 +614,74 @@ async def entregas_tarea(assign_id: str, group_id: int = 0) -> dict:
 
 
 @mcp.tool()
-async def buscar_alumno(texto: str) -> list[dict]:
-    """Busca un alumno por NOMBRE (o email) en el caché del snapshot y devuelve su
-    situación: comisión, último acceso, entregas por tarea (estado y nota) y pendientes.
-    Es la forma rápida de responder 'qué debe X' / 'traza de X' sin pedir el email. Corré
-    actualizar_tableros antes si el caché está vacío. Devuelve varias coincidencias si el
-    nombre es ambiguo."""
+async def buscar_alumno(texto: str, traza: bool = False) -> dict:
+    """Busca un alumno por NOMBRE (o email) EN VIVO en las comisiones del tutor y devuelve
+    quién es: comisión, email, userid y hace cuántos días que no entra al campus.
+
+    NO necesita snapshot previo ni caché: una request por comisión (~1 s), siempre fresco.
+    Insensible a mayúsculas y acentos. Si el nombre matchea a varias personas las devuelve
+    todas, para que el tutor elija en vez de que se adivine.
+
+    `traza=True` agrega qué entregó y qué nota sacó en CADA tarea del curso. Eso son dos
+    requests por tarea, así que tarda bastante más: pedilo sólo cuando haga falta la
+    situación académica completa, y sólo resuelve si la búsqueda dio UNA sola persona.
+    (API REST: core_enrol_get_enrolled_users, filtrado a rol alumno.)"""
     await almacen.init_db()
-    return await almacen.buscar_alumnos(texto)
+    datos = await almacen.get_mis_datos()
+    if not datos:
+        return {
+            "error": "No tengo tus cursos mapeados, así que no sé en qué comisiones buscar.",
+            "siguiente_paso": "Corré mi_comision(tu nombre) y guardá con guardar_mis_datos.",
+        }
+
+    cursos = datos.get("cursos", [])
+    res = await ws_api.buscar_alumnos(_cli(), texto, cursos)
+    hallados = res.get("coincidencias") or []
+    if not traza or not hallados:
+        return res
+
+    if len(hallados) > 1:
+        # Misma disciplina que mi_comision: con varios candidatos no se adivina.
+        res["aviso_traza"] = (
+            f"'{texto}' matcheó a {len(hallados)} personas: no traigo la traza de todas. "
+            "Repetí la búsqueda con el nombre completo o el email de la que te interesa."
+        )
+        return res
+
+    alumno = hallados[0]
+    tareas = next(
+        (c.get("tareas", []) for c in cursos if c.get("course_id") == alumno.get("course_id")),
+        [],
+    )
+    if not tareas:
+        res["aviso_traza"] = (
+            f"No tengo tareas mapeadas para {alumno.get('curso')}, así que no puedo armar "
+            "la traza. Corré listar_tareas y sumalas con guardar_mis_datos."
+        )
+        return res
+
+    alumno["traza"] = await ws_api.traza_alumno(_cli(), alumno, tareas)
+    return res
+
+
+@mcp.tool()
+async def ver_entrega(assign_id: str, email: str, max_chars: int = 20000) -> dict:
+    """Muestra QUÉ entregó un alumno: baja la entrega y devuelve su contenido.
+
+    ES EL PASO PREVIO OBLIGATORIO A CALIFICAR A MANO. Sin esto sólo se podía cargar una
+    nota sin haber visto el trabajo, que es exactamente lo que la regla de "verificar en
+    vivo, nunca inventar" prohíbe — pero aplicada a lo que más importa: el legajo de una
+    persona.
+
+    Descomprime los .zip (la forma en que se entrega en la TUP) y devuelve el texto de los
+    archivos de código. Los binarios (PDF, imágenes) se bajan igual y viene la `ruta` local
+    para abrirlos aparte. `max_chars` reparte el presupuesto de texto entre los archivos.
+
+    Read-only: no escribe nada en el campus. Para corregir con IA en vez de a mano está
+    `corregir_con_active_ia` (usa la rúbrica oficial, si la unidad tiene una cargada).
+    """
+    destino = str(Path(almacen.SALIDAS_DIR) / "entregas" / str(assign_id))
+    return await ws_api.leer_entrega(_cli(), assign_id, email, destino, max_chars)
 
 
 # ---------- AUDITORÍA DE AULA (read-only, presencia/ausencia) ----------
@@ -665,9 +776,11 @@ async def corregir_con_active_ia(
     archivo de Moodle (API REST, sin navegador), lo sube a Active-IA, dispara la
     corrección, espera el resultado y DESCARGA LOCAL el PDF de devolución.
 
-    Es una ESCRITURA (la corrección carga la nota/devolución del alumno): llamá primero
-    con confirmado=false para previsualizar qué se va a corregir; recién tras el OK del
-    tutor, confirmado=true. Antes conseguí comision_id/rubrica_id con
+    NO carga la nota en Moodle. Deja la nota sugerida y el PDF de devolución bajado a
+    disco; escribir en el campus es un paso APARTE con `cargar_nota`, que tiene su propia
+    confirmación. Aun así es una ESCRITURA (crea la entrega y la corrección en Active-IA):
+    llamá primero con confirmado=false para previsualizar; recién tras el OK del tutor,
+    confirmado=true. Antes conseguí comision_id/rubrica_id con
     `activeia_resolver(assign_id, group_id)`.
 
     Devuelve `{ok, nota, correccion_id, entrega_id, devolucion_pdf_url,
@@ -685,9 +798,10 @@ async def corregir_con_active_ia(
                 "comision_id": comision_id,
                 "rubrica_id": rubrica_id,
             },
-            "aviso": "Esto baja la entrega, la corrige con Active-IA (Gemini) y carga la "
-                     "nota/devolución del alumno. Revisalo y volvé a llamar con "
-                     "confirmado=true para ejecutar.",
+            "aviso": "Esto baja la entrega y la corrige con Active-IA (Gemini), y deja el "
+                     "PDF de devolución en disco. NO escribe la nota en Moodle: para eso "
+                     "hace falta después cargar_nota, que se confirma aparte. Revisalo y "
+                     "volvé a llamar con confirmado=true para ejecutar.",
         }
     return await active_ia.corregir_con_active_ia(
         _cli(), assign_id, email, comision_id, rubrica_id,

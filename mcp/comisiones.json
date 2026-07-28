@@ -780,6 +780,12 @@
           "nombre_campus": "M26 C1-23",
           "group_id": 4292,
           "tutor": "Juan Sarmiento"
+        },
+        {
+          "comision": "com25",
+          "nombre_campus": "M26 C1-25",
+          "group_id": 4299,
+          "tutor": "Juan Sarmiento"
         }
       ],
       "actividades_cursada": [

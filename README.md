@@ -22,7 +22,10 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
 - **Auditoría de aula**: chequea que el aula esté bien armada (presencia, ausencia y
   consistencia de actividades), con un pase por navegador para lo que la API no expone.
 - **Informes en PDF** de pendientes por comisión.
+- **Ver la entrega antes de calificar**: baja el trabajo del alumno, descomprime el `.zip`
+  y te muestra el código. Calificar sin haber visto lo entregado deja de ser posible.
 - **Carga notas** con su devolución, mostrándote qué va a escribir y esperando tu OK.
+  Después de escribir **relee la nota** para confirmar que quedó guardada de verdad.
 - **Corrección automática con Active-IA** (opcional): baja el trabajo del alumno,
   lo corrige con IA (Gemini, contra la rúbrica) y **te descarga el PDF de devolución**
   en tu carpeta `salidas/`. Todo con tu OK antes de escribir la nota.
@@ -60,6 +63,31 @@ tocás variables de entorno.
 > El `.env` local tiene tu contraseña en texto: es tuyo, en tu máquina, con permisos
 > 600. No lo compartas ni lo subas a ningún lado.
 
+## Actualizar la skill
+
+La skill vive en un clon local en tu máquina, así que no se actualiza sola. Para no
+quedarte meses atrás sin enterarte, avisa cuando hay una versión nueva:
+
+- Al consultar **`mis_datos`** (lo primero que hace la skill en cada sesión) aparece un
+  `actualizacion_disponible` si salió una versión posterior a la tuya. El chequeo se
+  cachea 24 h, así que no agrega demora.
+- *"¿Qué versión de la skill tengo?"* → tool `version_skill`, que compara tu `VERSION`
+  local contra el publicado en GitHub.
+- *"Actualizá la skill"* → tool `actualizar_skill`: hace `git pull --ff-only` y te dice
+  si hay que reinstalar dependencias.
+
+```bash
+# equivalente a mano
+cd ~/.claude/skills/tup-campus-navigator && git pull
+```
+
+> Si tenés cambios sin commitear en la carpeta de la skill, `actualizar_skill` **no toca
+> nada** y te los lista: pisar tu trabajo sería peor que quedar desactualizado.
+
+**Después de actualizar hay que reiniciar Claude Code.** El MCP se carga al arrancar la
+sesión: hasta que no reinicies seguís usando la versión vieja aunque los archivos ya
+estén nuevos.
+
 ## Uso
 
 En una sesión de Claude Code, decí algo como:
@@ -78,9 +106,10 @@ la skill no sabe cuáles son tus comisiones.
 Skill-Moodle/
 ├── SKILL.md                  # Lógica que sigue el agente (doctrina + reglas)
 ├── README.md                 # Este archivo
+├── VERSION                   # Versión publicada (la compara `version_skill`)
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 28 tools (configurar, aulas, mensajes, foros, snapshot, informe, auditoría, cargar_nota, Active-IA…)
+│   ├── server.py             # 31 tools (configurar, aulas, mensajes, foros, snapshot, informe, auditoría, ver_entrega, cargar_nota, Active-IA…)
 │   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
 │   ├── comisiones.json       # Catálogo tutor→comisión y cmid de actividades por materia
 │   ├── requirements.txt
@@ -93,6 +122,7 @@ Skill-Moodle/
 │       ├── auditoria.py      # Auditoría de aula por REST (presencia/ausencia/consistencia)
 │       ├── navegador.py      # Pase con Playwright para lo que la API REST no expone
 │       ├── active_ia.py      # Cliente de la API de Active-IA (corrección con Gemini)
+│       ├── version.py        # Chequeo de versión nueva + actualización por git
 │       └── almacen.py        # Persistencia local (mis_datos.json + SQLite)
 ├── install.sh               # Instalador de un comando (venv + claude mcp add)
 └── references/

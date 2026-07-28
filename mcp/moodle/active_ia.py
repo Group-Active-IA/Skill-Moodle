@@ -43,9 +43,21 @@ _ESTADO_ERROR = "ERROR"
 # Cada cuántos segundos preguntamos si ya está corregida.
 _POLL_INTERVAL_S = 5.0
 # Timeout de red de las requests simples (login, GET). El poll tiene su propio reloj.
-_HTTP_TIMEOUT_S = 30.0
+# 90 s y no 30: GET /pendientes/moodle medido tres veces tardó 25,1 / 40,1 / 23,7 s, así
+# que con 30 fallaba ~1 de cada 3 llamadas — y encima sin decir por qué (ver _detalle_error).
+_HTTP_TIMEOUT_S = 90.0
 # Timeout de la descarga del PDF de devolución (puede ser un archivo grande).
 _PDF_TIMEOUT_S = 60.0
+
+
+def _detalle_error(e: BaseException) -> str:
+    """Descripción de una excepción que NUNCA queda vacía.
+
+    Varias excepciones de httpx traen `str(e) == ""` (verificado con ReadTimeout), así que
+    el patrón `f"...: {e}"` producía mensajes cortados tipo "No pude consultar X: " y nada
+    más. El tipo solo ya dice bastante ("ReadTimeout" = se pasó del timeout)."""
+    txt = str(e).strip()
+    return f"{type(e).__name__}: {txt}" if txt else type(e).__name__
 
 
 def _normalizar(texto: str) -> str:
@@ -135,7 +147,7 @@ async def activeia_pendientes() -> dict:
     try:
         resp = await _get_client().request("GET", "/pendientes/moodle")
     except httpx.HTTPError as e:
-        return {"error": f"No pude consultar /pendientes/moodle: {e}"}
+        return {"error": f"No pude consultar /pendientes/moodle: {_detalle_error(e)}"}
     if resp.status_code != 200:
         return {"error": f"/pendientes/moodle devolvió {resp.status_code}", "body": resp.text[:300]}
 
@@ -174,6 +186,39 @@ async def activeia_pendientes() -> dict:
         materias_out.append(
             {"materia_id": materia_id, "nombre": materia.get("nombre"), "unidades": unidades_out}
         )
+    if not materias_out:
+        # Vacío NO es "estás al día": puede ser que tus comisiones no estén cargadas en
+        # Active-IA (p. ej. al cambiar de cuatrimestre, las del cuatrimestre viejo salen
+        # de su config). Devolver [] a secas se lee como "no hay nada pendiente" y deja al
+        # tutor tranquilo cuando en realidad hay que actuar. Preguntamos qué comisiones sí
+        # tiene configuradas para poder decir CUÁL de las dos cosas es.
+        conocidas: list[str] = []
+        detalle_error = None
+        try:
+            r = await _get_client().request("GET", "/comisiones/")
+            if r.status_code == 200:
+                conocidas = [c.get("nombre") for c in (r.json() or {}).get("items", [])
+                             if c.get("nombre")]
+        except httpx.HTTPError as e:
+            detalle_error = _detalle_error(e)
+        salida = {"ok": True, "materias": [], "sin_pendientes": True,
+                  "comisiones_en_active_ia": conocidas}
+        if detalle_error:
+            salida["aviso"] = ("Active-IA no devolvió pendientes y tampoco pude listar tus "
+                               f"comisiones ({detalle_error}), así que NO sé si estás al día "
+                               "o si no tenés comisiones cargadas ahí.")
+        elif conocidas:
+            salida["aviso"] = (
+                "Active-IA no devolvió pendientes. Las comisiones que tiene cargadas para vos "
+                f"son: {', '.join(conocidas)}. Si la comisión que buscás no está en esa lista, "
+                "NO es que esté al día: es que no está configurada en Active-IA, y ahí hay que "
+                "corregir a mano o pedir que la den de alta."
+            )
+        else:
+            salida["aviso"] = ("Active-IA no tiene NINGUNA comisión cargada para tu usuario. "
+                               "Esto no es 'estás al día': no hay nada configurado para corregir "
+                               "por ahí. Corregí a mano o pedí el alta de tus comisiones.")
+        return salida
     return {"ok": True, "materias": materias_out}
 
 
@@ -218,7 +263,7 @@ async def activeia_resolver(assign_id: int | str, group_id: int) -> dict:
     try:
         resp = await _get_client().request("GET", "/pendientes/moodle")
     except httpx.HTTPError as e:
-        return {"error": f"No pude consultar /pendientes/moodle: {e}"}
+        return {"error": f"No pude consultar /pendientes/moodle: {_detalle_error(e)}"}
     if resp.status_code != 200:
         return {"error": f"/pendientes/moodle devolvió {resp.status_code}"}
 
@@ -276,7 +321,7 @@ async def _bajar_archivo_alumno(
     try:
         inst = await ws_api._instanceid(client_moodle, assign_id)
     except Exception as e:  # noqa: BLE001 -- cualquier fallo de red/WS = dato, no excepción.
-        return {"error": f"No pude resolver la tarea {assign_id}: {e}"}
+        return {"error": f"No pude resolver la tarea {assign_id}: {_detalle_error(e)}"}
     if inst is None:
         return {"error": f"No encontré la tarea con cmid={assign_id} (¿existe / es de tu curso?)."}
 
@@ -284,7 +329,7 @@ async def _bajar_archivo_alumno(
     try:
         uid, fullname = await ws_api._userid_por_email(client_moodle, email)
     except Exception as e:  # noqa: BLE001
-        return {"error": f"No pude resolver al alumno {email}: {e}"}
+        return {"error": f"No pude resolver al alumno {email}: {_detalle_error(e)}"}
     if uid is None:
         return {"error": f"No encontré al alumno {email} (¿entregó / está en el curso?)."}
 
@@ -292,7 +337,7 @@ async def _bajar_archivo_alumno(
     try:
         subs = await client_moodle.ws("mod_assign_get_submissions", {"assignmentids": [inst]})
     except Exception as e:  # noqa: BLE001
-        return {"error": f"get_submissions falló para {assign_id}: {e}"}
+        return {"error": f"get_submissions falló para {assign_id}: {_detalle_error(e)}"}
 
     fileurl: str | None = None
     fname: str | None = None
@@ -325,7 +370,7 @@ async def _bajar_archivo_alumno(
     try:
         data = await client_moodle.token_download(fileurl)
     except Exception as e:  # noqa: BLE001
-        return {"error": f"No pude descargar la entrega de {email}: {e}"}
+        return {"error": f"No pude descargar la entrega de {email}: {_detalle_error(e)}"}
 
     return {"fname": fname or f"{assign_id}_{email}", "data": data, "alumno_nombre": fullname or email}
 
@@ -420,7 +465,7 @@ async def exportar_devolucion_pdf(
             "GET", f"/documentos/correcciones/{correccion_id}/pdf", timeout=_PDF_TIMEOUT_S
         )
     except httpx.HTTPError as e:
-        return {"error": f"No pude descargar el PDF de devolución (correccion {correccion_id}): {e}"}
+        return {"error": f"No pude descargar el PDF de devolución (correccion {correccion_id}): {_detalle_error(e)}"}
     if resp.status_code != 200:
         return {
             "error": f"GET /documentos/correcciones/{correccion_id}/pdf devolvió {resp.status_code}",
@@ -433,7 +478,7 @@ async def exportar_devolucion_pdf(
         with open(path, "wb") as fh:
             fh.write(resp.content)
     except OSError as e:
-        return {"error": f"No pude guardar el PDF de devolución en {destino}: {e}"}
+        return {"error": f"No pude guardar el PDF de devolución en {destino}: {_detalle_error(e)}"}
 
     return {"ok": True, "path": path, "bytes": len(resp.content)}
 
@@ -466,7 +511,7 @@ async def _subir_entrega(
             form["modo_consolidacion"] = "solo_codigo"
             resp = await cli.request("POST", "/entregas/", data=form, files=files)
     except httpx.HTTPError as e:
-        return {"error": f"No pude subir la entrega a Active-IA: {e}"}
+        return {"error": f"No pude subir la entrega a Active-IA: {_detalle_error(e)}"}
 
     if resp.status_code == 409:
         return {
@@ -497,7 +542,7 @@ async def _disparar_correccion(cli: ActiveIAClient, entrega_id: int) -> dict:
     except httpx.TimeoutException:
         return {"error": "Timeout al disparar la corrección (sigo esperando).", "timeout": True}
     except httpx.HTTPError as e:
-        return {"error": f"No pude disparar la corrección: {e}"}
+        return {"error": f"No pude disparar la corrección: {_detalle_error(e)}"}
 
     # 504/408 del gateway = el servicio tardó, pero la corrección puede seguir corriendo.
     if resp.status_code in (408, 504):

@@ -127,17 +127,73 @@ async def sumario(client, cmid: str, group_id: int = 0) -> dict:
             "participantes": len(est), "enviados": enviados, "pendientes": pendientes}
 
 
+def _grupo_visible(p: dict, group_id: int = 0) -> str | None:
+    """Nombre del grupo a mostrar para un participante.
+
+    Un alumno pertenece a varios grupos a la vez (su comisión + grupos auxiliares tipo
+    `Grupo_251`). Agarrar el primero de la lista mostraba el auxiliar, así que el tutor
+    veía "Grupo_389" en vez de "M26 C1-25". Si se filtró por comisión, esa es la que hay
+    que mostrar."""
+    gs = p.get("groups") or []
+    if group_id:
+        for g in gs:
+            if g.get("id") == group_id:
+                return g.get("name")
+    # Sin filtro: preferimos algo que parezca comisión antes que un grupo auxiliar.
+    nombres = [g.get("name") for g in gs if g.get("name")]
+    real = [n for n in nombres if not _norm(n).startswith("grupo_")]
+    return (real or nombres or [None])[0]
+
+
 async def pendientes_tarea(client, cmid: str, group_id: int = 0) -> dict:
-    """Alumnos que entregaron y siguen sin nota (requiregrading), por API."""
+    """Alumnos que entregaron y siguen SIN NOTA efectiva.
+
+    Son DOS casos, no uno, y el segundo era invisible:
+      - `requiere_correccion`: Moodle los marca `requiregrading`. La cola normal.
+      - `calificado_sin_nota`: se guardó la devolución pero la nota quedó en "sin
+        calificar". El flag `requiregrading` queda APAGADO, así que desaparecen de la cola
+        **sin tener nota**: ni pendientes ni calificados. Mirando sólo `requiregrading`
+        no aparecen — tres alumnos estuvieron así tres semanas sin que ninguna tool los
+        mostrara, y sin que nadie los estuviera esperando.
+    """
+    amap = await _assign_map(client)
+    cfg = amap.get(str(cmid))
     ps = await _participantes(client, cmid, group_id)
     if isinstance(ps, dict):
         return ps
-    alumnos = [
-        {"name": p.get("fullname"), "email": p.get("email"), "userid": p.get("id"),
-         "grupo": next((g.get("name") for g in p.get("groups", [])), None)}
-        for p in ps if _es_estudiante(p) and p.get("submitted") and p.get("requiregrading")
-    ]
-    return {"assign_id": cmid, "group_id": group_id, "pendientes": len(alumnos), "alumnos": alumnos}
+    gmap = await grades_map(client, cfg["id"]) if cfg and cfg.get("id") else {}
+
+    alumnos = []
+    for p in ps:
+        if not (_es_estudiante(p) and p.get("submitted")):
+            continue
+        requiere = bool(p.get("requiregrading"))
+        sin_nota = nota_display(cfg.get("grade") if cfg else 0, gmap.get(p.get("id"))) is None
+        if not requiere and not sin_nota:
+            continue
+        alumnos.append({
+            "name": p.get("fullname"),
+            "email": p.get("email"),
+            "userid": p.get("id"),
+            "grupo": _grupo_visible(p, group_id),
+            "motivo": "requiere_correccion" if requiere else "calificado_sin_nota",
+        })
+
+    sin_nota_n = sum(1 for a in alumnos if a["motivo"] == "calificado_sin_nota")
+    out = {
+        "assign_id": cmid, "group_id": group_id,
+        "pendientes": len(alumnos),
+        "requieren_correccion": len(alumnos) - sin_nota_n,
+        "calificados_sin_nota": sin_nota_n,
+        "alumnos": alumnos,
+    }
+    if sin_nota_n:
+        out["aviso"] = (
+            f"{sin_nota_n} entrega(s) figuran como corregidas pero NO tienen nota: la "
+            "devolución se guardó y la calificación quedó vacía. No aparecen en ninguna "
+            "cola, así que hay que cargarles la nota a mano."
+        )
+    return out
 
 
 async def grades_map(client, inst: int) -> dict:
@@ -194,6 +250,11 @@ async def entregas_tarea(client, cmid: str, group_id: int = 0) -> dict:
             estado = "Sin entrega"
         elif requiere:
             estado = "Enviado para calificar"
+        elif nota is None:
+            # El limbo: Moodle lo da por corregido (requiregrading apagado) pero la nota
+            # quedó vacía. Sin este estado se contaba como "Calificado" y el alumno
+            # desaparecía sin nota, sin figurar en ninguna cola.
+            estado = "Calificado SIN nota"
         else:
             estado = "Calificado"
         alumnos.append({
@@ -203,22 +264,235 @@ async def entregas_tarea(client, cmid: str, group_id: int = 0) -> dict:
             "estado": estado,
             "nota": nota,
             "entregado": entregado,
-            "pendiente": entregado and requiere,
+            "pendiente": entregado and (requiere or nota is None),
         })
 
-    # Los que deben primero, después la cola de corrección, y al final los cerrados.
-    _orden = {"Sin entrega": 0, "Enviado para calificar": 1, "Calificado": 2}
+    # Los que deben primero, después lo que falta hacer, y al final los cerrados.
+    _orden = {"Sin entrega": 0, "Calificado SIN nota": 1, "Enviado para calificar": 2,
+              "Calificado": 3}
     alumnos.sort(key=lambda a: (_orden[a["estado"]], _norm(a["nombre"] or "")))
 
-    return {
+    sin_nota = sum(1 for a in alumnos if a["estado"] == "Calificado SIN nota")
+    out = {
         "assign_id": str(cmid),
         "group_id": group_id,
         "tarea": cfg.get("name", ""),
         "participantes": len(est),
         "entregados": sum(1 for a in alumnos if a["entregado"]),
-        "pendientes_por_corregir": sum(1 for a in alumnos if a["pendiente"]),
+        "pendientes_por_corregir": sum(1 for a in alumnos if a["estado"] == "Enviado para calificar"),
+        "calificados_sin_nota": sin_nota,
         "sin_entrega": sum(1 for a in alumnos if not a["entregado"]),
         "alumnos": alumnos,
+    }
+    if sin_nota:
+        out["aviso"] = (
+            f"⚠️ {sin_nota} entrega(s) figuran como corregidas pero NO tienen nota. "
+            "No salen en ninguna cola de pendientes: hay que cargarles la nota a mano."
+        )
+    return out
+
+
+# ---------- BÚSQUEDA de alumno EN VIVO ----------
+
+_ROL_ALUMNO = "student"
+
+
+def _dias_desde(ts) -> int | None:
+    """Días enteros desde un epoch de Moodle. `None` si nunca entró (lastaccess=0)."""
+    import time
+
+    try:
+        t = int(ts or 0)
+    except (TypeError, ValueError):
+        return None
+    if t <= 0:
+        return None
+    return max(0, int((time.time() - t) // 86400))
+
+
+async def _alumnos_de_comision(client, course_id: int, group_id: int) -> list[dict] | dict:
+    """Matriculados de UNA comisión, ya filtrados a rol alumno.
+
+    `core_enrol_get_enrolled_users` devuelve también al docente (el tutor figura como
+    `editingteacher` en su propia comisión): sin filtrar por rol, buscar el nombre del
+    propio tutor lo devolvería a él mismo como si fuera un alumno."""
+    try:
+        data = await client.ws(
+            "core_enrol_get_enrolled_users",
+            {
+                "courseid": course_id,
+                "options": [
+                    {"name": "groupid", "value": group_id},
+                    {"name": "onlyactive", "value": 1},
+                ],
+            },
+        )
+    except MoodleWSError as e:
+        return {"error": f"No pude leer los matriculados del grupo {group_id}: {e}"}
+    return [
+        u
+        for u in (data or [])
+        if any(r.get("shortname") == _ROL_ALUMNO for r in u.get("roles", []))
+    ]
+
+
+async def buscar_alumnos(client, texto: str, cursos: list[dict], limite: int = 8) -> dict:
+    """Busca un alumno EN VIVO por nombre o email en las comisiones del tutor.
+
+    Antes esto leía el caché del snapshot, y eso lo hacía mentir: si el snapshot no había
+    corrido, devolvía lista vacía — indistinguible de "ese alumno no existe". Un tutor
+    recién instalado siempre veía []. Ahora se consulta el campus: una request por
+    comisión (~1 s cada una, en paralelo), sin ningún setup previo.
+
+    `cursos` es la lista de "Mis datos" (course_id + comisiones_del_tutor). El match es
+    por substring sobre nombre o email, insensible a mayúsculas y acentos."""
+    import asyncio
+
+    q = _norm(texto)
+    if not q:
+        return {"error": "Decime un nombre o email para buscar."}
+
+    objetivos = [
+        (c.get("course_id"), c.get("nombre", ""), com.get("comision", ""), com.get("group_id"))
+        for c in cursos
+        for com in c.get("comisiones_del_tutor", [])
+        if c.get("course_id") and com.get("group_id")
+    ]
+    if not objetivos:
+        return {
+            "error": "No tenés comisiones mapeadas en 'Mis datos', así que no sé dónde buscar.",
+            "siguiente_paso": "Corré mi_comision(tu nombre) y guardá con guardar_mis_datos.",
+        }
+
+    sem = asyncio.Semaphore(5)  # el campus es compartido: no lo martillamos
+
+    async def _una(course_id, curso_nombre, comision, group_id):
+        async with sem:
+            return (course_id, curso_nombre, comision, group_id,
+                    await _alumnos_de_comision(client, course_id, group_id))
+
+    resultados = await asyncio.gather(
+        *(_una(*o) for o in objetivos), return_exceptions=True
+    )
+
+    coincidencias: dict[int, dict] = {}
+    avisos: list[str] = []
+    revisadas = 0
+    for res in resultados:
+        if isinstance(res, BaseException):
+            avisos.append(f"Una comisión falló: {type(res).__name__}: {res}")
+            continue
+        course_id, curso_nombre, comision, group_id, alumnos = res
+        if isinstance(alumnos, dict):  # error de esa comisión: se avisa, no se traga
+            avisos.append(f"{comision}: {alumnos.get('error')}")
+            continue
+        revisadas += 1
+        for u in alumnos:
+            nombre, email = u.get("fullname", ""), (u.get("email") or "").lower()
+            if q not in _norm(nombre) and q not in email:
+                continue
+            uid = u.get("id")
+            if uid in coincidencias:  # el mismo alumno en dos comisiones del tutor
+                coincidencias[uid]["comisiones"].append(comision)
+                continue
+            coincidencias[uid] = {
+                "nombre": nombre,
+                "email": email,
+                "userid": uid,
+                "curso": curso_nombre,
+                "course_id": course_id,
+                "comisiones": [comision],
+                "group_id": group_id,
+                "dias_sin_entrar": _dias_desde(u.get("lastaccess")),
+            }
+
+    hallados = sorted(coincidencias.values(), key=lambda a: _norm(a["nombre"]))
+    salida = {
+        "ok": True,
+        "buscado": texto,
+        "encontrados": len(hallados),
+        "coincidencias": hallados[:limite],
+        "_meta": {
+            "fuente": "vivo",
+            "comisiones_revisadas": revisadas,
+            "comisiones_pedidas": len(objetivos),
+            "degradado": bool(avisos),
+            "avisos": avisos,
+        },
+    }
+    if not hallados:
+        # Sin coincidencias NO es lo mismo que sin datos: se dice cuál de las dos es.
+        salida["detalle"] = (
+            f"Revisé {revisadas} comisión/es en vivo y no hay nadie que matchee '{texto}'."
+            if revisadas
+            else "No pude leer ninguna comisión, así que no sé si existe o no."
+        )
+    if len(hallados) > limite:
+        salida["_meta"]["avisos"].append(
+            f"Hay {len(hallados)} coincidencias, muestro las primeras {limite}."
+        )
+    return salida
+
+
+async def traza_alumno(client, alumno: dict, tareas: list[dict]) -> dict:
+    """Qué entregó y qué nota sacó UN alumno, tarea por tarea, en vivo.
+
+    Es la parte cara de `buscar_alumno` (dos requests por tarea), por eso va aparte y
+    bajo demanda: para saber quién es alguien y en qué comisión está no hace falta.
+    Reusa `entregas_tarea`, así la nota se lee por texto de la escala (respeta el
+    Aprobado/Desaprobado invertido) en vez de reimplementar esa lógica acá."""
+    import asyncio
+
+    email = (alumno.get("email") or "").lower()
+    group_id = alumno.get("group_id") or 0
+    if not email or not tareas:
+        return {"entregas": [], "_meta": {"fuente": "vivo", "tareas_revisadas": 0}}
+
+    sem = asyncio.Semaphore(5)
+
+    async def _una(t):
+        async with sem:
+            res = await entregas_tarea(client, str(t.get("assign_id")), group_id)
+            if isinstance(res, dict) and res.get("error"):
+                return {"titulo": t.get("titulo", ""), "error": res["error"]}
+            fila = next(
+                (a for a in res.get("alumnos", []) if (a.get("email") or "").lower() == email),
+                None,
+            )
+            if fila is None:
+                return None  # no figura en esa tarea (no está habilitado): no es un dato
+            return {
+                "tarea": res.get("tarea") or t.get("titulo", ""),
+                "assign_id": str(t.get("assign_id")),
+                "estado": fila.get("estado"),
+                "nota": fila.get("nota"),
+                "pendiente": fila.get("pendiente"),
+            }
+
+    crudos = await asyncio.gather(*(_una(t) for t in tareas), return_exceptions=True)
+
+    entregas, avisos = [], []
+    for r in crudos:
+        if isinstance(r, BaseException):
+            avisos.append(f"Una tarea falló: {type(r).__name__}: {r}")
+        elif r is None:
+            continue
+        elif r.get("error"):
+            avisos.append(f"{r['titulo']}: {r['error']}")
+        else:
+            entregas.append(r)
+
+    return {
+        "entregas": entregas,
+        "sin_entrega": [e["tarea"] for e in entregas if e["estado"] == "Sin entrega"],
+        "pendientes_de_correccion": [e["tarea"] for e in entregas if e.get("pendiente")],
+        "_meta": {
+            "fuente": "vivo",
+            "tareas_revisadas": len(entregas),
+            "tareas_pedidas": len(tareas),
+            "degradado": bool(avisos),
+            "avisos": avisos,
+        },
     }
 
 
@@ -322,17 +596,45 @@ async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str, confirm
     except MoodleWSError as e:
         return {"error": f"No pude guardar la nota: {e.errorcode} — {e.message}"}
 
-    # Verificación: releer la nota por API.
-    verificado = False
+    # Verificación: releer la nota por API. Son TRES desenlaces, no dos —
+    # guardada / NO guardada / no se pudo comprobar — y colapsarlos en un bool hacía que
+    # "no pude leer" se leyera igual que "no quedó guardada".
+    verificado: bool | None = None      # None = no se pudo comprobar
+    leido = None
     try:
         g = await client.ws("mod_assign_get_grades", {"assignmentids": [inst]})
         for asg in (g or {}).get("assignments", []):
             for gr in asg.get("grades", []):
-                if int(gr.get("userid")) == uid:
-                    verificado = abs(float(gr.get("grade")) - valor) < 0.001
-    except MoodleWSError:
-        pass
-    return {"ok": True, "alumno": nombre or email, "nota": etiqueta, "verificado": verificado}
+                if int(gr.get("userid") or -1) == uid:
+                    leido = gr.get("grade")
+                    try:
+                        verificado = abs(float(leido) - valor) < 0.001
+                    except (TypeError, ValueError):
+                        # Sin nota legible (Moodle usa -1 para "sin calificar").
+                        verificado = False
+    except MoodleWSError as e:
+        log.warning("No pude releer la nota de %s: %s", email, e)
+
+    if verificado is False:
+        # Moodle aceptó el write pero la nota NO quedó. Devolver ok=True acá fue el
+        # agujero: la tool YA detectaba la falla y el "ok" al lado la hacía pasar por
+        # éxito. Un fallo se reporta como fallo.
+        return {
+            "ok": False,
+            "error": "Moodle aceptó la escritura pero la nota NO quedó guardada.",
+            "alumno": nombre or email,
+            "nota_pedida": etiqueta,
+            "nota_en_moodle": nota_display(cfg.get("grade"), leido),
+            "devolucion_escrita": True,
+            "siguiente_paso": "La devolución sí se guardó, así que el alumno figura como "
+                              "corregido SIN nota. Reintentá o cargala desde el grader.",
+        }
+
+    salida = {"ok": True, "alumno": nombre or email, "nota": etiqueta, "verificado": verificado}
+    if verificado is None:
+        salida["aviso"] = ("La nota se escribió, pero no pude releerla para confirmarlo. "
+                           "Verificala con entregas_tarea antes de darla por cargada.")
+    return salida
 
 
 # ---------- FOROS (JSON, reemplaza el scraping) ----------
@@ -668,6 +970,113 @@ async def descubrir_comisiones(client, course_id: int) -> list[dict]:
 
 
 # ---------- ENTREGAS (descarga por token) ----------
+
+# Extensiones que se pueden leer como texto para corregir. El resto (pdf, docx,
+# imágenes) se baja igual pero se devuelve la ruta para abrirlo con otra herramienta.
+_EXT_TEXTO = {".py", ".txt", ".md", ".csv", ".json", ".ipynb", ".js", ".ts", ".html",
+              ".css", ".java", ".c", ".cpp", ".h", ".sql", ".sh", ".r", ".yml", ".yaml"}
+_EXT_BINARIO_CONOCIDO = {".pdf", ".docx", ".doc", ".xlsx", ".png", ".jpg", ".jpeg", ".gif"}
+
+
+def _leer_texto(path: str, max_chars: int) -> tuple[str, bool]:
+    """Contenido de un archivo de texto, tolerando encodings raros. (texto, truncado)."""
+    import pathlib as _pl
+
+    crudo = _pl.Path(path).read_bytes()
+    for enc in ("utf-8", "latin-1"):
+        try:
+            txt = crudo.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        return "(no pude decodificar el archivo como texto)", False
+    return (txt[:max_chars], True) if len(txt) > max_chars else (txt, False)
+
+
+def _extraer_zip(path: str, destino: str) -> list[str]:
+    """Extrae un .zip y devuelve las rutas extraídas.
+
+    Sanea cada nombre contra 'zip slip': un .zip con entradas tipo `../../.ssh/authorized_keys`
+    escribiría FUERA del destino. Como acá el zip lo sube un alumno (input no confiable),
+    se descartan rutas absolutas y las que se escapen del directorio."""
+    import os
+    import zipfile
+
+    fuera = []
+    destino_abs = os.path.realpath(destino)
+    os.makedirs(destino_abs, exist_ok=True)
+    with zipfile.ZipFile(path) as z:
+        for miembro in z.namelist():
+            if miembro.endswith("/"):
+                continue
+            limpio = os.path.normpath(miembro).lstrip("/\\")
+            final = os.path.realpath(os.path.join(destino_abs, limpio))
+            if not final.startswith(destino_abs + os.sep):
+                log.warning("zip: descarto entrada sospechosa %r", miembro)
+                continue
+            os.makedirs(os.path.dirname(final), exist_ok=True)
+            with z.open(miembro) as src, open(final, "wb") as dst:
+                dst.write(src.read())
+            fuera.append(final)
+    return fuera
+
+
+async def leer_entrega(client, cmid: str, email: str, dest_dir: str,
+                       max_chars: int = 20000) -> dict:
+    """Baja la entrega de un alumno y devuelve su CONTENIDO, listo para corregir.
+
+    `bajar_entrega` ya existía pero nunca se expuso como tool, así que la skill podía
+    escribir una nota sin que nadie hubiera visto el trabajo. Esto cierra ese agujero:
+    descomprime los .zip (la forma en que se entrega en la TUP), lee los archivos de
+    código/texto y deja la ruta local de los binarios (PDF, imágenes) para abrirlos aparte.
+    """
+    import os
+
+    bajado = await bajar_entrega(client, cmid, email, dest_dir)
+    if bajado.get("error"):
+        return bajado
+
+    archivos: list[dict] = []
+    rutas = [a["archivo"] for a in bajado.get("archivos", [])]
+    for ruta in list(rutas):
+        if os.path.splitext(ruta)[1].lower() == ".zip":
+            try:
+                extra = _extraer_zip(ruta, ruta + "_extraido")
+                rutas.extend(extra)
+            except Exception as e:  # noqa: BLE001
+                archivos.append({"archivo": os.path.basename(ruta),
+                                 "error": f"No pude abrir el zip: {type(e).__name__}: {e}"})
+
+    presupuesto = max_chars
+    for ruta in rutas:
+        ext = os.path.splitext(ruta)[1].lower()
+        if ext == ".zip":
+            continue
+        item = {"archivo": os.path.basename(ruta), "ruta": ruta,
+                "bytes": os.path.getsize(ruta) if os.path.exists(ruta) else 0}
+        if ext in _EXT_TEXTO and presupuesto > 0:
+            txt, truncado = _leer_texto(ruta, presupuesto)
+            presupuesto -= len(txt)
+            item["contenido"] = txt
+            if truncado:
+                item["truncado"] = True
+        elif ext in _EXT_BINARIO_CONOCIDO:
+            item["nota"] = "Binario: abrilo desde `ruta` con la herramienta de lectura."
+        else:
+            item["nota"] = "Extensión no reconocida como texto; está en `ruta`."
+        archivos.append(item)
+
+    legibles = sum(1 for a in archivos if "contenido" in a)
+    return {
+        "ok": True,
+        "assign_id": str(cmid),
+        "email": email,
+        "archivos": archivos,
+        "resumen": f"{len(archivos)} archivo(s), {legibles} legible(s) como texto.",
+        "_meta": {"fuente": "vivo", "truncado_a_chars": max_chars},
+    }
+
 
 async def bajar_entrega(client, cmid: str, email: str, dest_dir: str) -> dict:
     """Descarga el/los archivo(s) entregados por un alumno (mod_assign_get_submissions +

@@ -1,0 +1,198 @@
+"""Versión de la skill y aviso de actualización.
+
+Por qué existe: la skill se instala con un `git clone` en la máquina de cada tutor y ahí
+se queda. Sin un chequeo, alguien que la instaló hace dos meses sigue con los bugs de
+hace dos meses y no tiene forma de enterarse — ni siquiera de que existe una versión
+nueva. Esto compara el `VERSION` local contra el del repo y lo dice.
+
+Decisión de diseño: **no poder chequear NO es un error del tutor y no debe molestarlo**.
+Si no hay red, o GitHub no responde, se devuelve `disponible: None` y se sigue. Pero eso
+viaja en la respuesta (nunca se finge "estás al día"): "no pude averiguarlo" y "estás al
+día" son cosas distintas y se reportan distinto.
+"""
+
+import asyncio
+import json
+import logging
+import time
+from pathlib import Path
+
+import httpx
+
+log = logging.getLogger("skill.version")
+
+# raw.githubusercontent en vez de `git fetch`: es un GET de 6 bytes y no toca el repo
+# local del tutor (que puede tener cambios sin commitear).
+_URL_REMOTA = "https://raw.githubusercontent.com/Group-Active-IA/Skill-Moodle/main/VERSION"
+_TIMEOUT_S = 6.0
+_CACHE_TTL_S = 86400  # 24 h: preguntar en cada llamada sería spam a GitHub
+
+
+def _raiz() -> Path:
+    """Raíz del repo de la skill (…/tup-campus-navigator), desde este archivo."""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def version_local() -> str:
+    try:
+        return (_raiz() / "VERSION").read_text().strip() or "desconocida"
+    except OSError:
+        return "desconocida"
+
+
+def _tupla(v: str) -> tuple[int, ...]:
+    """'1.10.2' -> (1, 10, 2). Sin esto, comparar como texto diría que 1.9 > 1.10."""
+    partes = []
+    for p in str(v).strip().split("."):
+        try:
+            partes.append(int(p))
+        except ValueError:
+            partes.append(0)
+    return tuple(partes) or (0,)
+
+
+def hay_novedad(local: str, remota: str) -> bool:
+    if not remota or remota == "desconocida" or local == "desconocida":
+        return False
+    return _tupla(remota) > _tupla(local)
+
+
+def _cache_path() -> Path:
+    from . import almacen
+
+    return Path(almacen.HOME) / ".version_check.json"
+
+
+def _leer_cache() -> dict | None:
+    try:
+        d = json.loads(_cache_path().read_text())
+        if time.time() - float(d.get("ts", 0)) < _CACHE_TTL_S:
+            return d
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _escribir_cache(remota: str) -> None:
+    try:
+        _cache_path().write_text(json.dumps({"ts": time.time(), "remota": remota}))
+    except OSError as e:
+        log.warning("No pude cachear el chequeo de versión: %s", e)
+
+
+async def _remota_en_vivo() -> str | None:
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as http:
+            r = await http.get(_URL_REMOTA)
+            if r.status_code != 200:
+                return None
+            txt = r.text.strip()
+            return txt if txt and len(txt) < 32 else None
+    except (httpx.HTTPError, asyncio.TimeoutError):
+        return None
+
+
+async def chequear(forzar: bool = False) -> dict:
+    """Compara la versión instalada con la publicada.
+
+    `disponible` es tri-estado a propósito: True (hay una nueva), False (estás al día),
+    None (no se pudo averiguar). Colapsarlo en un bool haría que "no hay red" se leyera
+    como "estás al día", que es exactamente la clase de mentira que esta skill viene
+    sacándose de encima."""
+    local = version_local()
+    cache = None if forzar else _leer_cache()
+    if cache:
+        remota, de_cache = cache.get("remota"), True
+    else:
+        remota, de_cache = await _remota_en_vivo(), False
+        if remota:
+            _escribir_cache(remota)
+
+    if not remota:
+        return {
+            "version_instalada": local,
+            "version_publicada": None,
+            "disponible": None,
+            "aviso": "No pude consultar si hay una versión nueva (sin red o GitHub no "
+                     "respondió). No es que estés al día: no lo sé.",
+        }
+
+    nueva = hay_novedad(local, remota)
+    salida = {
+        "version_instalada": local,
+        "version_publicada": remota,
+        "disponible": nueva,
+        "_meta": {"fuente": "cache" if de_cache else "vivo", "ttl_s": _CACHE_TTL_S},
+    }
+    if nueva:
+        salida["aviso"] = (
+            f"Hay una versión nueva de la skill: {remota} (tenés la {local}). "
+            "Actualizá con la tool `actualizar_skill` y reiniciá Claude Code."
+        )
+    return salida
+
+
+async def _git(*args: str) -> tuple[int, str, str]:
+    """Corre git en la raíz de la skill. (returncode, stdout, stderr)."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", str(_raiz()), *args,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await proc.communicate()
+    return proc.returncode, out.decode().strip(), err.decode().strip()
+
+
+async def actualizar() -> dict:
+    """Baja la última versión publicada con `git pull --ff-only`.
+
+    `--ff-only` a propósito: si el repo local divergió, preferimos fallar y avisar antes
+    que armar un merge automático en la máquina de alguien. Y si el tutor tiene cambios
+    sin commitear, NO se toca nada: un `pull` que pisa trabajo ajeno es peor que no
+    actualizar."""
+    antes = version_local()
+
+    rc, _, _ = await _git("rev-parse", "--git-dir")
+    if rc != 0:
+        return {"ok": False,
+                "error": f"{_raiz()} no es un repo git, así que no puedo actualizar.",
+                "siguiente_paso": "Reinstalá con install.sh desde el repo."}
+
+    rc, sucio, _ = await _git("status", "--porcelain")
+    if rc == 0 and sucio:
+        return {
+            "ok": False,
+            "error": "Tenés cambios sin commitear en la skill: no toco nada para no pisarlos.",
+            "archivos_modificados": [l[3:] for l in sucio.splitlines()][:20],
+            "siguiente_paso": "Guardá o descartá esos cambios y volvé a intentar.",
+        }
+
+    rc, out, err = await _git("pull", "--ff-only")
+    if rc != 0:
+        return {"ok": False,
+                "error": f"El `git pull` falló: {err or out}",
+                "siguiente_paso": "Puede que el repo local haya divergido. Revisalo a mano."}
+
+    despues = version_local()
+    rc, cambiados, _ = await _git("diff", "--name-only", "HEAD@{1}", "HEAD")
+    toca_deps = "mcp/requirements.txt" in (cambiados or "")
+
+    salida = {
+        "ok": True,
+        "version_anterior": antes,
+        "version_actual": despues,
+        "actualizado": despues != antes,
+        "detalle_git": out.splitlines()[-1] if out else "",
+        "reiniciar": True,
+        "siguiente_paso": "IMPORTANTE: reiniciá Claude Code. El MCP se carga al arrancar "
+                          "la sesión, así que hasta que no reinicies seguís usando la "
+                          "versión vieja.",
+    }
+    if toca_deps:
+        salida["dependencias"] = (
+            "requirements.txt cambió: corré "
+            f"`{_raiz()}/.venv/bin/pip install -r {_raiz()}/mcp/requirements.txt` "
+            "antes de reiniciar."
+        )
+    if despues == antes:
+        salida["aviso"] = "Ya tenías la última versión: no había nada que bajar."
+    return salida
