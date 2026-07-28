@@ -20,6 +20,7 @@ from moodle.ws_api import (  # noqa: E402
     _clasificar_riesgo,
     _racha_final_sin_entregar,
     _resolver_valor_nota,
+    clasificar_mensaje_entrante,
     es_actividad_de_cierre,
     nota_display,
 )
@@ -167,6 +168,55 @@ class TestQueCuentaParaLaRacha(unittest.TestCase):
     def test_tolera_acentos_y_mayusculas(self):
         self.assertTrue(es_actividad_de_cierre("ACTIVIDAD DE CIERRE UNIDAD 3"))
         self.assertTrue(es_actividad_de_cierre("actividad de cierre unidad 3"))
+
+
+class TestClasificarMensaje(unittest.TestCase):
+    """Qué mensaje espera respuesta de verdad. Textos reales de la bandeja del tutor.
+
+    Antes se contaba como pendiente cualquier conversación donde el último en hablar fuera
+    el alumno: 18 "esperando respuesta" cuando las reales eran ~3. Un contador que exagera
+    seis veces se deja de mirar, y ahí se pierden las consultas que sí importan.
+    """
+
+    def test_agradecimientos_no_esperan_respuesta(self):
+        for t in ("Muchas gracias 😊", "gracias!!", "okey muchas gracias Juan.",
+                  "Genial, gracias!",
+                  "Muchas gracias Juan!! Y gracias por tu ayuda durante toda la cursada! Saludos"):
+            self.assertEqual(clasificar_mensaje_entrante(t), "cortesia", t)
+
+    def test_agradecimiento_largo_con_saludo_adelante_igual_es_cortesia(self):
+        # El saludo va primero y la cortesía después: exigir que arranque agradeciendo
+        # dejaba este mensaje clasificado como consulta.
+        t = ("Buenas tardes Juan! muchas gracias por todo, por el asesoramiento y estar "
+             "siempre atento a lo que podia necesitar! La verdad que disfrute mucho la "
+             "cursada, asique esperemos que programación II nos encuentre con la misma "
+             "dinámica. Gracias nuevamente y abrazo grande!!")
+        self.assertEqual(clasificar_mensaje_entrante(t), "cortesia")
+
+    def test_gracias_SEGUIDO_DE_UNA_DUDA_es_pregunta(self):
+        # El orden de evaluación importa: primero se busca si pide algo. Al revés, este
+        # alumno se quedaba sin respuesta.
+        self.assertEqual(
+            clasificar_mensaje_entrante("muchas gracias! pero me quedó una duda con el TP"),
+            "pregunta")
+
+    def test_consultas_reales_son_pregunta(self):
+        for t in ("Hola Juan buenas tardes, queria consultar si está la posibilidad de volver",
+                  "Como hago para entregar el TP?",
+                  "Buenas tardes Juan!! voy a rendir el final y te queria consultar la modalidad"):
+            self.assertEqual(clasificar_mensaje_entrante(t), "pregunta", t)
+
+    def test_anuncios_masivos_no_son_consultas(self):
+        # Llegan por privado y figuran como mensaje "del alumno", pero nadie espera que el
+        # tutor los conteste.
+        for t in ("📢 Estimados estudiantes de Programación 2: Les recordamos que hoy vence",
+                  "Hola! Les escribimos para recordarles las condiciones obligatorias"):
+            self.assertEqual(clasificar_mensaje_entrante(t), "difusion", t)
+
+    def test_ante_la_duda_entra_a_la_lista(self):
+        # Default conservador: perder una consulta es peor que mostrar un mensaje de más.
+        for t in ("llegue", "", "ya que virtual se me dificulta"):
+            self.assertEqual(clasificar_mensaje_entrante(t), "pregunta", repr(t))
 
 
 class TestVersionSemver(unittest.TestCase):

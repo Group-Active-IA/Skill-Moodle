@@ -840,7 +840,12 @@ async def leer_foro(client, forum_id: int, limite: int = 25) -> dict:
     except MoodleWSError as e:
         return {"error": f"No pude abrir el foro {forum_id}: {e.errorcode}"}
     disc = [{"discussion_id": x.get("discussion"), "titulo": _plano(x.get("name", ""), 120),
-             "autor": x.get("userfullname"), "replicas": x.get("numreplies", 0),
+             "autor": x.get("userfullname"),
+             # El userid del que abrió el hilo: es lo ÚNICO que permite saber si una
+             # consulta es de un alumno propio. El groupid no sirve — en este campus los
+             # foros de consulta son del curso entero y vienen todos con -1.
+             "autor_userid": x.get("userid"),
+             "replicas": x.get("numreplies", 0),
              "ultimo_ts": x.get("timemodified"), "fijada": bool(x.get("pinned")),
              "group_id": x.get("groupid"),
              "puede_responder": bool(x.get("canreply"))}
@@ -950,11 +955,32 @@ async def foros_pendientes(client, course_id: int, group_ids: list[int] | None =
 
     pares = [x for sub in await asyncio.gather(*[_hilos(f) for f in con_hilos]) for x in sub]
     total_curso = len(pares)
+    aviso_filtro = None
     if group_ids:
-        gs = set(group_ids)
-        # groupid <= 0 = discusión visible para todo el curso: siempre entra.
-        pares = [(f, d) for f, d in pares if (d.get("group_id") or 0) <= 0
-                 or d.get("group_id") in gs]
+        # ANTES se filtraba por `groupid` de la discusión, y NO filtraba nada: en este
+        # campus los foros de consulta son del curso entero y TODAS las discusiones vienen
+        # con groupid = -1, que la regla "≤ 0 entra siempre" dejaba pasar. Resultado: 120
+        # de 219 hilos se reportaban como propios teniendo 33 alumnos en un curso de 27
+        # comisiones, con consultas de alumnos ajenos y hasta hilos abiertos por otros
+        # docentes.
+        # Lo que SÍ identifica una consulta como propia es QUIÉN la escribió: se cruza el
+        # autor contra el padrón de las comisiones del tutor.
+        mis_alumnos: set = set()
+        fallas: list[str] = []
+        for gid in group_ids:
+            als = await _alumnos_de_comision(client, course_id, gid)
+            if isinstance(als, dict):
+                fallas.append(f"grupo {gid}: {als.get('error')}")
+                continue
+            mis_alumnos.update(u.get("id") for u in als if u.get("id"))
+        if not mis_alumnos:
+            # Sin padrón no se puede filtrar. Se devuelve todo, pero DICIÉNDOLO: colar
+            # hilos ajenos en silencio es lo que hacía la versión anterior.
+            aviso_filtro = ("No pude armar el padrón de tus comisiones "
+                            f"({'; '.join(fallas) or 'sin alumnos'}), así que NO filtré: "
+                            "abajo hay consultas de alumnos de otros tutores.")
+        else:
+            pares = [(f, d) for f, d in pares if d.get("autor_userid") in mis_alumnos]
     # Ordenar ANTES de cortar: si no, el tope se come discusiones recientes según el orden
     # en que respondió el campus y quedan pendientes invisibles (pasó: de 351 hilos se
     # clasificaban 120 arbitrarios y los sin responder del resto no aparecían nunca).
@@ -1007,14 +1033,28 @@ async def foros_pendientes(client, course_id: int, group_ids: list[int] | None =
                        "discusiones_del_curso": total_curso, "discusiones_tuyas": len(pares),
                        "sin_responder": len(sin_responder),
                        "respondio_otro": len(respondio_otro)},
-           "foros_salteados": salteados}
+           "foros_salteados": salteados,
+           "_meta": {
+               "fuente": "vivo",
+               "criterio_filtro": (
+                   "Se cuenta como tuya la consulta cuyo AUTOR es alumno de tus comisiones. "
+                   "No se filtra por el grupo de la discusión: en este campus los foros de "
+                   "consulta son del curso entero y todas vienen con groupid = -1."
+                   if group_ids else "sin filtro (no se pasaron group_ids)"),
+               "degradado": bool(aviso_filtro),
+           }}
+    avisos = []
+    if aviso_filtro:
+        avisos.append(aviso_filtro)
     if not group_ids:
-        out["aviso"] = ("Sin filtro de comisión: estás viendo los hilos de TODO el curso, "
-                        "incluidos los alumnos de otros tutores. Pasá `group_ids` (o mapeá "
-                        "tus comisiones con mi_comision / guardar_mis_datos).")
+        avisos.append("Sin filtro de comisión: estás viendo los hilos de TODO el curso, "
+                      "incluidos los alumnos de otros tutores. Pasá `group_ids` (o mapeá "
+                      "tus comisiones con mi_comision / guardar_mis_datos).")
     if truncado:
-        out["aviso"] = (out.get("aviso", "") + f" Corté en {max_discusiones} discusiones: "
-                        "hay más, subí max_discusiones si necesitás verlas todas.").strip()
+        avisos.append(f"Corté en {max_discusiones} discusiones: hay más, subí "
+                      "max_discusiones si necesitás verlas todas.")
+    if avisos:
+        out["aviso"] = " ".join(avisos)
     return out
 
 
@@ -1067,21 +1107,105 @@ async def leer_conversacion(client, conversacion_id: int, limite: int = 30) -> d
             "alumno": otros[0] if otros else None, "total": len(msgs), "mensajes": msgs}
 
 
+# Marcadores de un anuncio masivo de coordinación reenviado por privado: llegan como
+# mensaje de "alumno" y no esperan respuesta de nadie.
+_RE_DIFUSION = re.compile(
+    r"estimad[oa]s\s+(estudiantes|alumn)|les\s+(recordamos|informamos|escribimos|comunicamos)"
+    r"|📢|recorda(mos|torio)\s+que|plazo\s+para\s+la\s+entrega", re.I)
+
+# Señales de que el mensaje PIDE algo. Se evalúan ANTES que la cortesía, así un
+# "muchas gracias, pero me quedó una duda: …" sigue contando como consulta por más que
+# arranque agradeciendo.
+_RE_PEDIDO = re.compile(
+    r"[?¿]|consult|\bdud[ao]s?\b|quer[íi]a\s+saber|querr?[íi]a\s+saber|podr[íi]as?\b"
+    r"|necesito|me\s+podr|se\s+puede|es\s+posible|c[óo]mo\s+(hago|puedo|es)|cu[áa]ndo\s"
+    r"|avisame|av[íi]same|me\s+decís|me\s+dec[ií]s|qu[ée]\s+tengo\s+que", re.I)
+
+# Marcadores de agradecimiento/cierre. Se buscan en CUALQUIER parte del texto y no sólo al
+# principio: "Buenas tardes Juan! muchas gracias por todo…" lleva el saludo adelante, y
+# exigir que la cortesía arranque el mensaje lo dejaba clasificado como consulta.
+# Es seguro buscar en todo el texto porque _RE_PEDIDO ya corrió antes: cualquier mensaje
+# que además pida algo salió de acá como "pregunta".
+_RE_CORTESIA = re.compile(
+    r"\bgracias\b|\bgrac[ií]as\b|\bagradezco\b|\babrazo\b|saludos|\b(ok(ey|ay)?|dale|perfecto"
+    r"|genial|buen[ií]simo|entendido|listo|b[áa]rbaro|joya)\b", re.I)
+_LARGO_CORTESIA = 320
+
+
+def clasificar_mensaje_entrante(texto: str) -> str:
+    """'pregunta' | 'cortesia' | 'difusion'. Función pura: decide si algo espera respuesta.
+
+    El orden importa: primero se busca si PIDE algo, después si es cortesía. Al revés, un
+    "muchas gracias, pero me quedó una duda" se apartaría como agradecimiento y el alumno
+    se quedaría sin respuesta.
+
+    El default es 'pregunta' A PROPÓSITO. Perder la consulta de alguien es mucho peor que
+    mostrar un "gracias" de más, así que ante la duda entra a la lista. Antes no había
+    ninguna clasificación: 18 conversaciones se reportaban como "esperando respuesta"
+    cuando las reales eran ~3, y un contador que exagera seis veces se deja de mirar."""
+    t = (texto or "").strip()
+    if not t:
+        return "pregunta"
+    if _RE_DIFUSION.search(t):
+        return "difusion"
+    if _RE_PEDIDO.search(t):
+        return "pregunta"
+    if len(t) <= _LARGO_CORTESIA and _RE_CORTESIA.search(t):
+        return "cortesia"
+    return "pregunta"
+
+
 async def mensajes_pendientes(client, limite: int = 50) -> dict:
     """Conversaciones privadas que esperan respuesta del tutor: el último mensaje lo
-    escribió el alumno. Es el "qué me falta contestar" de la mensajería.
+    escribió el alumno Y efectivamente pide algo.
+
+    No alcanza con "el último lo escribió el alumno": así entraban los "muchas gracias" y
+    los anuncios masivos de coordinación reenviados por privado. Lo descartado NO se
+    esconde — viene en `descartadas` con su motivo, para que se pueda auditar el criterio.
 
     Se separan las que además tienen no leídos, que son las que el tutor ni abrió."""
     convs = await leer_mensajes(client, limite)
     if convs and isinstance(convs[0], dict) and convs[0].get("error"):
         return {"error": convs[0]["error"]}
-    pendientes = [c for c in convs if c.get("de_quien") == "alumno"]
+
+    del_alumno = [c for c in convs if c.get("de_quien") == "alumno"]
+    pendientes, cortesia, difusion = [], [], []
+    for c in del_alumno:
+        tipo = clasificar_mensaje_entrante(c.get("ultimo_mensaje", ""))
+        c = {**c, "tipo": tipo}
+        if tipo == "cortesia":
+            cortesia.append(c)
+        elif tipo == "difusion":
+            difusion.append(c)
+        else:
+            pendientes.append(c)
+
     orden = lambda c: -(c.get("timestamp") or 0)  # noqa: E731
-    return {"ok": True,
-            "sin_leer": sorted([c for c in pendientes if c["no_leidos"]], key=orden),
-            "leidas_sin_responder": sorted([c for c in pendientes if not c["no_leidos"]], key=orden),
-            "resumen": {"conversaciones_revisadas": len(convs),
-                        "esperando_respuesta": len(pendientes)}}
+    resumen = {
+        "conversaciones_revisadas": len(convs),
+        "esperando_respuesta": len(pendientes),
+        "descartadas_cortesia": len(cortesia),
+        "descartadas_difusion": len(difusion),
+    }
+    out = {
+        "ok": True,
+        "sin_leer": sorted([c for c in pendientes if c["no_leidos"]], key=orden),
+        "leidas_sin_responder": sorted([c for c in pendientes if not c["no_leidos"]], key=orden),
+        "descartadas": {
+            "cortesia": [{"alumno": c["alumno"], "ultimo_mensaje": c["ultimo_mensaje"][:80]}
+                         for c in sorted(cortesia, key=orden)],
+            "difusion": [{"alumno": c["alumno"], "ultimo_mensaje": c["ultimo_mensaje"][:80]}
+                         for c in sorted(difusion, key=orden)],
+        },
+        "resumen": resumen,
+    }
+    if cortesia or difusion:
+        out["nota_criterio"] = (
+            f"De {len(del_alumno)} conversaciones donde habló el alumno último, "
+            f"{len(pendientes)} piden algo. Se apartaron {len(cortesia)} de cortesía "
+            f"('gracias', 'ok') y {len(difusion)} anuncios masivos — están en "
+            "`descartadas` por si querés revisarlas.")
+    return out
 
 
 async def _touserid(client, alumno: str) -> tuple[int | None, str | None]:
