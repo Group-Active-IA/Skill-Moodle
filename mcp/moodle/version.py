@@ -159,10 +159,15 @@ async def actualizar() -> dict:
 
     rc, sucio, _ = await _git("status", "--porcelain")
     if rc == 0 and sucio:
+        # El nombre NO se corta por posición fija (l[3:]): `_git` hace .strip() sobre la
+        # salida y eso come el espacio inicial de la primera línea de --porcelain, con lo
+        # que "README.md" salía como "EADME.md". Partir por el primer bloque de espacios
+        # funciona con o sin ese espacio, y maxsplit=1 preserva nombres con espacios.
+        archivos = [l.split(maxsplit=1)[-1] for l in sucio.splitlines() if l.split()]
         return {
             "ok": False,
             "error": "Tenés cambios sin commitear en la skill: no toco nada para no pisarlos.",
-            "archivos_modificados": [l[3:] for l in sucio.splitlines()][:20],
+            "archivos_modificados": archivos[:20],
             "siguiente_paso": "Guardá o descartá esos cambios y volvé a intentar.",
         }
 
@@ -176,23 +181,33 @@ async def actualizar() -> dict:
     rc, cambiados, _ = await _git("diff", "--name-only", "HEAD@{1}", "HEAD")
     toca_deps = "mcp/requirements.txt" in (cambiados or "")
 
+    # `git pull` puede traer commits sin que suba el VERSION, así que "hubo cambios" se
+    # mide por lo que movió git, no sólo por el número de versión.
+    bajo_algo = bool(cambiados.strip()) if rc == 0 else (despues != antes)
+
     salida = {
         "ok": True,
         "version_anterior": antes,
         "version_actual": despues,
-        "actualizado": despues != antes,
+        "actualizado": bajo_algo,
         "detalle_git": out.splitlines()[-1] if out else "",
-        "reiniciar": True,
-        "siguiente_paso": "IMPORTANTE: reiniciá Claude Code. El MCP se carga al arrancar "
-                          "la sesión, así que hasta que no reinicies seguís usando la "
-                          "versión vieja.",
+        # Sólo pedir reinicio si realmente cambió algo: decirle "reiniciá" a alguien que
+        # ya estaba al día es ruido, y el ruido hace que después ignoren el aviso cuando sí
+        # importa.
+        "reiniciar": bajo_algo,
     }
-    if toca_deps:
-        salida["dependencias"] = (
-            "requirements.txt cambió: corré "
-            f"`{_raiz()}/.venv/bin/pip install -r {_raiz()}/mcp/requirements.txt` "
-            "antes de reiniciar."
+    if bajo_algo:
+        salida["siguiente_paso"] = (
+            "IMPORTANTE: reiniciá Claude Code. El MCP se carga al arrancar la sesión, así "
+            "que hasta que no reinicies seguís usando la versión vieja."
         )
-    if despues == antes:
-        salida["aviso"] = "Ya tenías la última versión: no había nada que bajar."
+        if toca_deps:
+            salida["dependencias"] = (
+                "requirements.txt cambió: corré "
+                f"`{_raiz()}/.venv/bin/pip install -r {_raiz()}/mcp/requirements.txt` "
+                "antes de reiniciar."
+            )
+    else:
+        salida["aviso"] = ("Ya tenías la última versión: no había nada que bajar, "
+                           "así que no hace falta reiniciar.")
     return salida
