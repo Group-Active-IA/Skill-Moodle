@@ -707,7 +707,8 @@ async def auditar_aula(course_id: int, materia: str = "", evaluador: str = "",
 
     `con_navegador=True` suma el PASO 2 (Playwright): loguea por navegador, cuenta las
     preguntas de cada cuestionario (mini=4 / autoeval=10 según la planilla) y clasifica las
-    apps Google (NotebookLM/Colab) en abren / piden cuenta. Requiere Playwright instalado
+    apps Google (NotebookLM/Colab) en abren / NO verificables (caen en login: eso no prueba
+    que existan, un enlace borrado da la misma pantalla). Requiere Playwright instalado
     (`pip install playwright && playwright install chromium`); si no está, se saltea con
     aviso y la auditoría por API igual corre. Tarda más (abre una página por cuestionario).
 

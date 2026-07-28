@@ -448,7 +448,10 @@ def quizzes_clasificados(inventario: dict) -> list[dict]:
 
 
 def apps_google_urls(inventario: dict) -> list[str]:
-    """URLs únicas de NotebookLM/Colab del aula, para que el navegador diga si piden cuenta."""
+    """URLs únicas de NotebookLM/Colab del aula, para que el navegador intente abrirlas.
+
+    Ojo: el pase distingue "abre en abierto" de "no se pudo verificar", NO de "es privada":
+    sin sesión, un recurso vivo y uno borrado se ven igual."""
     urls, vistos = [], set()
     for s in inventario.get("secciones", []):
         for u in s.get("links", []):
@@ -480,9 +483,9 @@ def hallazgos_navegador(quizzes: list[dict], nav: dict | None) -> list[dict]:
                         f"{len(casos)} cuestionario(s) no tienen {PREG_ESPERADAS[clase]} preguntas. Ej.: {ej}",
                         "Contado con navegador en la edición del cuestionario."))
     colab_login = [a["url"] for a in nav.get("apps", [])
-                   if a["estado"] == "pide_cuenta" and _clasificar_link(a["url"]) == "colab"]
+                   if a["estado"] == "no_verificable" and _clasificar_link(a["url"]) == "colab"]
     if colab_login:
-        h.append(_h("media", f"Colab que piden cuenta — {len(colab_login)}",
+        h.append(_h("media", f"Colab que no se pudieron verificar (caen en login) — {len(colab_login)}",
                     f"{len(colab_login)} Colab no abren sin login (¿no compartidos con los alumnos?).",
                     "Verificado con navegador sin sesión Google."))
     return h
@@ -597,10 +600,15 @@ def worksheet_md(inventario: dict, matriz: dict, links: list[dict], hallazgos: l
     if nav_ok:
         apps = nav.get("apps", [])
         abren = sum(1 for a in apps if a["estado"] == "abre")
-        piden = sum(1 for a in apps if a["estado"] == "pide_cuenta")
+        piden = sum(1 for a in apps if a["estado"] == "no_verificable")
         nc = sum(1 for a in apps if a["estado"] == "no_concluyente")
-        L.append(f"- **Apps Google (pase navegador):** {abren} abren en abierto · {piden} piden cuenta · "
-                 f"{nc} no concluyentes.")
+        L.append(f"- **Apps Google (pase navegador):** {abren} abren en abierto · "
+                 f"**{piden} NO verificables** · {nc} no concluyentes.")
+        if piden:
+            L.append(f"  - ⚠️ Esas {piden} caen en la pantalla de login de Google. Eso **no** "
+                     "significa que existan y sean privadas: un enlace borrado devuelve la "
+                     "misma pantalla (comprobado con un UUID inventado). **No las puntúes "
+                     "como presentes**: van a «a revisar» hasta abrirlas con la cuenta dueña.")
     else:
         navegador = [l for l in links if l["estado"] in ("requiere_navegador", "no_concluyente")]
         L.append(f"- **{len(navegador)} links de apps Google** (NotebookLM/Colab/YouTube): un GET sin sesión "
@@ -685,11 +693,20 @@ async def auditar_aula(client, course_id: int, salidas_dir: str, materia: str = 
             resumen["navegador"] = nav.get("aviso", "El pase navegador no corrió.")
         else:
             preg = nav.get("preguntas", {})
+            apps = nav.get("apps", [])
+            sin_verificar = sum(1 for a in apps if a["estado"] == "no_verificable")
             resumen["navegador"] = {
                 "cuestionarios_contados": sum(1 for v in preg.values() if v is not None),
-                "apps_abren": sum(1 for a in nav.get("apps", []) if a["estado"] == "abre"),
-                "apps_piden_cuenta": sum(1 for a in nav.get("apps", []) if a["estado"] == "pide_cuenta"),
+                "apps_abren": sum(1 for a in apps if a["estado"] == "abre"),
+                # No se llama "piden_cuenta": caer en el login de Google NO prueba que el
+                # recurso exista. Un enlace borrado devuelve la misma pantalla.
+                "apps_no_verificables": sin_verificar,
             }
+            if sin_verificar:
+                resumen["navegador"]["aviso"] = (
+                    f"{sin_verificar} app(s) Google caen en login y NO se pudieron verificar: "
+                    "no las cuentes como presentes."
+                )
     return {
         "ok": True,
         "course_id": course_id,

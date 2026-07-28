@@ -66,7 +66,14 @@ async def _contar_preguntas(page, base: str, cmid) -> int | None:
 
 async def _clasificar_app(page, url: str) -> str:
     """Abre una app Google y decide, por el estado final del render: 'abre' (público) o
-    'pide_cuenta' (login wall). 'no_concluyente' si el render no da una señal clara."""
+    'no_verificable' (cae en un login wall). 'no_concluyente' si no hay señal clara.
+
+    OJO con 'no_verificable' — antes se llamaba 'pide_cuenta' y ese nombre mentía. Un test
+    de control con un UUID inventado devuelve EXACTAMENTE la misma pantalla de login que
+    un notebook real y privado: sin sesión, un recurso vivo y uno borrado son
+    indistinguibles. Llamarlo 'pide_cuenta' hacía leer "existe pero es privado" cuando lo
+    único que se sabe es "no pude verificarlo". Un NotebookLM roto pasaba la auditoría en
+    silencio. Verificarlos de verdad exige loguearse con la cuenta Google dueña."""
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=25000)
         await page.wait_for_timeout(2500)  # dar tiempo al JS de la SPA
@@ -74,13 +81,13 @@ async def _clasificar_app(page, url: str) -> str:
         return "no_concluyente"
     destino = page.url.lower()
     if "accounts.google.com" in destino or "servicelogin" in destino:
-        return "pide_cuenta"
+        return "no_verificable"
     try:
         cuerpo = await page.locator("body").inner_text()
     except Exception:  # noqa: BLE001
         return "no_concluyente"
     if _RE_LOGIN_WALL.search(cuerpo[:3000]):
-        return "pide_cuenta"
+        return "no_verificable"
     return "abre"
 
 

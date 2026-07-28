@@ -535,7 +535,13 @@ def _resolver_valor_nota(grade_cfg, nota) -> tuple[float | None, str | None, lis
 
 def nota_display(grade_cfg, grade_value) -> str | None:
     """Convierte el valor crudo de una nota (get_grades) a texto legible según el tipo:
-    escala → 'Aprobado'/'Desaprobado'; numérica → el número limpio. None si no hay nota."""
+    escala → 'Aprobado'/'Desaprobado'; numérica → el número limpio. None si no hay nota.
+
+    Ante una escala DESCONOCIDA no se devuelve el número crudo. En la escala 5 de la TUP
+    el 1 es "Aprobado" y el 2 "Desaprobado" — van invertidos respecto de lo intuitivo —,
+    así que mostrar un índice suelto de otra escala se puede leer exactamente al revés:
+    alguien vería "1" y entendería "la peor nota". Vale mucho más un aviso feo que un
+    número que miente."""
     if grade_value in (None, "", "-1.00000", "-1"):
         return None
     try:
@@ -543,16 +549,20 @@ def nota_display(grade_cfg, grade_value) -> str | None:
     except (TypeError, ValueError):
         gc = 0
     if gc < 0:
-        mapa = _ESCALAS.get(-gc)
-        if mapa:
-            try:
-                idx = int(float(str(grade_value).replace(",", ".")))
-            except (TypeError, ValueError):
-                return str(grade_value)
-            for k, v in mapa.items():
-                if v == idx:
-                    return k.capitalize()
-        return str(grade_value)
+        scaleid = -gc
+        mapa = _ESCALAS.get(scaleid)
+        if mapa is None:
+            return (f"⚠️ escala {scaleid} desconocida (valor crudo: {grade_value}) — "
+                    "no la interpreto, confirmá en el campus")
+        try:
+            idx = int(float(str(grade_value).replace(",", ".")))
+        except (TypeError, ValueError):
+            return f"⚠️ valor ilegible en escala {scaleid}: {grade_value!r}"
+        for k, v in mapa.items():
+            if v == idx:
+                return k.capitalize()
+        return (f"⚠️ el valor {idx} no está en la escala {scaleid} "
+                f"(esperaba: {', '.join(str(v) for v in sorted(mapa.values()))})")
     try:
         f = float(str(grade_value).replace(",", "."))
         return str(int(f)) if f == int(f) else f"{f:g}"

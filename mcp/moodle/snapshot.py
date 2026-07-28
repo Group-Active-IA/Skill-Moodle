@@ -106,6 +106,10 @@ async def tomar_snapshot(client, course_ids: list[int] | None = None) -> dict:
     padron: dict[str, dict] = {}  # email -> {nombre, comisiones:set, ultimo_acceso:ts}
     grades_cache: dict[int, dict] = {}
     total_comisiones = 0
+    # Tareas que fallaron y quedaron con datos de una corrida anterior. Se acumulan para
+    # devolverlas: antes esto sólo iba a un log.warning que nadie mira, y el resultado
+    # salía idéntico al de un snapshot sano.
+    degradadas: list[dict] = []
 
     for course_id in cursos:
         comisiones = await _comisiones_del_curso(course_id)
@@ -136,6 +140,14 @@ async def tomar_snapshot(client, course_ids: list[int] | None = None) -> dict:
                     prev = await almacen.entregas_previas(com["comision"], t["id"])
                     entregas_acc.extend(prev)
                     log.warning("  %-30s SALTEADA — reuso %d entregas previas", t["titulo"][:30], len(prev))
+                    degradadas.append({
+                        "comision": com["comision"],
+                        "tarea": t["titulo"],
+                        "assign_id": t["id"],
+                        "entregas_reusadas": len(prev),
+                        "detalle": ("Falló 3 veces: se reusaron los datos de la corrida "
+                                    "anterior. Estos números NO son de hoy."),
+                    })
                     continue
 
                 est = [p for p in lp if ws_api._es_estudiante(p)]
@@ -198,7 +210,22 @@ async def tomar_snapshot(client, course_ids: list[int] | None = None) -> dict:
         )
         alumnos += 1
     log.info("Snapshot OK: %d filas, %d entregas, %d alumnos", filas, entregas, alumnos)
-    return {"fecha": hoy, "filas": filas, "entregas": entregas, "alumnos": alumnos}
+    salida = {
+        "fecha": hoy, "filas": filas, "entregas": entregas, "alumnos": alumnos,
+        "_meta": {
+            "fuente": "vivo",
+            "degradado": bool(degradadas),
+            "tareas_degradadas": degradadas,
+        },
+    }
+    if degradadas:
+        coms = sorted({d["comision"] for d in degradadas})
+        salida["aviso"] = (
+            f"⚠️ {len(degradadas)} tarea(s) NO se pudieron relevar y quedaron con datos de "
+            f"una corrida anterior (comisiones: {', '.join(coms)}). Los números de esas "
+            "tareas no son de hoy: mirá `tareas_degradadas` antes de confiar en ellos."
+        )
+    return salida
 
 
 async def _main() -> None:
