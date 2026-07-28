@@ -122,8 +122,24 @@ async def chequear(forzar: bool = False) -> dict:
         "version_instalada": local,
         "version_publicada": remota,
         "disponible": nueva,
-        "_meta": {"fuente": "cache" if de_cache else "vivo", "ttl_s": _CACHE_TTL_S},
+        "_meta": {
+            "fuente": "cache" if de_cache else "vivo",
+            "ttl_s": _CACHE_TTL_S,
+            # raw.githubusercontent responde con `cache-control: max-age=300` y no respeta
+            # ni `Cache-Control: no-cache` ni un cache-buster en la query (verificado): la
+            # versión recién publicada puede tardar unos minutos en verse. Para avisar de
+            # actualizaciones da igual, pero se dice — un `disponible: false` recién
+            # después de un push puede estar mirando el dato viejo.
+            "latencia_cdn_s": 300,
+        },
     }
+    if not nueva and _tupla(local) > _tupla(remota):
+        # El local es MÁS nuevo que lo publicado: pasa mientras el CDN se pone al día
+        # después de un push, o si estás trabajando sobre la skill sin publicar.
+        salida["nota"] = (
+            f"Tenés la {local} y GitHub publica la {remota}: o venís de publicar hace un "
+            "rato (el CDN tarda hasta 5 min) o estás sobre una versión sin publicar."
+        )
     if nueva:
         salida["aviso"] = (
             f"Hay una versión nueva de la skill: {remota} (tenés la {local}). "
