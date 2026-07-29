@@ -61,31 +61,76 @@ y llevalo de la mano. Un tutor no sabe qué tools existen; el menú es su interf
 ```
 📚 Campus TUP — ¿qué querés hacer?
 
-  1. 📊 Analizar mis comisiones   — cómo vienen, qué falta corregir
-  2. 👤 Analizar un alumno        — su avance, entregas y notas
-  3. 📥 Buscar entregas           — pendientes de una tarea o comisión
-  4. ⚙️  Mis datos                — ver mi configuración guardada
-  5. 🔄 Remapear mis comisiones   — redescubrir del campus (cambió la cohorte)
+  1. 🔴 Quiénes están abandonando  — cruza inactividad + entregas faltantes
+  2. ✍️  Corregir TPs              — de a uno, o una tarea entera en tanda
+  3. 📊 Cómo vienen mis comisiones — qué falta corregir, informe en PDF
+  4. 👤 Ver un alumno              — su avance, entregas y notas
+  5. 📈 En qué falla la comisión   — los errores que más se repiten al corregir
+  6. ⚙️  Mis datos / remapear      — ver o rehacer la configuración
 
 Decime el número, o contame con tus palabras qué necesitás.
 ```
 
 **Qué hace cada opción** (mapeo a tools; el tutor puede pedir por número o por palabras):
 
-1. **Analizar mis comisiones** → `actualizar_tableros` (refrescá primero, avisá que
-   tarda) y presentá los pendientes por comisión; ofrecé `armar_informe` (PDF) al final.
-2. **Analizar un alumno** → pedí nombre o email, `buscar_alumno`, y mostrá su avance,
-   entregas y notas. Si pide corregirle algo, va por el flujo de escritura (con OK).
-3. **Buscar entregas** → pedí la tarea/comisión y usá `entregas_tarea`: te da de una el
-   padrón completo (quién entregó, quién no y con qué nota) en segundos. `sumario` para el
-   conteo oficial. NO corras el snapshot para esto.
-4. **Mis datos** → `mis_datos`: mostrale sus cursos, comisiones y tareas mapeadas.
-5. **Remapear mis comisiones** → corré el bootstrap de nuevo (`aulas` → elegir materia →
-   `descubrir_comisiones` → validar → `guardar_mis_datos`). Útil cuando cambió la cohorte.
+1. **Quiénes están abandonando** → `alumnos_en_riesgo`. Es lo primero del menú porque es lo
+   que más impacto tiene: la deserción avisa antes de pasar y ninguna otra vista cruza las
+   dos señales. Presentá los 🔴 primero con su motivo; ofrecé escribirles (va por
+   `responder_mensaje`, con OK). Si devuelve `sin_alumnos`, decilo tal cual: la comisión
+   todavía no tiene matriculados, NO es que estén todos al día.
+2. **Corregir TPs** → preguntá si es **uno puntual** o **una tarea entera**:
+   - Uno puntual: `ver_entrega` (LEELA, no califiques a ciegas) → proponé nota y devolución
+     con el porqué → `cargar_nota` con preview → OK → confirmado.
+   - Tarea entera: el flujo de lote (ver más abajo). Es el que conviene con más de 3 o 4.
+3. **Cómo vienen mis comisiones** → `pendientes_por_corregir` / `entregas_tarea` en vivo.
+   `actualizar_tableros` sólo si hace falta el histórico (avisá que tarda). Ofrecé
+   `armar_informe` (PDF) al final.
+4. **Ver un alumno** → pedí nombre o email y usá `buscar_alumno` (en vivo, no necesita
+   snapshot). Con `traza=true` trae qué entregó y qué nota sacó en cada tarea — tarda más,
+   pedilo sólo si hace falta la situación académica completa.
+5. **En qué falla la comisión** → `errores_frecuentes`. Cuando un tema aparece en más del
+   40% de los corregidos viene marcado `sistemico`: a esa altura el problema ya no es de
+   los alumnos, es del material o de cómo se dio el tema. Decíselo así.
+6. **Mis datos / remapear** → `mis_datos` para mostrar la config; si cambió la cohorte,
+   bootstrap de nuevo (`aulas` → elegir materia → `descubrir_comisiones` → validar →
+   `guardar_mis_datos`).
 
 Después de resolver una opción, ofrecé volver al menú ("¿algo más? volvemos al menú").
 El menú es una ayuda, no una jaula: si el tutor pide algo directo ("qué me falta en la
 23"), hacelo sin pasar por el menú.
+
+**Si `mis_datos` trae `actualizacion_disponible`**, avisale al tutor en una línea antes de
+seguir: hay una versión nueva de la skill y se actualiza con `actualizar_skill` (después
+hay que reiniciar Claude Code). No lo conviertas en una conversación: una línea y seguí.
+
+## Corregir una tarea entera — el flujo de lote
+
+Con más de 3 o 4 entregas, corregir de a una es ir y volver una vez por alumno. La cola
+resuelve eso: se va anotando alumno por alumno **sin tocar Moodle** y al final una sola
+confirmación escribe todo.
+
+```
+preparar_correccion(assign_id, group_id)   arma la cola con los pendientes
+siguiente_para_corregir()                  próximo alumno CON su entrega ya bajada
+   → leé el trabajo, decidí nota y devolución
+anotar_correccion(...)                     lo guarda en la cola (NO escribe en Moodle)
+   → repetí hasta que no quede nadie
+confirmar_cola(confirmado=false)           mostrale las N juntas
+confirmar_cola(confirmado=true)            recién acá se escriben, y se verifican
+```
+
+Reglas del lote:
+
+- **Mostrale el preview completo antes de confirmar.** "Un solo OK" no es "OK a ciegas":
+  el tutor tiene que ver las N notas con su devolución antes de decidir.
+- **La cola es persistente.** Si la sesión se corta, al volver se sigue donde estaba: no
+  vuelvas a preparar la cola salvo que el tutor quiera descartarla (`reemplazar=true`).
+- **Si alguna falla, las demás igual se escriben.** Reportá cuáles fallaron y por qué; las
+  fallidas quedan en la cola para reintentar sin duplicar las que ya salieron.
+- **Etiquetá siempre** (`etiquetas=[...]`): son los temas del error, en kebab-case y
+  **reutilizando el mismo nombre entre alumnos** (`perimetro-circulo`, no "el perímetro"
+  en uno y "circunferencia" en otro). Es lo único que alimenta `errores_frecuentes`, y ese
+  dato **no se puede reconstruir después**: exigiría releer todas las entregas de nuevo.
 
 ## Instalación (para el tutor)
 

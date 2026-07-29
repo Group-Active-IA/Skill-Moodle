@@ -21,9 +21,16 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
   la respuesta previsualizada antes de publicarla.
 - **Auditoría de aula**: chequea que el aula esté bien armada (presencia, ausencia y
   consistencia de actividades), con un pase por navegador para lo que la API no expone.
+- **Detecta quién está abandonando**: cruza días sin entrar con tareas seguidas sin
+  entregar. Ninguna vista del campus junta esas dos señales, y la deserción avisa antes
+  de pasar.
 - **Informes en PDF** de pendientes por comisión.
 - **Ver la entrega antes de calificar**: baja el trabajo del alumno, descomprime el `.zip`
   y te muestra el código. Calificar sin haber visto lo entregado deja de ser posible.
+- **Corrección en lote**: resolvés una tarea entera alumno por alumno sin tocar Moodle, y
+  una sola confirmación —con el detalle de las N notas a la vista— escribe todo.
+- **En qué falla tu comisión**: registra los temas que marcás al corregir y te dice cuáles
+  se repiten. Cuando un error aparece en más del 40%, el problema dejó de ser individual.
 - **Carga notas** con su devolución, mostrándote qué va a escribir y esperando tu OK.
   Después de escribir **relee la nota** para confirmar que quedó guardada de verdad.
 - **Corrección automática con Active-IA** (opcional): baja el trabajo del alumno,
@@ -109,7 +116,7 @@ Skill-Moodle/
 ├── VERSION                   # Versión publicada (la compara `version_skill`)
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 31 tools (configurar, aulas, mensajes, foros, snapshot, informe, auditoría, ver_entrega, cargar_nota, Active-IA…)
+│   ├── server.py             # 37 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, Active-IA…)
 │   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
 │   ├── comisiones.json       # Catálogo tutor→comisión y cmid de actividades por materia
 │   ├── requirements.txt
