@@ -740,8 +740,18 @@ async def alumnos_en_riesgo(course_id: int | None = None, group_id: int = 0,
             "avisos": avisos,
         },
     }
-    if not total_rojo and not total_amarillo:
-        salida["resumen"] = "Nadie en riesgo: todos vienen entrando y entregando."
+    con_alumnos = [c for c in por_comision if c.get("alumnos_totales")]
+    if not con_alumnos:
+        # Arranque de cuatrimestre: ninguna comisión tiene matriculados todavía.
+        vacias = ", ".join(c["comision"] for c in por_comision) or "(ninguna)"
+        salida["sin_alumnos"] = True
+        salida["resumen"] = (f"Ninguna de tus comisiones ({vacias}) tiene alumnos "
+                             "matriculados todavía. Eso NO es 'están todos al día': no hay "
+                             "a quién evaluar. Volvé a correrlo cuando arranque la cursada.")
+    elif not total_rojo and not total_amarillo:
+        n = sum(c["alumnos_totales"] for c in con_alumnos)
+        salida["resumen"] = (f"Nadie en riesgo: los {n} alumnos vienen entrando y "
+                             "entregando.")
     else:
         salida["resumen"] = (f"{total_rojo} en rojo y {total_amarillo} en amarillo. "
                              "Los rojos son los que hay que contactar esta semana.")
@@ -897,7 +907,7 @@ async def corregir_con_active_ia(
 # ---------- ESCRITURA (con confirmación) ----------
 @mcp.tool()
 async def cargar_nota(assign_id: str, email: str, nota: str, mensaje: str,
-                      confirmado: bool = False) -> dict:
+                      confirmado: bool = False, etiquetas: list[str] | None = None) -> dict:
     """Escribe nota + devolución en Moodle. Llamá primero con confirmado=false para
     previsualizar; recién tras el OK del tutor, confirmado=true.
 
@@ -906,8 +916,81 @@ async def cargar_nota(assign_id: str, email: str, nota: str, mensaje: str,
       Si no coincide, devuelve es_escala=true + la lista de opciones válidas.
     - **Integrador (TIO) / numéricas**: pasá el número (coma decimal, ej. '9,85').
     Devuelve `verificado` (relee la nota por API para confirmar el guardado). (API REST:
-    mod_assign_save_grade — sin navegador.)"""
-    return await ws_api.cargar_nota(_cli(), assign_id, email, nota, mensaje, confirmado)
+    mod_assign_save_grade — sin navegador.)
+
+    `etiquetas`: los TEMAS que se le marcaron al alumno, en kebab-case y reutilizables
+    entre alumnos (ej. ["perimetro-circulo", "conversion-unidades", "operador-mayor-igual"]).
+    Poné una por error real corregido; si el trabajo estaba impecable, dejalas vacías.
+    Se guardan en la bitácora local y son lo que después alimenta `errores_frecuentes`:
+    sin ellas, ese dato NO se puede reconstruir después. Usá el MISMO nombre de tema para
+    el mismo error en distintos alumnos — ahí está toda la gracia."""
+    res = await ws_api.cargar_nota(_cli(), assign_id, email, nota, mensaje, confirmado)
+
+    # Bitácora: sólo si la nota efectivamente quedó escrita. Registrar un preview o una
+    # escritura fallida contaminaría las estadísticas con correcciones que no existieron.
+    if confirmado and res.get("ok"):
+        try:
+            await almacen.init_db()
+            datos = await almacen.get_mis_datos() or {}
+            curso = tarea = comision = None
+            for c in datos.get("cursos", []):
+                for t in c.get("tareas", []):
+                    if str(t.get("assign_id")) == str(assign_id):
+                        curso, tarea = c.get("course_id"), t.get("titulo")
+                        coms = c.get("comisiones_del_tutor", [])
+                        comision = coms[0].get("comision") if len(coms) == 1 else None
+                        break
+            await almacen.guardar_correccion({
+                "course_id": curso, "assign_id": assign_id, "tarea": tarea,
+                "comision": comision, "email": email, "alumno": res.get("alumno"),
+                "nota": res.get("nota"), "devolucion": mensaje,
+                "etiquetas": etiquetas or [],
+            })
+            res["registrado_en_bitacora"] = True
+        except Exception as e:  # noqa: BLE001 — la bitácora nunca debe romper la carga
+            log.warning("No pude registrar la corrección: %s: %s", type(e).__name__, e)
+            res["registrado_en_bitacora"] = False
+            res["aviso_bitacora"] = ("La nota se cargó bien, pero no se pudo registrar en "
+                                     "la bitácora local: este caso no va a figurar en "
+                                     "errores_frecuentes.")
+    return res
+
+
+@mcp.tool()
+async def errores_frecuentes(course_id: int | None = None, assign_id: str | None = None,
+                             comision: str | None = None) -> dict:
+    """En qué se está equivocando TU comisión, agregado sobre las correcciones ya hechas.
+
+    Deja de ser "qué le pasó a este alumno" y pasa a ser "qué no quedó bien explicado":
+    cuando el mismo error aparece en más del 40% de los corregidos se marca `sistemico`,
+    porque a esa altura el problema ya no es de los alumnos — es del material o de cómo se
+    dio el tema.
+
+    Se alimenta de las `etiquetas` que se pasan al `cargar_nota`. Si no se etiqueta al
+    corregir, acá no hay nada que mostrar: **el dato no se puede reconstruir después**,
+    porque exigiría releer todas las entregas de nuevo.
+
+    Sin filtros toma toda la bitácora; se puede acotar por curso, tarea o comisión."""
+    await almacen.init_db()
+    r = await almacen.errores_frecuentes(course_id=course_id, assign_id=assign_id,
+                                         comision=comision)
+    n = r["correcciones_registradas"]
+    if not n:
+        return {**r, "aviso": (
+            "Todavía no hay correcciones registradas con etiquetas. Se van cargando solas a "
+            "medida que corregís con `cargar_nota(..., etiquetas=[...])`. Arranca vacío a "
+            "propósito: es un histórico, no una foto.")}
+    sistemicos = [t for t in r["temas"] if t["sistemico"]]
+    salida = {**r, "temas_sistemicos": len(sistemicos)}
+    if sistemicos:
+        cuales = ", ".join(f"{t['tema']} ({t['porcentaje']}%)" for t in sistemicos[:5])
+        salida["resumen"] = (
+            f"Sobre {n} corrección/es: {cuales}. Con esa proporción no es un problema "
+            "individual — conviene reforzar el tema con toda la comisión.")
+    else:
+        salida["resumen"] = (f"Sobre {n} corrección/es no hay ningún error que se repita en "
+                             "más del 40%: los desvíos vienen siendo individuales.")
+    return salida
 
 
 if __name__ == "__main__":

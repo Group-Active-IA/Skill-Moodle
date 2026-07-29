@@ -237,5 +237,71 @@ class TestVersionSemver(unittest.TestCase):
         self.assertEqual(_tupla("1.2.x"), (1, 2, 0))
 
 
+class TestErroresFrecuentes(unittest.TestCase):
+    """Bitácora de correcciones: de "este alumno se equivocó" a "esto no se explicó bien".
+
+    Usa una base temporal (`MOODLE_SKILL_HOME`), así que no toca los datos del tutor ni
+    necesita red.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import asyncio
+        import importlib
+        import os
+        import tempfile
+
+        cls._tmp = tempfile.mkdtemp()
+        cls._home_previo = os.environ.get("MOODLE_SKILL_HOME")
+        os.environ["MOODLE_SKILL_HOME"] = cls._tmp
+        from moodle import almacen
+        importlib.reload(almacen)          # relee HOME/DB_PATH del entorno nuevo
+        cls.almacen = almacen
+        # OJO: el helper NO puede llamarse `run` — ese es el método con el que unittest
+        # ejecuta cada test, y pisarlo rompe la corrida entera.
+        cls.correr = staticmethod(asyncio.run)
+        asyncio.run(almacen.init_db())
+
+    @classmethod
+    def tearDownClass(cls):
+        import os
+        if cls._home_previo is None:
+            os.environ.pop("MOODLE_SKILL_HOME", None)
+        else:
+            os.environ["MOODLE_SKILL_HOME"] = cls._home_previo
+
+    def _corregir(self, alumno, etiquetas):
+        self.correr(self.almacen.guardar_correccion({
+            "course_id": 74, "assign_id": "17703", "tarea": "u1", "comision": "com6",
+            "email": f"{alumno}@x.com", "alumno": alumno, "nota": "Aprobado",
+            "devolucion": "…", "etiquetas": etiquetas}))
+
+    def test_arranca_vacio_sin_inventar_nada(self):
+        # Agosto empieza de cero: sin correcciones no hay temas, y eso es correcto.
+        r = self.correr(self.almacen.errores_frecuentes(assign_id="no-existe"))
+        self.assertEqual(r["correcciones_registradas"], 0)
+        self.assertEqual(r["temas"], [])
+
+    def test_marca_sistemico_lo_que_le_pasa_a_muchos(self):
+        for a, e in (("ana", ["perimetro"]), ("beto", ["perimetro"]),
+                     ("caro", ["perimetro"]), ("dani", []), ("eve", ["otro-tema"])):
+            self._corregir(a, e)
+        r = self.correr(self.almacen.errores_frecuentes(course_id=74))
+        temas = {t["tema"]: t for t in r["temas"]}
+        # 3 de 5 = 60% -> el problema dejó de ser individual
+        self.assertEqual(temas["perimetro"]["alumnos_afectados"], 3)
+        self.assertEqual(temas["perimetro"]["porcentaje"], 60)
+        self.assertTrue(temas["perimetro"]["sistemico"])
+        # 1 de 5 = 20% -> caso puntual
+        self.assertFalse(temas["otro-tema"]["sistemico"])
+
+    def test_el_porcentaje_es_sobre_los_CORREGIDOS_no_sobre_los_afectados(self):
+        # Lo que importa no es "3 se equivocaron" sino "3 de 5": sin el denominador el
+        # número no dice si hay que rehacer la clase o hablar con una persona.
+        r = self.correr(self.almacen.errores_frecuentes(course_id=74))
+        for t in r["temas"]:
+            self.assertEqual(t["de_corregidos"], r["correcciones_registradas"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

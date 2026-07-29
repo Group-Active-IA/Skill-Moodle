@@ -524,6 +524,18 @@ async def alumnos_en_riesgo(client, course_id: int, group_id: int, tareas: list[
     alumnos = await _alumnos_de_comision(client, course_id, group_id)
     if isinstance(alumnos, dict):
         return alumnos
+    if not alumnos:
+        # Comisión sin matriculados (arranque de cuatrimestre). "0 en riesgo" acá NO es
+        # "todos al día": es que no hay a quién medir. Decir lo primero deja al tutor sin
+        # saber si la herramienta anda o si todavía no hay alumnos.
+        return {
+            "ok": True, "course_id": course_id, "group_id": group_id,
+            "alumnos_totales": 0, "en_riesgo": 0, "rojo": 0, "amarillo": 0, "alumnos": [],
+            "sin_alumnos": True,
+            "aviso": "Esta comisión todavía no tiene alumnos matriculados: no hay a quién "
+                     "evaluar. No es que estén al día.",
+            "_meta": {"fuente": "vivo", "tareas_pedidas": len(tareas), "degradado": False},
+        }
     if not tareas:
         return {"error": "No tengo tareas mapeadas para este curso, así que no puedo ver "
                          "quién dejó de entregar.",

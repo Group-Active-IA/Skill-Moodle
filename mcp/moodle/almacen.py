@@ -73,9 +73,31 @@ CREATE TABLE IF NOT EXISTS entregas (
     pendiente INTEGER
 );
 
+-- Bitácora de correcciones. A diferencia de `entregas` (que es una foto del estado
+-- actual y se pisa entera en cada snapshot), esto es HISTÓRICO y sólo crece: cada nota
+-- cargada queda con su devolución y los temas que se le marcaron al alumno.
+-- Para qué: cuando media comisión falla en lo mismo, el problema no son los alumnos —
+-- es que ese tema no quedó bien explicado. Ese dato sólo se puede ver acumulando, y se
+-- pierde para siempre si no se guarda en el momento de corregir.
+CREATE TABLE IF NOT EXISTS correcciones (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha         TEXT,
+    course_id     INTEGER,
+    assign_id     TEXT,
+    tarea         TEXT,
+    comision      TEXT,
+    email         TEXT,
+    alumno        TEXT,
+    nota          TEXT,
+    devolucion    TEXT,
+    etiquetas     TEXT   -- JSON: ["perimetro-circulo", "conversion-unidades"]
+);
+
 CREATE INDEX IF NOT EXISTS idx_snapshots_fecha ON snapshots(fecha);
 CREATE INDEX IF NOT EXISTS idx_snapshots_com_assign ON snapshots(comision, assign_id);
 CREATE INDEX IF NOT EXISTS idx_entregas_email ON entregas(email);
+CREATE INDEX IF NOT EXISTS idx_correcciones_assign ON correcciones(assign_id, comision);
+CREATE INDEX IF NOT EXISTS idx_correcciones_curso ON correcciones(course_id);
 """
 
 
@@ -305,6 +327,82 @@ def _traza_alumno(email: str) -> dict | None:
 
 async def traza_alumno(email: str) -> dict | None:
     return await asyncio.to_thread(_traza_alumno, email)
+
+
+# --- correcciones (bitácora histórica) ---
+
+def _guardar_correccion(reg: dict) -> None:
+    con = _conectar()
+    try:
+        con.execute(
+            "INSERT INTO correcciones (fecha, course_id, assign_id, tarea, comision, "
+            "email, alumno, nota, devolucion, etiquetas) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (_ahora(), reg.get("course_id"), str(reg.get("assign_id") or ""),
+             reg.get("tarea"), reg.get("comision"), (reg.get("email") or "").lower(),
+             reg.get("alumno"), reg.get("nota"), reg.get("devolucion"),
+             json.dumps(reg.get("etiquetas") or [], ensure_ascii=False)),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+async def guardar_correccion(reg: dict) -> None:
+    await asyncio.to_thread(_guardar_correccion, reg)
+
+
+def _errores_frecuentes(course_id: int | None = None, assign_id: str | None = None,
+                        comision: str | None = None) -> dict:
+    """Agrega las etiquetas de las correcciones ya hechas.
+
+    El porcentaje se calcula sobre los alumnos CORREGIDOS, no sobre los que tienen el
+    error: lo que importa pedagógicamente no es "8 alumnos se equivocaron" sino "8 de 12",
+    que es cuando deja de ser un problema individual."""
+    where, params = [], []
+    if course_id:
+        where.append("course_id = ?"); params.append(course_id)
+    if assign_id:
+        where.append("assign_id = ?"); params.append(str(assign_id))
+    if comision:
+        where.append("comision = ?"); params.append(comision)
+    sql = "SELECT tarea, assign_id, comision, alumno, nota, etiquetas FROM correcciones"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+
+    con = _conectar()
+    try:
+        filas = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+
+    corregidas = len(filas)
+    conteo: dict[str, list] = {}
+    for f in filas:
+        try:
+            etiquetas = json.loads(f["etiquetas"] or "[]")
+        except (ValueError, TypeError):
+            etiquetas = []
+        for e in etiquetas:
+            conteo.setdefault(str(e), []).append(f["alumno"])
+
+    items = []
+    for etiqueta, alumnos in conteo.items():
+        pct = round(100 * len(alumnos) / corregidas) if corregidas else 0
+        items.append({
+            "tema": etiqueta,
+            "alumnos_afectados": len(alumnos),
+            "de_corregidos": corregidas,
+            "porcentaje": pct,
+            "sistemico": pct >= 40,
+            "quienes": sorted(a for a in alumnos if a)[:12],
+        })
+    items.sort(key=lambda i: -i["alumnos_afectados"])
+    return {"correcciones_registradas": corregidas, "temas": items}
+
+
+async def errores_frecuentes(course_id: int | None = None, assign_id: str | None = None,
+                             comision: str | None = None) -> dict:
+    return await asyncio.to_thread(_errores_frecuentes, course_id, assign_id, comision)
 
 
 def _buscar_alumnos(texto: str, limite: int = 8) -> list[dict]:
