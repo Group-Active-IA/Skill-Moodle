@@ -1039,14 +1039,43 @@ async def anotar_correccion(assign_id: str, group_id: int, email: str, nota: str
     await almacen.init_db()
     ok = await almacen.cola_anotar(assign_id, group_id, email, nota, mensaje, etiquetas or [])
     if not ok:
-        return {"error": f"{email} no está en la cola de esta tarea/comisión (o ya se "
-                         "escribió). Corré `preparar_correccion` primero."}
+        # Se aceptan pendiente/anotado/error/salteado; si llegó acá, o no está en la cola o
+        # ya se escribió (esas no se reabren: para cambiar una nota cargada va cargar_nota).
+        return {"error": f"No pude anotar a {email} en la cola de esta tarea/comisión.",
+                "posibles_motivos": [
+                    "no está en la cola (¿corriste `preparar_correccion`?)",
+                    "su nota YA se escribió en Moodle — para cambiarla usá `cargar_nota`",
+                ]}
     faltan = await almacen.cola_listar(assign_id, group_id, estados=("pendiente",))
     listos = await almacen.cola_listar(assign_id, group_id, estados=("anotado",))
     return {"ok": True, "anotado": email, "nota": nota,
             "quedan_pendientes": len(faltan), "anotados": len(listos),
             "siguiente_paso": ("Seguí con `siguiente_para_corregir`." if faltan
                                else "No queda nadie: revisá todo con `confirmar_cola`.")}
+
+
+@mcp.tool()
+async def saltear_en_cola(assign_id: str, group_id: int, email: str,
+                          motivo: str) -> dict:
+    """Saca a un alumno de la cola SIN calificarlo, dejando registrado por qué.
+
+    No todo lo que está pendiente se puede corregir. El caso que motivó esto: un alumno
+    subió los apuntes de la cátedra en vez de su TP — no merece Aprobado ni Desaprobado,
+    necesita que le avisen que suba el archivo correcto. Sin esta salida, la cola devolvía
+    siempre a la misma persona y la única forma de avanzar era ponerle una nota falsa.
+
+    Usalo también con entregas ilegibles, archivos corruptos o cualquier caso donde haga
+    falta hablar con el alumno antes de poner nota. El `motivo` queda guardado y aparece
+    en el resumen de `confirmar_cola`."""
+    await almacen.init_db()
+    ok = await almacen.cola_saltear(assign_id, group_id, email, motivo)
+    if not ok:
+        return {"error": f"{email} no está pendiente en la cola de esta tarea/comisión."}
+    faltan = await almacen.cola_listar(assign_id, group_id, estados=("pendiente",))
+    return {"ok": True, "salteado": email, "motivo": motivo,
+            "quedan_pendientes": len(faltan),
+            "recordatorio": "Salteado NO es calificado: este alumno sigue sin nota en "
+                            "Moodle. Si hay que avisarle, usá `responder_mensaje`."}
 
 
 @mcp.tool()
@@ -1105,6 +1134,15 @@ async def confirmar_cola(assign_id: str | None = None, group_id: int | None = No
     else:
         salida["resumen"] = (f"Listo: {len(escritas)} notas escritas y verificadas. "
                              "Mirá `errores_frecuentes` para ver qué falló toda la comisión.")
+
+    # Los salteados NO se escribieron y siguen sin nota: hay que recordarlo o se pierden.
+    salteados = await almacen.cola_listar(assign_id, group_id, estados=("salteado",))
+    if salteados:
+        salida["salteados"] = [{"alumno": s["alumno"], "email": s["email"],
+                                "motivo": s.get("resultado")} for s in salteados]
+        salida["aviso_salteados"] = (
+            f"⚠️ {len(salteados)} alumno(s) quedaron SALTEADOS: no se les escribió nota y "
+            "siguen pendientes en Moodle. Revisá el motivo de cada uno y avisales.")
     return salida
 
 
@@ -1134,7 +1172,16 @@ async def errores_frecuentes(course_id: int | None = None, assign_id: str | None
             "propósito: es un histórico, no una foto.")}
     sistemicos = [t for t in r["temas"] if t["sistemico"]]
     salida = {**r, "temas_sistemicos": len(sistemicos)}
-    if sistemicos:
+    if not r.get("muestra_suficiente"):
+        # Con pocas correcciones el porcentaje engaña: 1 de 2 da 50%. Se muestran los temas
+        # igual (sirven para ir viendo), pero sin sacar conclusiones sobre la comisión.
+        top = ", ".join(f"{t['tema']} ({t['alumnos_afectados']})" for t in r["temas"][:5])
+        salida["resumen"] = (
+            f"Todavía son pocas correcciones ({n}, hacen falta {r['muestra_minima']}) como "
+            "para hablar de la comisión: un porcentaje sobre esta cantidad engaña. "
+            + (f"Por ahora aparecieron: {top}." if top else "Sin temas registrados aún.")
+            + " Seguí corrigiendo y el dato se vuelve confiable solo.")
+    elif sistemicos:
         cuales = ", ".join(f"{t['tema']} ({t['porcentaje']}%)" for t in sistemicos[:5])
         salida["resumen"] = (
             f"Sobre {n} corrección/es: {cuales}. Con esa proporción no es un problema "

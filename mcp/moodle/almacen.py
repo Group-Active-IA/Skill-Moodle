@@ -397,17 +397,52 @@ def _cola_siguiente(assign_id: str | None, group_id: int | None) -> dict | None:
 
 def _cola_anotar(assign_id: str, group_id: int, email: str, nota: str,
                  devolucion: str, etiquetas: list) -> bool:
+    """Anota (o RE-anota) la corrección de un alumno de la cola.
+
+    Acepta también las filas en estado 'error' y 'salteado', y ese detalle no es menor:
+    `confirmar_cola` promete "las fallidas quedaron en la cola, arreglá el motivo y volvé a
+    confirmar", pero si acá sólo se aceptaran 'pendiente'/'anotado' esa promesa sería
+    mentira — la fila fallida quedaría en un estado del que no se puede salir y el tutor no
+    tendría forma de corregir el error que la propia herramienta le señaló.
+    Las 'escrito' NO se aceptan a propósito: para cambiar una nota ya cargada está
+    `cargar_nota`, y reabrirlas acá permitiría duplicar escrituras sin querer."""
     con = _conectar()
     try:
         cur = con.execute(
-            "UPDATE cola_correccion SET nota=?, devolucion=?, etiquetas=?, estado='anotado' "
-            "WHERE assign_id=? AND group_id=? AND email=? AND estado IN ('pendiente','anotado')",
+            "UPDATE cola_correccion SET nota=?, devolucion=?, etiquetas=?, "
+            "estado='anotado', resultado=NULL "
+            "WHERE assign_id=? AND group_id=? AND email=? "
+            "AND estado IN ('pendiente','anotado','error','salteado')",
             (nota, devolucion, json.dumps(etiquetas or [], ensure_ascii=False),
              str(assign_id), group_id, (email or "").lower()))
         con.commit()
         return cur.rowcount > 0
     finally:
         con.close()
+
+
+def _cola_saltear(assign_id: str, group_id: int, email: str, motivo: str) -> bool:
+    """Saca a un alumno de la cola SIN calificarlo.
+
+    Hace falta porque no todo lo que está pendiente se puede corregir: alguien que subió
+    el archivo equivocado (pasó: un alumno entregó los apuntes de la cátedra en vez de su
+    TP) no merece ni Aprobado ni Desaprobado — necesita que le avisen. Sin esta salida, la
+    cola devolvía siempre a la misma persona y la única forma de avanzar era ponerle una
+    nota que no correspondía."""
+    con = _conectar()
+    try:
+        cur = con.execute(
+            "UPDATE cola_correccion SET estado='salteado', resultado=? "
+            "WHERE assign_id=? AND group_id=? AND email=? AND estado IN ('pendiente','anotado')",
+            (motivo, str(assign_id), group_id, (email or "").lower()))
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+async def cola_saltear(assign_id, group_id, email, motivo):
+    return await asyncio.to_thread(_cola_saltear, assign_id, group_id, email, motivo)
 
 
 def _cola_listar(assign_id: str | None = None, group_id: int | None = None,
@@ -509,6 +544,12 @@ async def guardar_correccion(reg: dict) -> None:
     await asyncio.to_thread(_guardar_correccion, reg)
 
 
+# Correcciones mínimas para que un porcentaje signifique algo. Por debajo de esto no se
+# marca nada como sistémico: con 2 corregidos, 1 error da 50% y sugeriría rehacer la clase
+# por una sola persona.
+_MUESTRA_MINIMA = 5
+
+
 def _errores_frecuentes(course_id: int | None = None, assign_id: str | None = None,
                         comision: str | None = None) -> dict:
     """Agrega las etiquetas de las correcciones ya hechas.
@@ -551,11 +592,16 @@ def _errores_frecuentes(course_id: int | None = None, assign_id: str | None = No
             "alumnos_afectados": len(alumnos),
             "de_corregidos": corregidas,
             "porcentaje": pct,
-            "sistemico": pct >= 40,
+            # Un porcentaje sobre 2 correcciones no significa nada: 1 de 2 da 50% y
+            # marcaría "reforzalo con toda la comisión" porque una persona se equivocó.
+            # Recién con MUESTRA_MINIMA el número empieza a decir algo.
+            "sistemico": pct >= 40 and corregidas >= _MUESTRA_MINIMA,
             "quienes": sorted(a for a in alumnos if a)[:12],
         })
     items.sort(key=lambda i: -i["alumnos_afectados"])
-    return {"correcciones_registradas": corregidas, "temas": items}
+    return {"correcciones_registradas": corregidas, "temas": items,
+            "muestra_suficiente": corregidas >= _MUESTRA_MINIMA,
+            "muestra_minima": _MUESTRA_MINIMA}
 
 
 async def errores_frecuentes(course_id: int | None = None, assign_id: str | None = None,

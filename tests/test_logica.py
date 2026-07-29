@@ -295,6 +295,29 @@ class TestErroresFrecuentes(unittest.TestCase):
         # 1 de 5 = 20% -> caso puntual
         self.assertFalse(temas["otro-tema"]["sistemico"])
 
+    def test_con_muestra_chica_NO_marca_sistemico(self):
+        # Apareció corrigiendo de verdad: con 2 corregidos, 1 error da 50% y la tool decía
+        # "conviene reforzar el tema con toda la comisión" por UNA sola persona. Un
+        # porcentaje sobre 2 casos no significa nada.
+        import tempfile
+        from moodle import almacen as alm
+        prev_db = alm.DB_PATH
+        alm.DB_PATH = f"{tempfile.mkdtemp()}/chica.db"
+        try:
+            self.correr(alm.init_db())
+            for a in ("uno", "dos"):
+                self.correr(alm.guardar_correccion({
+                    "course_id": 99, "assign_id": "x", "comision": "c", "email": f"{a}@x",
+                    "alumno": a, "nota": "Aprobado", "devolucion": "",
+                    "etiquetas": ["tema-x"] if a == "uno" else []}))
+            r = self.correr(alm.errores_frecuentes(course_id=99))
+            self.assertEqual(r["correcciones_registradas"], 2)
+            self.assertFalse(r["muestra_suficiente"])
+            self.assertEqual(r["temas"][0]["porcentaje"], 50)      # el % se calcula igual
+            self.assertFalse(r["temas"][0]["sistemico"])           # pero NO concluye
+        finally:
+            alm.DB_PATH = prev_db
+
     def test_el_porcentaje_es_sobre_los_CORREGIDOS_no_sobre_los_afectados(self):
         # Lo que importa no es "3 se equivocaron" sino "3 de 5": sin el denominador el
         # número no dice si hay que rehacer la clase o hablar con una persona.
