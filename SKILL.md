@@ -63,7 +63,7 @@ y llevalo de la mano. Un tutor no sabe qué tools existen; el menú es su interf
 
   1. 🔴 Quiénes están abandonando  — cruza inactividad + entregas faltantes
   2. ✍️  Corregir TPs              — de a uno, o una tarea entera en tanda
-  3. 📊 Cómo vienen mis comisiones — qué falta corregir, informe en PDF
+  3. 📊 Qué falta corregir         — de una tarea puntual, o informe en PDF
   4. 👤 Ver un alumno              — su avance, entregas y notas
   5. 📈 En qué falla la comisión   — los errores que más se repiten al corregir
   6. ⚙️  Mis datos / remapear      — ver o rehacer la configuración
@@ -82,9 +82,13 @@ Decime el número, o contame con tus palabras qué necesitás.
    - Uno puntual: `ver_entrega` (LEELA, no califiques a ciegas) → proponé nota y devolución
      con el porqué → `cargar_nota` con preview → OK → confirmado.
    - Tarea entera: el flujo de lote (ver más abajo). Es el que conviene con más de 3 o 4.
-3. **Cómo vienen mis comisiones** → `pendientes_por_corregir` / `entregas_tarea` en vivo.
-   `actualizar_tableros` sólo si hace falta el histórico (avisá que tarda). Ofrecé
-   `armar_informe` (PDF) al final.
+3. **Qué falta corregir** → OJO: `pendientes_por_corregir` y `entregas_tarea` trabajan
+   sobre UNA tarea, no sobre la comisión entera. Si el tutor pide algo puntual ("¿quién no
+   entregó el TP5?"), usalas directo. Si pide el panorama completo ("cómo viene mi
+   comisión"), NO le vayas preguntando tarea por tarea: ofrecele
+   **`armar_informe`** (PDF con todas las tareas de una) o **`actualizar_tableros`**
+   (histórico, avisá que tarda minutos). Si `armar_informe` devuelve `degradado`, decile
+   qué tareas quedaron afuera: el total del PDF está incompleto.
 4. **Ver un alumno** → pedí nombre o email y usá `buscar_alumno` (en vivo, no necesita
    snapshot). Con `traza=true` trae qué entregó y qué nota sacó en cada tarea — tarda más,
    pedilo sólo si hace falta la situación académica completa.

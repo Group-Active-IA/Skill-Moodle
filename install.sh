@@ -16,6 +16,23 @@ else
 fi
 
 echo "→ 2/4  Creando un entorno Python aislado (no toca tu Python del sistema)…"
+# El MCP usa sintaxis de tipos de PEP 604 (`str | None`), que existe recién desde Python
+# 3.10. Sin este chequeo el venv se crea, las dependencias instalan bien, y el fallo recién
+# aparece al arrancar Claude Code como un SyntaxError opaco que no dice qué falta. En un
+# parque de máquinas variadas (Ubuntu 20.04, Python del sistema en Mac, WSL viejo) eso es
+# una tarde perdida por persona.
+PYVER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+  echo
+  echo "✗ Tenés Python $PYVER y la skill necesita 3.10 o más nuevo."
+  echo "  Instalá una versión más nueva y volvé a correr este script. Por ejemplo:"
+  echo "    Ubuntu/Debian:  sudo apt install python3.12 python3.12-venv"
+  echo "    macOS (brew):   brew install python@3.12"
+  echo "  Si ya tenés otra instalada, corré el script con ella:"
+  echo "    python3.12 -m venv \"$VENV\" && bash install.sh"
+  exit 1
+fi
+echo "   (Python $PYVER ✓)"
 python3 -m venv "$VENV"
 
 echo "→ 3/4  Instalando las dependencias del MCP en ese entorno…"

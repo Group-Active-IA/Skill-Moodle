@@ -33,9 +33,17 @@ async def informe_pendientes(
 
     secciones = []
     total = 0
+    # Tareas que no se pudieron relevar. Antes se hacía `continue` a secas: la tarea
+    # desaparecía del PDF y el retorno decía ok=True igual, así que un informe incompleto
+    # era indistinguible de uno completo. Con varios tutores pegándole al mismo campus un
+    # timeout suelto es cuestión de tiempo, y "esta tarea no tiene pendientes" no es lo
+    # mismo que "no pude consultarla".
+    no_relevadas = []
     for aid in ids:
         data = await ws_api.pendientes_tarea(client, aid, group_id)
         if data.get("error"):
+            no_relevadas.append({"assign_id": aid, "tarea": by_id.get(aid, aid),
+                                 "motivo": data["error"]})
             continue
         if data["pendientes"] > 0:
             secciones.append((by_id.get(aid, aid), data["alumnos"]))
@@ -50,6 +58,14 @@ async def informe_pendientes(
     doc = SimpleDocTemplate(path, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
     E = [Paragraph("Informe de correcciones pendientes", h1),
          Paragraph(f"Curso {course_id} · Total pendientes: {total}", small), Spacer(1, 10)]
+    if no_relevadas:
+        # El aviso va en el PDF además de en la respuesta: el PDF se comparte y se imprime
+        # solo, sin el dict que lo acompañó.
+        E.append(Paragraph(
+            f"⚠️ {len(no_relevadas)} tarea(s) NO se pudieron consultar y quedaron FUERA de "
+            "este informe: " + ", ".join(str(t["tarea"])[:40] for t in no_relevadas[:6])
+            + ". Los totales de arriba están incompletos.", small))
+        E.append(Spacer(1, 10))
     for titulo, alumnos in secciones:
         E.append(Paragraph(f"{titulo} — {len(alumnos)} pendiente(s)", h2))
         rows = [["Alumno", "Grupo", "Email"]] + [
@@ -63,4 +79,15 @@ async def informe_pendientes(
         E.append(t)
         E.append(Spacer(1, 8))
     doc.build(E)
-    return {"ok": True, "archivo": path, "total_pendientes": total}
+    salida = {
+        "ok": True, "archivo": path, "total_pendientes": total,
+        "tareas_relevadas": len(ids) - len(no_relevadas), "tareas_pedidas": len(ids),
+        "_meta": {"fuente": "vivo", "degradado": bool(no_relevadas),
+                  "tareas_no_relevadas": no_relevadas},
+    }
+    if no_relevadas:
+        salida["aviso"] = (
+            f"⚠️ {len(no_relevadas)} de {len(ids)} tarea(s) no se pudieron consultar y NO "
+            f"están en el informe: el total de {total} pendientes está incompleto. "
+            "Mirá `tareas_no_relevadas` y volvé a generarlo.")
+    return salida
