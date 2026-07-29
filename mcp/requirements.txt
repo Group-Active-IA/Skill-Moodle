@@ -1,4 +1,11 @@
 # MCP server "liviano de-un-tutor" para el campus TUP (API REST de Moodle).
-mcp>=1.2.0            # FastMCP (mcp.server.fastmcp) + transport stdio
+# OJO CON EL TECHO <2: el SDK sacó la 2.0.0 y ahí `mcp.server.fastmcp` DEJÓ DE EXISTIR
+# (sus submódulos pasaron a ser cli/client/server/shared/types, sin fastmcp). Sin este
+# tope, `pip install` bajaba la 2.0.0 y el server moría al arrancar con
+# `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. Las instalaciones viejas
+# seguían andando con su 1.x congelada, así que el bug era INVISIBLE salvo instalando
+# desde cero — que es justo lo que hace cada tutor nuevo.
+# Para pasar a 2.x hay que migrar el import y la API de FastMCP; hasta entonces, 1.x.
+mcp>=1.2.0,<2         # FastMCP (mcp.server.fastmcp) + transport stdio
 httpx>=0.27          # cliente HTTP async (login/token.php + webservice/rest/server.php)
 reportlab>=4.0       # PDF de correcciones pendientes (armar_informe)
