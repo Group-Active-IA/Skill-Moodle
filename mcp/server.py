@@ -929,31 +929,183 @@ async def cargar_nota(assign_id: str, email: str, nota: str, mensaje: str,
     # Bitácora: sólo si la nota efectivamente quedó escrita. Registrar un preview o una
     # escritura fallida contaminaría las estadísticas con correcciones que no existieron.
     if confirmado and res.get("ok"):
-        try:
-            await almacen.init_db()
-            datos = await almacen.get_mis_datos() or {}
-            curso = tarea = comision = None
-            for c in datos.get("cursos", []):
-                for t in c.get("tareas", []):
-                    if str(t.get("assign_id")) == str(assign_id):
-                        curso, tarea = c.get("course_id"), t.get("titulo")
-                        coms = c.get("comisiones_del_tutor", [])
-                        comision = coms[0].get("comision") if len(coms) == 1 else None
-                        break
-            await almacen.guardar_correccion({
-                "course_id": curso, "assign_id": assign_id, "tarea": tarea,
-                "comision": comision, "email": email, "alumno": res.get("alumno"),
-                "nota": res.get("nota"), "devolucion": mensaje,
-                "etiquetas": etiquetas or [],
-            })
-            res["registrado_en_bitacora"] = True
-        except Exception as e:  # noqa: BLE001 — la bitácora nunca debe romper la carga
-            log.warning("No pude registrar la corrección: %s: %s", type(e).__name__, e)
-            res["registrado_en_bitacora"] = False
-            res["aviso_bitacora"] = ("La nota se cargó bien, pero no se pudo registrar en "
-                                     "la bitácora local: este caso no va a figurar en "
-                                     "errores_frecuentes.")
+        await _registrar_bitacora(res, assign_id, email, mensaje, etiquetas)
     return res
+
+
+async def _contexto_tarea(assign_id: str) -> tuple:
+    """(course_id, titulo, comision) de una tarea, desde "Mis datos". Todo None si no está."""
+    datos = await almacen.get_mis_datos() or {}
+    for c in datos.get("cursos", []):
+        for t in c.get("tareas", []):
+            if str(t.get("assign_id")) == str(assign_id):
+                coms = c.get("comisiones_del_tutor", [])
+                return (c.get("course_id"), t.get("titulo"),
+                        coms[0].get("comision") if len(coms) == 1 else None)
+    return (None, None, None)
+
+
+async def _registrar_bitacora(res: dict, assign_id: str, email: str, mensaje: str,
+                              etiquetas: list | None, comision: str | None = None) -> None:
+    """Deja la corrección en la bitácora. NUNCA rompe la carga: si falla, la nota ya está
+    escrita en Moodle y lo único que se pierde es la estadística, así que se avisa y sigue."""
+    try:
+        await almacen.init_db()
+        curso, tarea, com = await _contexto_tarea(assign_id)
+        await almacen.guardar_correccion({
+            "course_id": curso, "assign_id": assign_id, "tarea": tarea,
+            "comision": comision or com, "email": email, "alumno": res.get("alumno"),
+            "nota": res.get("nota"), "devolucion": mensaje, "etiquetas": etiquetas or [],
+        })
+        res["registrado_en_bitacora"] = True
+    except Exception as e:  # noqa: BLE001
+        log.warning("No pude registrar la corrección: %s: %s", type(e).__name__, e)
+        res["registrado_en_bitacora"] = False
+        res["aviso_bitacora"] = ("La nota se cargó bien, pero no se pudo registrar en la "
+                                 "bitácora local: este caso no va a figurar en "
+                                 "errores_frecuentes.")
+
+
+# ---------- SESIÓN DE CORRECCIÓN EN LOTE ----------
+@mcp.tool()
+async def preparar_correccion(assign_id: str, group_id: int,
+                              reemplazar: bool = False) -> dict:
+    """Arma la cola para corregir una tarea entera de una comisión, de a un alumno por vez.
+
+    Corregir 15 TPs de a uno son 15 idas y vueltas completas. Con la cola vas resolviendo
+    alumno por alumno SIN tocar Moodle, y al final `confirmar_cola` escribe todo junto con
+    una sola confirmación — pero mostrándote antes las 15 notas juntas, así el OK es
+    informado y no a ciegas.
+
+    La cola es PERSISTENTE: si cortás a la mitad, al volver seguís donde estabas y lo ya
+    anotado no se pierde. `reemplazar=true` la descarta y arranca de nuevo.
+
+    Se encolan sólo los que entregaron y no tienen nota (incluidos los "calificados sin
+    nota", que no salen en ninguna otra cola)."""
+    await almacen.init_db()
+    pend = await ws_api.pendientes_tarea(_cli(), assign_id, group_id)
+    if pend.get("error"):
+        return pend
+    alumnos = [{"email": a.get("email"), "nombre": a.get("name")}
+               for a in pend.get("alumnos", [])]
+    if not alumnos:
+        return {"ok": True, "en_cola": 0,
+                "aviso": "No hay entregas pendientes de corrección en esta tarea/comisión."}
+    _, titulo, comision = await _contexto_tarea(assign_id)
+    r = await almacen.cola_abrir(assign_id, titulo, group_id, comision, alumnos, reemplazar)
+    return {"ok": True, "assign_id": str(assign_id), "group_id": group_id, "tarea": titulo,
+            **r,
+            "siguiente_paso": "Llamá `siguiente_para_corregir` para arrancar. Nada se "
+                              "escribe en Moodle hasta `confirmar_cola`."}
+
+
+@mcp.tool()
+async def siguiente_para_corregir(assign_id: str | None = None,
+                                  group_id: int | None = None,
+                                  max_chars: int = 20000) -> dict:
+    """El próximo alumno de la cola, CON su entrega ya bajada y lista para leer.
+
+    Devuelve el contenido del trabajo para que se pueda corregir sin pasos intermedios.
+    Después de decidir, se anota con `anotar_correccion` y se vuelve a llamar a esta."""
+    await almacen.init_db()
+    fila = await almacen.cola_siguiente(assign_id, group_id)
+    if not fila:
+        restan = await almacen.cola_listar(assign_id, group_id, estados=("anotado",))
+        return {"ok": True, "quedan_pendientes": 0,
+                "anotados_sin_escribir": len(restan),
+                "aviso": ("No queda nadie por corregir en la cola. "
+                          + (f"Tenés {len(restan)} anotados: confirmá con `confirmar_cola`."
+                             if restan else "La cola está vacía."))}
+    entrega = await ws_api.leer_entrega(
+        _cli(), fila["assign_id"], fila["email"],
+        str(Path(almacen.SALIDAS_DIR) / "entregas" / str(fila["assign_id"])), max_chars)
+    faltan = await almacen.cola_listar(fila["assign_id"], fila["group_id"],
+                                       estados=("pendiente",))
+    return {"ok": True, "alumno": fila["alumno"], "email": fila["email"],
+            "assign_id": fila["assign_id"], "group_id": fila["group_id"],
+            "tarea": fila["tarea"], "quedan_pendientes": len(faltan), "entrega": entrega,
+            "siguiente_paso": "Corregila y guardá con `anotar_correccion`. No se escribe "
+                              "nada en Moodle todavía."}
+
+
+@mcp.tool()
+async def anotar_correccion(assign_id: str, group_id: int, email: str, nota: str,
+                            mensaje: str, etiquetas: list[str] | None = None) -> dict:
+    """Guarda la nota y la devolución de UN alumno en la cola. NO escribe en Moodle.
+
+    Es el paso intermedio del lote: se acumula y recién `confirmar_cola` lo manda todo.
+    `etiquetas`: los temas marcados, en kebab-case y reutilizables entre alumnos — son las
+    que después alimentan `errores_frecuentes`."""
+    await almacen.init_db()
+    ok = await almacen.cola_anotar(assign_id, group_id, email, nota, mensaje, etiquetas or [])
+    if not ok:
+        return {"error": f"{email} no está en la cola de esta tarea/comisión (o ya se "
+                         "escribió). Corré `preparar_correccion` primero."}
+    faltan = await almacen.cola_listar(assign_id, group_id, estados=("pendiente",))
+    listos = await almacen.cola_listar(assign_id, group_id, estados=("anotado",))
+    return {"ok": True, "anotado": email, "nota": nota,
+            "quedan_pendientes": len(faltan), "anotados": len(listos),
+            "siguiente_paso": ("Seguí con `siguiente_para_corregir`." if faltan
+                               else "No queda nadie: revisá todo con `confirmar_cola`.")}
+
+
+@mcp.tool()
+async def confirmar_cola(assign_id: str | None = None, group_id: int | None = None,
+                         confirmado: bool = False) -> dict:
+    """Escribe en Moodle TODAS las correcciones anotadas en la cola, de una.
+
+    Con `confirmado=false` (default) devuelve el detalle completo de lo que se va a
+    escribir —alumno por alumno, con su nota y su devolución— para que el OK sea informado
+    y no a ciegas. Recién con `confirmado=true` se escribe.
+
+    Cada nota se escribe y se VERIFICA por separado: si una falla, las demás siguen y el
+    reporte dice exactamente cuál y por qué. Las que fallan quedan en la cola para
+    reintentar; las que salen bien se registran en la bitácora."""
+    await almacen.init_db()
+    anotados = await almacen.cola_listar(assign_id, group_id, estados=("anotado",))
+    if not anotados:
+        pend = await almacen.cola_listar(assign_id, group_id, estados=("pendiente",))
+        return {"ok": True, "a_escribir": 0,
+                "aviso": (f"No hay nada anotado para escribir. Quedan {len(pend)} sin "
+                          "corregir en la cola." if pend else "La cola está vacía.")}
+
+    if not confirmado:
+        return {
+            "requiere_confirmacion": True,
+            "a_escribir": len(anotados),
+            "previews": [{"alumno": f["alumno"], "email": f["email"], "nota": f["nota"],
+                          "etiquetas": f["etiquetas"], "devolucion": f["devolucion"]}
+                         for f in anotados],
+            "aviso": (f"Se van a escribir {len(anotados)} notas en Moodle. Revisalas y "
+                      "volvé a llamar con confirmado=true."),
+        }
+
+    escritas, fallidas = [], []
+    for f in anotados:
+        res = await ws_api.cargar_nota(_cli(), f["assign_id"], f["email"], f["nota"],
+                                       f["devolucion"], True)
+        if res.get("ok"):
+            await _registrar_bitacora(res, f["assign_id"], f["email"], f["devolucion"],
+                                      f["etiquetas"], f.get("comision"))
+            await almacen.cola_marcar(f["id"], "escrito")
+            escritas.append({"alumno": f["alumno"], "nota": res.get("nota"),
+                             "verificado": res.get("verificado")})
+        else:
+            motivo = res.get("error") or "no se pudo escribir"
+            await almacen.cola_marcar(f["id"], "error", motivo)
+            fallidas.append({"alumno": f["alumno"], "email": f["email"], "motivo": motivo})
+
+    salida = {"ok": not fallidas, "escritas": len(escritas), "fallidas": len(fallidas),
+              "detalle_escritas": escritas}
+    if fallidas:
+        salida["detalle_fallidas"] = fallidas
+        salida["aviso"] = (f"{len(escritas)} se escribieron bien y {len(fallidas)} fallaron. "
+                           "Las fallidas quedaron en la cola: arreglá el motivo y volvé a "
+                           "confirmar, no se van a duplicar las que ya salieron.")
+    else:
+        salida["resumen"] = (f"Listo: {len(escritas)} notas escritas y verificadas. "
+                             "Mirá `errores_frecuentes` para ver qué falló toda la comisión.")
+    return salida
 
 
 @mcp.tool()

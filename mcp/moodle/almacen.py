@@ -93,6 +93,28 @@ CREATE TABLE IF NOT EXISTS correcciones (
     etiquetas     TEXT   -- JSON: ["perimetro-circulo", "conversion-unidades"]
 );
 
+-- Cola de una sesión de corrección. Se va llenando alumno por alumno SIN tocar Moodle, y
+-- se escribe todo junto al final con una sola confirmación. Es persistente a propósito:
+-- corregir 15 TPs no entra en una sentada, y si se corta la sesión el trabajo hecho no se
+-- puede perder.
+CREATE TABLE IF NOT EXISTS cola_correccion (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    creada_at  TEXT,
+    assign_id  TEXT,
+    tarea      TEXT,
+    group_id   INTEGER,
+    comision   TEXT,
+    email      TEXT,
+    alumno     TEXT,
+    nota       TEXT,
+    devolucion TEXT,
+    etiquetas  TEXT,
+    estado     TEXT,   -- pendiente | anotado | escrito | error
+    resultado  TEXT,   -- detalle del error si estado = 'error'
+    UNIQUE(assign_id, group_id, email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cola_estado ON cola_correccion(estado);
 CREATE INDEX IF NOT EXISTS idx_snapshots_fecha ON snapshots(fecha);
 CREATE INDEX IF NOT EXISTS idx_snapshots_com_assign ON snapshots(comision, assign_id);
 CREATE INDEX IF NOT EXISTS idx_entregas_email ON entregas(email);
@@ -327,6 +349,142 @@ def _traza_alumno(email: str) -> dict | None:
 
 async def traza_alumno(email: str) -> dict | None:
     return await asyncio.to_thread(_traza_alumno, email)
+
+
+# --- cola de corrección (sesión en curso) ---
+
+def _cola_abrir(assign_id: str, tarea: str, group_id: int, comision: str | None,
+                alumnos: list[dict], reemplazar: bool) -> dict:
+    con = _conectar()
+    try:
+        if reemplazar:
+            con.execute("DELETE FROM cola_correccion WHERE assign_id = ? AND group_id = ?",
+                        (str(assign_id), group_id))
+        nuevos = 0
+        for a in alumnos:
+            # INSERT OR IGNORE: si el alumno ya estaba en la cola (sesión retomada) se
+            # conserva lo que se le había anotado en vez de pisarlo con 'pendiente'.
+            cur = con.execute(
+                "INSERT OR IGNORE INTO cola_correccion (creada_at, assign_id, tarea, "
+                "group_id, comision, email, alumno, estado) VALUES (?,?,?,?,?,?,?,'pendiente')",
+                (_ahora(), str(assign_id), tarea, group_id, comision,
+                 (a.get("email") or "").lower(), a.get("nombre")))
+            nuevos += cur.rowcount
+        con.commit()
+        tot = con.execute(
+            "SELECT COUNT(*) c FROM cola_correccion WHERE assign_id=? AND group_id=?",
+            (str(assign_id), group_id)).fetchone()["c"]
+    finally:
+        con.close()
+    return {"en_cola": tot, "agregados": nuevos}
+
+
+def _cola_siguiente(assign_id: str | None, group_id: int | None) -> dict | None:
+    where = "estado = 'pendiente'"
+    params: list = []
+    if assign_id:
+        where += " AND assign_id = ?"; params.append(str(assign_id))
+    if group_id is not None:
+        where += " AND group_id = ?"; params.append(group_id)
+    con = _conectar()
+    try:
+        f = con.execute(f"SELECT * FROM cola_correccion WHERE {where} ORDER BY id LIMIT 1",
+                        params).fetchone()
+        return dict(f) if f else None
+    finally:
+        con.close()
+
+
+def _cola_anotar(assign_id: str, group_id: int, email: str, nota: str,
+                 devolucion: str, etiquetas: list) -> bool:
+    con = _conectar()
+    try:
+        cur = con.execute(
+            "UPDATE cola_correccion SET nota=?, devolucion=?, etiquetas=?, estado='anotado' "
+            "WHERE assign_id=? AND group_id=? AND email=? AND estado IN ('pendiente','anotado')",
+            (nota, devolucion, json.dumps(etiquetas or [], ensure_ascii=False),
+             str(assign_id), group_id, (email or "").lower()))
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def _cola_listar(assign_id: str | None = None, group_id: int | None = None,
+                 estados: tuple = ("pendiente", "anotado", "escrito", "error")) -> list[dict]:
+    where = f"estado IN ({','.join('?' * len(estados))})"
+    params: list = list(estados)
+    if assign_id:
+        where += " AND assign_id = ?"; params.append(str(assign_id))
+    if group_id is not None:
+        where += " AND group_id = ?"; params.append(group_id)
+    con = _conectar()
+    try:
+        filas = con.execute(
+            f"SELECT * FROM cola_correccion WHERE {where} ORDER BY id", params).fetchall()
+    finally:
+        con.close()
+    out = []
+    for f in filas:
+        d = dict(f)
+        try:
+            d["etiquetas"] = json.loads(d.get("etiquetas") or "[]")
+        except (ValueError, TypeError):
+            d["etiquetas"] = []
+        out.append(d)
+    return out
+
+
+def _cola_marcar(fila_id: int, estado: str, resultado: str | None = None) -> None:
+    con = _conectar()
+    try:
+        con.execute("UPDATE cola_correccion SET estado=?, resultado=? WHERE id=?",
+                    (estado, resultado, fila_id))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _cola_limpiar(assign_id: str | None = None, group_id: int | None = None) -> int:
+    where, params = "1=1", []
+    if assign_id:
+        where += " AND assign_id = ?"; params.append(str(assign_id))
+    if group_id is not None:
+        where += " AND group_id = ?"; params.append(group_id)
+    con = _conectar()
+    try:
+        cur = con.execute(f"DELETE FROM cola_correccion WHERE {where}", params)
+        con.commit()
+        return cur.rowcount
+    finally:
+        con.close()
+
+
+async def cola_abrir(assign_id, tarea, group_id, comision, alumnos, reemplazar=False):
+    return await asyncio.to_thread(_cola_abrir, assign_id, tarea, group_id, comision,
+                                   alumnos, reemplazar)
+
+
+async def cola_siguiente(assign_id=None, group_id=None):
+    return await asyncio.to_thread(_cola_siguiente, assign_id, group_id)
+
+
+async def cola_anotar(assign_id, group_id, email, nota, devolucion, etiquetas):
+    return await asyncio.to_thread(_cola_anotar, assign_id, group_id, email, nota,
+                                   devolucion, etiquetas)
+
+
+async def cola_listar(assign_id=None, group_id=None, estados=("pendiente", "anotado",
+                                                              "escrito", "error")):
+    return await asyncio.to_thread(_cola_listar, assign_id, group_id, estados)
+
+
+async def cola_marcar(fila_id, estado, resultado=None):
+    await asyncio.to_thread(_cola_marcar, fila_id, estado, resultado)
+
+
+async def cola_limpiar(assign_id=None, group_id=None):
+    return await asyncio.to_thread(_cola_limpiar, assign_id, group_id)
 
 
 # --- correcciones (bitácora histórica) ---
