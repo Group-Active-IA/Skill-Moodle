@@ -6,6 +6,7 @@
   "materias": [
     { "materia": "Programación I", "course_id": 74 },
     { "materia": "Programación II", "course_id": 81 },
-    { "materia": "Programación III", "course_id": 82 }
+    { "materia": "Programación III", "course_id": 82 },
+    { "materia": "Programación IV", "course_id": 57 }
   ]
 }

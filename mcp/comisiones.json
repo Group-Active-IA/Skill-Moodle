@@ -771,6 +771,247 @@
       ]
     },
     {
+      "materia": "Programación IV",
+      "course_id": 57,
+      "patron_comision": "M25 C4-NN",
+      "comisiones": [
+        {
+          "comision": "com1",
+          "nombre_campus": "M25 C4-01",
+          "group_id": 7911,
+          "tutor": "Luciano David Chiroli"
+        },
+        {
+          "comision": "com2",
+          "nombre_campus": "M25 C4-02",
+          "group_id": 7917,
+          "tutor": "Luciano David Chiroli"
+        },
+        {
+          "comision": "com3",
+          "nombre_campus": "M25 C4-03",
+          "group_id": 7923,
+          "tutor": "Giuliano Espejo"
+        },
+        {
+          "comision": "com4",
+          "nombre_campus": "M25 C4-04",
+          "group_id": 7929,
+          "tutor": "Giuliano Espejo"
+        },
+        {
+          "comision": "com5",
+          "nombre_campus": "M25 C4-05",
+          "group_id": 7935,
+          "tutor": "Santiago Nicolás Videla"
+        },
+        {
+          "comision": "com6",
+          "nombre_campus": "M25 C4-06",
+          "group_id": 7941,
+          "tutor": "Santiago Nicolás Videla"
+        },
+        {
+          "comision": "com7",
+          "nombre_campus": "M25 C4-07",
+          "group_id": 7947,
+          "tutor": "Juan Sarmiento"
+        },
+        {
+          "comision": "com8",
+          "nombre_campus": "M25 C4-08",
+          "group_id": 7953,
+          "tutor": "Juan Sarmiento"
+        },
+        {
+          "comision": "com9",
+          "nombre_campus": "M25 C4-09",
+          "group_id": 7959,
+          "tutor": "Franco Ramiro Manuel Gonzalez Reale"
+        },
+        {
+          "comision": "com10",
+          "nombre_campus": "M25 C4-10",
+          "group_id": 7965,
+          "tutor": "Franco Ramiro Manuel Gonzalez Reale"
+        },
+        {
+          "comision": "com11",
+          "nombre_campus": "M25 C4-11",
+          "group_id": 7881,
+          "tutor": "Gianfranco Ariel Canciani"
+        },
+        {
+          "comision": "com12",
+          "nombre_campus": "M25 C4-12",
+          "group_id": 7887,
+          "tutor": "Gianfranco Ariel Canciani"
+        },
+        {
+          "comision": "com13",
+          "nombre_campus": "M25 C4-13",
+          "group_id": 7893,
+          "tutor": "Francisco Luis Quarñolo"
+        },
+        {
+          "comision": "com14",
+          "nombre_campus": "M25 C4-14",
+          "group_id": 7899,
+          "tutor": "Francisco Luis Quarñolo"
+        },
+        {
+          "comision": "com15",
+          "nombre_campus": "M25 C4-15",
+          "group_id": 7905,
+          "tutor": "Tomas Ferro"
+        }
+      ],
+      "_dato": "El reparto asigna de a PARES; com15 queda suelta (Tomas Ferro). Ojo con los group_id: NO son monótonos — com11 a com15 (7881-7905) tienen ids MÁS BAJOS que com1 a com10 (7911-7965). No se calculan por aritmética, se descubren. Aparte: al aula le FALTAN los cierres de las unidades 2 a 7 — no existen como tarea en el campus (no es un filtro de este catálogo). Si aparecen, agregalas con listar_tareas.",
+      "actividades_cursada": [
+        {
+          "cmid": "20763",
+          "titulo": "Actividad de cierre unidad 0 - Fundamentos Spring Boot",
+          "unidad": 0
+        },
+        {
+          "cmid": "20783",
+          "titulo": "Actividad de cierre unidad 1 - APIs REST con Spring Boot",
+          "unidad": 1
+        },
+        {
+          "cmid": "16211",
+          "titulo": "Actividad de cierre unidad 8",
+          "unidad": 8
+        },
+        {
+          "cmid": "20671",
+          "titulo": "Actividad de cierre unidad 9",
+          "unidad": 9
+        },
+        {
+          "cmid": "20819",
+          "titulo": "Actividad de cierre unidad 10 - Manejo de Archivos",
+          "unidad": 10
+        },
+        {
+          "cmid": "16201",
+          "titulo": "Entrega TP Unidad 4",
+          "tipo": "tp"
+        },
+        {
+          "cmid": "16108",
+          "titulo": "Entrega proyecto FastApi",
+          "tipo": "proyecto"
+        },
+        {
+          "cmid": "16120",
+          "titulo": "Entrega Trabajo Practico SQL Model",
+          "tipo": "tp"
+        },
+        {
+          "cmid": "16132",
+          "titulo": "Entrega trabajo Práctico – Relaciones y estado",
+          "tipo": "tp"
+        },
+        {
+          "cmid": "20701",
+          "titulo": "Entrega Tp unidad 10 Parte 1",
+          "tipo": "tp"
+        },
+        {
+          "cmid": "20703",
+          "titulo": "Entrega Tp unidad 10 Parte 2",
+          "tipo": "tp"
+        }
+      ],
+      "foros": [
+        {
+          "forum_id": 1636,
+          "cmid": 16086,
+          "nombre": "Avisos generales 📢",
+          "tipo": "news"
+        },
+        {
+          "forum_id": 1637,
+          "cmid": 16087,
+          "nombre": "🚀💻 Punto de Partida: Instalaciones y Ayuda",
+          "tipo": "social"
+        },
+        {
+          "forum_id": 1638,
+          "cmid": 16088,
+          "nombre": "Avisos de la comision 📌",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1641,
+          "cmid": 16112,
+          "nombre": "Espacio para Consultas y Dudas ❓",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1642,
+          "cmid": 16123,
+          "nombre": "Espacio para Consultas y Dudas ❓ Relaciones y Estado",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1646,
+          "cmid": 16192,
+          "nombre": "Espacio para consultas y dudas ❓ Server State y Navegación",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1647,
+          "cmid": 16204,
+          "nombre": "Espacio para consultas y dudas ❓ Formularios y Tablas",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1853,
+          "cmid": 20596,
+          "nombre": "Espacio para consultas y dudas ❓ Middlewares, Errores y Calidad de Código",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1855,
+          "cmid": 20619,
+          "nombre": "Espacio para consultas y dudas ❓ Autorización y Rutas Protegidas",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1856,
+          "cmid": 20636,
+          "nombre": "🤔 Foro de Consultas - Trabajo Práctico Integrador",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1857,
+          "cmid": 20655,
+          "nombre": "Espacio para Consultas y Dudas ❓ Seguridad en Aplicaciones Modernas y APIs REST",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1858,
+          "cmid": 20676,
+          "nombre": "Espacio para Consultas y Dudas ❓ FastAPI",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1859,
+          "cmid": 20769,
+          "nombre": "Espacio para consultas y dudas ❓- APIs REST Foro",
+          "tipo": "general"
+        },
+        {
+          "forum_id": 1860,
+          "cmid": 20865,
+          "nombre": "Espacio para consultas y dudas ❓- Fundamentos de Spring Boot",
+          "tipo": "general"
+        }
+      ]
+    },
+    {
       "materia": "Programación I - Marzo 2026",
       "course_id": 38,
       "patron_comision": "M26 C1-*",
@@ -848,5 +1089,5 @@
     }
   ],
   "_foros_criterio": "Foros del aula con forum_id (el que usa leer_foro/responder_foro) y cmid (el modulo en el curso). Los DOS: no son intercambiables. El tipo news/social/general viene del campus; \"Avisos de la comision\" es el foro por comision.",
-  "_reparto_fuente": "Reparto tutor→comisión tomado del export oficial de equipos docentes del 2026-07-24 (Prog I/II/III), con cada group_id revalidado en vivo contra el campus el 2026-07-26. Prog IV (course 57) todavía NO está en este catálogo."
+  "_reparto_fuente": "Reparto tutor→comisión tomado del export oficial de equipos docentes: Prog I/II/III del 2026-07-24, con cada group_id revalidado en vivo contra el campus el 2026-07-26; Prog IV (course 57) del 2026-07-29, con group_id, cmid y forum_id descubiertos en vivo el 2026-07-30."
 }
