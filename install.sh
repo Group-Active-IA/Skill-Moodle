@@ -60,10 +60,8 @@ echo "   (Python $PYVER ✓)"
 # este mismo script con layouts distintos. Preguntarle al filesystem no se equivoca.
 if [ -e "$VENV/bin/python" ]; then
   VPY="$VENV/bin/python"
-  VPIP="$VENV/bin/pip"
 elif [ -e "$VENV/Scripts/python.exe" ]; then
   VPY="$VENV/Scripts/python.exe"
-  VPIP="$VENV/Scripts/pip.exe"
 else
   echo
   echo "✗ Se creó el entorno en $VENV pero no encontré su Python"
@@ -73,8 +71,14 @@ else
 fi
 
 echo "→ 3/4  Instalando las dependencias del MCP en ese entorno…"
-"$VPIP" install -q --upgrade pip
-"$VPIP" install -q -r "$DIR/mcp/requirements.txt"
+# SIEMPRE `python -m pip`, nunca el ejecutable pip directo. En Windows, pip.exe no puede
+# actualizarse a sí mismo: no se puede sobrescribir un .exe que está corriendo, así que
+# `pip install --upgrade pip` falla ahí y el instalador se corta en este paso. Invocándolo
+# como módulo, quien reemplaza el archivo es Python y el ejecutable no está en uso.
+# En Linux y Mac da exactamente lo mismo, así que no hay una rama por plataforma: es la
+# forma correcta en las tres. (Reportado por un tutor de Windows, 2026-07-31.)
+"$VPY" -m pip install -q --upgrade pip
+"$VPY" -m pip install -q -r "$DIR/mcp/requirements.txt"
 
 echo "→ 4/4  Enchufando el MCP a Claude Code (sin tocar ningún JSON)…"
 # Bajo Git Bash las rutas son estilo POSIX (/c/Users/…), pero el `claude` que corre es el
