@@ -926,7 +926,8 @@ async def corregir_con_active_ia(
 # ---------- ESCRITURA (con confirmación) ----------
 @mcp.tool()
 async def cargar_nota(assign_id: str, email: str, nota: str, mensaje: str,
-                      confirmado: bool = False, etiquetas: list[str] | None = None) -> dict:
+                      confirmado: bool = False, etiquetas: list[str] | None = None,
+                      adjunto: str | None = None) -> dict:
     """Escribe nota + devolución en Moodle. Llamá primero con confirmado=false para
     previsualizar; recién tras el OK del tutor, confirmado=true.
 
@@ -942,8 +943,15 @@ async def cargar_nota(assign_id: str, email: str, nota: str, mensaje: str,
     Poné una por error real corregido; si el trabajo estaba impecable, dejalas vacías.
     Se guardan en la bitácora local y son lo que después alimenta `errores_frecuentes`:
     sin ellas, ese dato NO se puede reconstruir después. Usá el MISMO nombre de tema para
-    el mismo error en distintos alumnos — ahí está toda la gracia."""
-    res = await ws_api.cargar_nota(_cli(), assign_id, email, nota, mensaje, confirmado)
+    el mismo error en distintos alumnos — ahí está toda la gracia.
+
+    `adjunto`: ruta local de un archivo para ADJUNTAR a la devolución (típicamente el PDF
+    que dejó `corregir_con_active_ia` en `salidas/`). Sin esto la devolución es sólo texto:
+    si el mensaje dice "te adjunto el PDF" y no se pasa `adjunto`, el alumno lee que hay un
+    archivo que no existe. Si la subida falla, la nota se carga igual y volvés
+    `adjunto_aviso` explicando por qué no se adjuntó."""
+    res = await ws_api.cargar_nota(_cli(), assign_id, email, nota, mensaje, confirmado,
+                                   adjunto=adjunto)
 
     # Bitácora: sólo si la nota efectivamente quedó escrita. Registrar un preview o una
     # escritura fallida contaminaría las estadísticas con correcciones que no existieron.

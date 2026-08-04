@@ -70,11 +70,21 @@ async def _assign_map(client, refrescar: bool = False) -> dict:
     m: dict = {}
     for c in (data or {}).get("courses", []):
         for a in c.get("assignments", []):
+            # `feedback_file` dice si la tarea acepta ARCHIVOS de retroalimentación. En el
+            # campus TUP está apagado en todas (sólo `comments` y `editpdf`): mandar un
+            # archivo igual hace que Moodle lo ignore en silencio y la tool reporte un
+            # éxito que no ocurrió.
+            acepta_archivos = any(
+                c.get("subtype") == "assignfeedback" and c.get("plugin") == "file"
+                and c.get("name") == "enabled" and str(c.get("value")) == "1"
+                for c in a.get("configs", [])
+            )
             m[str(a.get("cmid"))] = {
                 "id": a.get("id"),
                 "course": a.get("course"),
                 "grade": a.get("grade"),
                 "name": a.get("name", ""),
+                "feedback_file": acepta_archivos,
             }
     # Sólo pisamos el caché si el WS devolvió algo. Una respuesta vacía (caída, permisos)
     # no debe borrar un mapa bueno ni, peor, dejar el diccionario vacío como verdad.
@@ -704,6 +714,51 @@ async def traza_alumno(client, alumno: dict, tareas: list[dict]) -> dict:
     }
 
 
+# ---------- Adjuntar un archivo a la devolución ----------
+
+async def _subir_a_draft(client, ruta: str) -> tuple[int | None, str | None]:
+    """Sube un archivo al área `draft` del tutor y devuelve `(itemid, None)`.
+
+    NO es un web service: Moodle expone `/webservice/upload.php`, que recibe el token
+    como campo del formulario. El `itemid` que devuelve es lo que después se pasa en el
+    `plugindata` de `mod_assign_save_grade` para que el archivo quede adjunto a la
+    devolución del alumno. Ante error devuelve `(None, motivo)`."""
+    import os as _os
+
+    import httpx  # local: este módulo no usa httpx en ningún otro lado
+
+    if not _os.path.isfile(ruta):
+        return None, f"No encontré el archivo {ruta}"
+    await client.ws("core_webservice_get_site_info")   # asegura que haya token
+    token = getattr(client, "_token", None)
+    if not token:
+        return None, "No pude obtener el token para subir el archivo."
+    nombre = _os.path.basename(ruta)
+    try:
+        with open(ruta, "rb") as fh:
+            contenido = fh.read()
+        async with httpx.AsyncClient(timeout=120.0) as http:
+            resp = await http.post(
+                f"{client._base}/webservice/upload.php",
+                data={"token": token, "filearea": "draft", "itemid": 0},
+                files={"file_1": (nombre, contenido, "application/octet-stream")},
+            )
+    except (OSError, httpx.HTTPError) as e:
+        return None, f"No pude subir {nombre}: {e}"
+    if resp.status_code != 200:
+        return None, f"upload.php devolvió {resp.status_code}"
+    try:
+        data = resp.json()
+    except ValueError:
+        return None, f"upload.php no devolvió JSON: {resp.text[:200]}"
+    # Ante error, Moodle responde un dict con `error`; en el caso bueno, una lista.
+    if isinstance(data, dict) and data.get("error"):
+        return None, f"upload.php: {data.get('error')}"
+    if not isinstance(data, list) or not data:
+        return None, f"upload.php devolvió algo inesperado: {str(data)[:200]}"
+    return data[0].get("itemid"), None
+
+
 # ---------- ESCRITURA de nota (mod_assign_save_grade) ----------
 
 def _resolver_valor_nota(grade_cfg, nota) -> tuple[float | None, str | None, list | None]:
@@ -786,7 +841,8 @@ def nota_display(grade_cfg, grade_value) -> str | None:
         return str(grade_value)
 
 
-async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str, confirmado: bool = False) -> dict:
+async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str,
+                      confirmado: bool = False, adjunto: str | None = None) -> dict:
     """Escribe nota + devolución por API REST (mod_assign_save_grade). Sin navegador.
     Escala (TPs): pasar 'Aprobado'/'Desaprobado'. Numérica (TIO): el número. Verifica
     con get_grades que la nota quedó guardada."""
@@ -824,11 +880,34 @@ async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str, confirm
     # la etiqueta de la nota para que el write no falle.
     if not html_msg:
         html_msg = f"<p>{_html.escape(str(etiqueta))}</p>"
+
+    plugindata: dict = {"assignfeedbackcomments_editor": {"text": html_msg, "format": 1}}
+    adjunto_aviso = None
+    if adjunto:
+        if not cfg.get("feedback_file"):
+            # La tarea NO tiene habilitado el plugin de archivos de retroalimentación.
+            # Moodle acepta el itemid y lo DESCARTA sin error, así que subirlo daría un
+            # éxito falso: el alumno leería "te adjunto el PDF" y no habría nada.
+            adjunto_aviso = (
+                "Esta tarea NO acepta archivos de retroalimentación (el plugin "
+                "'assignfeedback_file' está deshabilitado), así que el adjunto no se subió. "
+                "Moodle lo habría ignorado en silencio. Si el mensaje promete un archivo, "
+                "sacá esa frase o pedile a la cátedra que habilite el plugin."
+            )
+        else:
+            itemid, motivo = await _subir_a_draft(client, adjunto)
+            if itemid is None:
+                # El adjunto que falla NO tumba la nota: se carga igual y se avisa. Pero
+                # se avisa fuerte, porque la devolución suele PROMETER el archivo.
+                adjunto_aviso = f"La nota se cargó, pero el adjunto NO se subió: {motivo}"
+            else:
+                plugindata["files_filemanager"] = itemid
+
     try:
         await client.ws("mod_assign_save_grade", {
             "assignmentid": inst, "userid": uid, "grade": valor, "attemptnumber": -1,
             "addattempt": 0, "workflowstate": "", "applytoall": 1,
-            "plugindata": {"assignfeedbackcomments_editor": {"text": html_msg, "format": 1}},
+            "plugindata": plugindata,
         })
     except MoodleWSError as e:
         return {"error": f"No pude guardar la nota: {e.errorcode} — {e.message}"}
@@ -871,6 +950,13 @@ async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str, confirm
     if verificado is None:
         salida["aviso"] = ("La nota se escribió, pero no pude releerla para confirmarlo. "
                            "Verificala con entregas_tarea antes de darla por cargada.")
+    if adjunto:
+        # Se informa SIEMPRE, haya salido bien o mal: el texto de la devolución suele
+        # decir "te adjunto el PDF", y un adjunto que falló en silencio deja al alumno
+        # buscando un archivo que no está.
+        salida["adjunto"] = adjunto if adjunto_aviso is None else None
+        if adjunto_aviso:
+            salida["adjunto_aviso"] = adjunto_aviso
     return salida
 
 

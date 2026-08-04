@@ -574,15 +574,25 @@ def _errores_frecuentes(course_id: int | None = None, assign_id: str | None = No
     finally:
         con.close()
 
+    # DEDUPLICAR por (alumno, tarea): recargar una nota —para corregir la devolución, o
+    # tras un fallo -- deja OTRA fila en la bitácora, y contando filas el mismo alumno
+    # pesaba doble. Eso inflaba `alumnos_afectados` y hacía ver como "media comisión" lo
+    # que era una persona cargada dos veces. Nos quedamos con el registro más reciente.
+    ultimas: dict[tuple, object] = {}
+    for f in filas:
+        ultimas[(f["alumno"], f["assign_id"])] = f
+    filas = list(ultimas.values())
+
     corregidas = len(filas)
-    conteo: dict[str, list] = {}
+    conteo: dict[str, set] = {}
     for f in filas:
         try:
             etiquetas = json.loads(f["etiquetas"] or "[]")
         except (ValueError, TypeError):
             etiquetas = []
+        # set: si una etiqueta se repite dentro de la MISMA corrección, es un alumno solo.
         for e in etiquetas:
-            conteo.setdefault(str(e), []).append(f["alumno"])
+            conteo.setdefault(str(e), set()).add(f["alumno"])
 
     items = []
     for etiqueta, alumnos in conteo.items():
