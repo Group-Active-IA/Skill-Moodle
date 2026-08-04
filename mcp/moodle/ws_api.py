@@ -19,10 +19,15 @@ log = logging.getLogger("skill.ws_api")
 _TAGS_RE = re.compile(r"<[^>]+>")
 
 # Escalas conocidas del campus TUP: scaleid -> {etiqueta_normalizada: valor_a_guardar}.
-# La escala 5 (TPs de Prog I) se confirmó leyendo el <select> del grader real:
-# value 1 = "Aprobado", value 2 = "Desaprobado" (NO es guessable, van invertidos).
+# TODAS se confirmaron leyendo el <select name="grade"> del grader real. NO son
+# guessables: la 5 va invertida (1=Aprobado, 2=Desaprobado) y la 3 va en orden creciente.
+# Para relevar una escala nueva:
+#   /mod/assign/view.php?id=<cmid>&rownum=0&action=grade  →  mirar el <select>
 _ESCALAS: dict[int, dict[str, int]] = {
+    # Actividades de cierre de Prog I, II, III y algunas de Prog IV.
     5: {"aprobado": 1, "desaprobado": 2},
+    # Verificada el 2026-08-04 en el cmid 20763 → 16211 de Prog IV (unidad 8).
+    3: {"no satisfactorio": 1, "satisfactorio": 2, "supera lo esperado": 3},
 }
 
 
@@ -41,11 +46,25 @@ def _norm(texto: str) -> str:
 
 # ---------- Mapa cmid -> instanceid (cacheado por cliente) ----------
 
-async def _assign_map(client) -> dict:
+# El mapa se cachea por proceso, pero VENCE. El server MCP vive horas y las aulas se
+# editan mientras corre: al arrancar un cuatrimestre la cátedra cambia el tipo de
+# calificación de una tarea y el caché eterno seguía sirviendo la foto vieja. Eso ya rompió
+# de verdad (2026-08-04, cmid 20763: el WS decía escala y el caché decía numérica, con lo
+# cual `cargar_nota` pedía un número para un <select> de Aprobado/Desaprobado).
+_ASSIGN_MAP_TTL_S = 300.0
+
+
+async def _assign_map(client, refrescar: bool = False) -> dict:
     """{cmid(str): {"id": instanceid, "course": courseid, "grade": gradeval, "name": str}}.
-    `grade` < 0 → escala (-scaleid); ≥ 0 → nota numérica (puntos máx)."""
+    `grade` < 0 → escala (-scaleid); ≥ 0 → nota numérica (puntos máx).
+
+    El caché vence a los `_ASSIGN_MAP_TTL_S` segundos. `refrescar=True` lo ignora: lo usan
+    las operaciones donde una foto vieja se escribe en el legajo de un alumno."""
+    import time as _time
+
     cache = getattr(client, "_assign_map_cache", None)
-    if cache is not None:
+    sellado = getattr(client, "_assign_map_cache_ts", 0.0)
+    if cache is not None and not refrescar and (_time.monotonic() - sellado) < _ASSIGN_MAP_TTL_S:
         return cache
     data = await client.ws("mod_assign_get_assignments")
     m: dict = {}
@@ -57,8 +76,13 @@ async def _assign_map(client) -> dict:
                 "grade": a.get("grade"),
                 "name": a.get("name", ""),
             }
-    client._assign_map_cache = m
-    return m
+    # Sólo pisamos el caché si el WS devolvió algo. Una respuesta vacía (caída, permisos)
+    # no debe borrar un mapa bueno ni, peor, dejar el diccionario vacío como verdad.
+    if m:
+        client._assign_map_cache = m
+        client._assign_map_cache_ts = _time.monotonic()
+        return m
+    return cache or {}
 
 
 async def _instanceid(client, cmid: str) -> int | None:
@@ -687,10 +711,17 @@ def _resolver_valor_nota(grade_cfg, nota) -> tuple[float | None, str | None, lis
     - grade_cfg < 0 → ESCALA (-scaleid): 'Aprobado'/'Desaprobado' -> índice (1/2).
     - grade_cfg ≥ 0 → NUMÉRICA: se usa el número tal cual (coma o punto).
     Devuelve (valor, etiqueta, opciones_validas | None). valor None = no resuelto."""
+    # ANTE LA DUDA, NO SE ADIVINA. Antes esto hacía `gc = 0` (→ numérica) cuando el valor
+    # venía None o ilegible, y numérica es justamente el modo que corrompe: en una tarea
+    # con escala, mandar "1" pensando en la peor nota guarda APROBADO (la escala 5 va
+    # invertida). Preferimos negarnos a cargar antes que escribir al revés en un legajo.
     try:
         gc = int(grade_cfg)
     except (TypeError, ValueError):
-        gc = 0
+        return None, None, [
+            "(no pude determinar si esta tarea usa escala o nota numérica — "
+            "no cargo nada a ciegas; verificá el grader en el campus)"
+        ]
     if gc < 0:
         scaleid = -gc
         mapa = _ESCALAS.get(scaleid)
@@ -731,7 +762,8 @@ def nota_display(grade_cfg, grade_value) -> str | None:
     try:
         gc = int(grade_cfg)
     except (TypeError, ValueError):
-        gc = 0
+        return (f"⚠️ no sé si esta tarea usa escala o nota numérica "
+                f"(valor crudo: {grade_value}) — confirmá en el campus")
     if gc < 0:
         scaleid = -gc
         mapa = _ESCALAS.get(scaleid)
@@ -758,14 +790,25 @@ async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str, confirm
     """Escribe nota + devolución por API REST (mod_assign_save_grade). Sin navegador.
     Escala (TPs): pasar 'Aprobado'/'Desaprobado'. Numérica (TIO): el número. Verifica
     con get_grades que la nota quedó guardada."""
-    amap = await _assign_map(client)
+    # refrescar=True a propósito: esto escribe en el legajo de una persona, y el tipo de
+    # calificación de una tarea cambia mientras el aula se arma. Un caché de hace horas
+    # acá vale una nota invertida (ver _assign_map).
+    amap = await _assign_map(client, refrescar=True)
     cfg = amap.get(str(cmid))
     if cfg is None:
         return {"error": f"No encontré la tarea cmid={cmid} en tus cursos."}
-    valor, etiqueta, opciones = _resolver_valor_nota(cfg.get("grade"), nota)
+    gcfg = cfg.get("grade")
+    valor, etiqueta, opciones = _resolver_valor_nota(gcfg, nota)
     if valor is None:
+        # `es_escala` sólo se afirma cuando de verdad se pudo leer la config. Antes
+        # `cfg.get("grade", 0) < 0` devolvía False tanto para "es numérica" como para "no
+        # sé", y esas dos cosas no son lo mismo.
+        try:
+            es_escala = int(gcfg) < 0
+        except (TypeError, ValueError):
+            es_escala = None
         return {"error": f"'{nota}' no es una nota válida para esta tarea.",
-                "es_escala": cfg.get("grade", 0) < 0, "opciones": opciones}
+                "es_escala": es_escala, "opciones": opciones}
     uid, nombre = await _userid_por_email(client, email)
     if uid is None:
         return {"error": f"No encontré al alumno {email} (¿entregó / está en el curso?)."}
@@ -968,6 +1011,7 @@ async def foros_pendientes(client, course_id: int, group_ids: list[int] | None =
     pares = [x for sub in await asyncio.gather(*[_hilos(f) for f in con_hilos]) for x in sub]
     total_curso = len(pares)
     aviso_filtro = None
+    mis_alumnos_ids: set = set()   # vacío = sin filtro por padrón (guardia / sin group_ids)
     if group_ids:
         # ANTES se filtraba por `groupid` de la discusión, y NO filtraba nada: en este
         # campus los foros de consulta son del curso entero y TODAS las discusiones vienen
@@ -992,7 +1036,15 @@ async def foros_pendientes(client, course_id: int, group_ids: list[int] | None =
                             f"({'; '.join(fallas) or 'sin alumnos'}), así que NO filtré: "
                             "abajo hay consultas de alumnos de otros tutores.")
         else:
-            pares = [(f, d) for f, d in pares if d.get("autor_userid") in mis_alumnos]
+            # OJO: `autor_userid` es de quien ABRIÓ la discusión, no de quien preguntó
+            # último. Filtrar sólo por eso escondía consultas de alumnos propios colgadas
+            # dentro de un hilo abierto por otro — pasó el 2026-08-04: dos alumnos
+            # preguntaron dentro de un hilo ajeno y la tool informó `sin_responder: 0`.
+            # Ahora los hilos ajenos CON réplicas no se descartan: se abren igual y se
+            # deciden mirando los posts de adentro (ver `_mia`).
+            pares = [(f, d) for f, d in pares
+                     if d.get("autor_userid") in mis_alumnos or d.get("replicas")]
+            mis_alumnos_ids = mis_alumnos
     # Ordenar ANTES de cortar: si no, el tope se come discusiones recientes según el orden
     # en que respondió el campus y quedan pendientes invisibles (pasó: de 351 hilos se
     # clasificaban 120 arbitrarios y los sin responder del resto no aparecían nunca).
@@ -1004,7 +1056,8 @@ async def foros_pendientes(client, course_id: int, group_ids: list[int] | None =
     for f, d in pares:
         fila = {"foro": f["nombre"], "forum_id": f["forum_id"],
                 "discussion_id": d["discussion_id"], "titulo": d["titulo"],
-                "autor": d["autor"], "replicas": d["replicas"],
+                "autor": d["autor"], "autor_userid": d.get("autor_userid"),
+                "replicas": d["replicas"],
                 "ultimo_ts": d["ultimo_ts"], "puede_responder": d["puede_responder"]}
         (sin_responder if not d["replicas"] else dudosas).append(fila)
 
@@ -1016,11 +1069,21 @@ async def foros_pendientes(client, course_id: int, group_ids: list[int] | None =
             fila["aviso"] = "No pude abrirla para ver si respondiste."
             return fila
         posts = r.get("posts", [])
-        if any(p.get("autor_userid") == uid for p in posts):
-            return None  # ya respondiste
-        ult = posts[-1] if posts else {}
+        if not posts:
+            return fila
+        ult = posts[-1]
+        # "Respondida" es que la ÚLTIMA palabra sea tuya, no que hayas hablado alguna vez.
+        # Antes bastaba con un post tuyo en cualquier lado para cerrar el hilo para
+        # siempre; si después llegaban preguntas nuevas, quedaban invisibles.
+        if ult.get("autor_userid") == uid:
+            return None
+        # Hilo abierto por alguien ajeno: sólo cuenta si adentro preguntó un alumno tuyo.
+        if mis_alumnos_ids and fila.get("autor_userid") not in mis_alumnos_ids:
+            if not any(p.get("autor_userid") in mis_alumnos_ids for p in posts):
+                return None
         fila["ultimo_post_id"] = ult.get("post_id")
         fila["ultimo_autor"] = ult.get("autor")
+        fila["responder_a_post"] = ult.get("post_id")
         return fila
 
     respondio_otro = [x for x in await asyncio.gather(*[_mia(f) for f in dudosas]) if x]
