@@ -550,9 +550,16 @@ async def actualizar_tableros() -> dict:
     except asyncio.TimeoutError:
         return {
             "error": True, "timeout": True,
-            "mensaje": f"El refresco tardó más de {_REFRESCO_TIMEOUT_S}s y se cortó. "
-                       "Puede que tengas muchas comisiones/tareas o que Moodle esté lento; "
-                       "reintentá en un rato.",
+            "mensaje": f"El refresco tardó más de {_REFRESCO_TIMEOUT_S}s y se cortó.",
+            "que_quedo": "Los conteos por tarea que alcanzó a relevar SÍ se guardaron, pero "
+                         "el padrón de alumnos y las entregas se escriben al final, así que "
+                         "ESOS quedaron con los datos de la corrida anterior. No los leas "
+                         "como si fueran de hoy.",
+            "que_hacer": "Reintentá: la segunda corrida suele entrar. Si vuelve a cortarse, "
+                         "bajá la concurrencia con SNAPSHOT_CONCURRENCIA=3 (el campus puede "
+                         "estar rechazando requests) o subí el techo con "
+                         "REFRESCO_TIMEOUT_S=600. Y si sólo necesitás saber quién entregó "
+                         "una tarea puntual, usá entregas_tarea, que responde en segundos.",
         }
     if res.get("omitido"):
         return {

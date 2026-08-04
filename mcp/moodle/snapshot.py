@@ -19,6 +19,7 @@ Desde `mcp/`:  python -m moodle.snapshot
 """
 
 import asyncio
+import os
 import logging
 import re
 from datetime import date, datetime
@@ -26,6 +27,11 @@ from datetime import date, datetime
 from . import almacen, ws_api
 
 log = logging.getLogger("skill.snapshot")
+
+
+# Requests simultáneos contra el campus durante el snapshot. Ajustable por env var para
+# poder bajarlo si Moodle está lento sin tener que tocar código.
+_CONCURRENCIA = int(os.environ.get("SNAPSHOT_CONCURRENCIA", "6"))
 
 
 async def _comisiones_del_curso(course_id: int) -> list[dict]:
@@ -101,6 +107,9 @@ async def tomar_snapshot(client, course_ids: list[int] | None = None) -> dict:
         return {"fecha": hoy, "filas": 0, "entregas": 0, "alumnos": 0, "omitido": True}
 
     amap = await ws_api._assign_map(client)  # cmid -> {id, course, grade, name} (todos los cursos)
+    # El campus es compartido: paralelizamos, pero con techo. 6 es el punto donde el
+    # snapshot entra holgado en el timeout sin que Moodle empiece a rechazar requests.
+    _sem = asyncio.Semaphore(_CONCURRENCIA)
     filas = 0
     entregas_acc: list[dict] = []
     padron: dict[str, dict] = {}  # email -> {nombre, comisiones:set, ultimo_acceso:ts}
@@ -124,77 +133,100 @@ async def tomar_snapshot(client, course_ids: list[int] | None = None) -> dict:
         log.info("Snapshot %s — curso %s — %d comisiones, %d tareas (API REST)",
                  hoy, course_id, len(comisiones), len(tareas))
 
-        for com in comisiones:
-            for t in tareas:
-                lp = None
+        # ---- Notas de todas las tareas, en paralelo y una sola vez ----
+        # Antes se pedían dentro del doble bucle con un cache compartido; al paralelizar
+        # eso sería una race, y secuencialmente era una espera por tarea.
+        async def _cargar_grades(inst: int) -> None:
+            if inst in grades_cache:
+                return
+            async with _sem:
+                try:
+                    grades_cache[inst] = await ws_api.grades_map(client, inst)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("  grades_map(%s) falló (%s)", inst, type(e).__name__)
+                    grades_cache[inst] = {}
+
+        await asyncio.gather(*[_cargar_grades(t["inst"]) for t in tareas])
+
+        # ---- Participantes de cada (comisión, tarea), en paralelo ----
+        # El bucle era secuencial: comisiones × tareas requests en fila, y con varias
+        # comisiones no entraba en el timeout. Peor: al cortarse se perdía TODO el
+        # trabajo. Con el semáforo se mantiene la cortesía con el campus (no lo
+        # martillamos) y el tiempo total baja a una fracción.
+        async def _participantes(com: dict, t: dict):
+            async with _sem:
                 for intento in range(3):
                     try:
-                        lp = await client.ws("mod_assign_list_participants", {
+                        return com, t, await client.ws("mod_assign_list_participants", {
                             "assignid": t["inst"], "groupid": com["group_id"],
                             "filter": "", "skip": 0, "limit": 0})
-                        break
                     except Exception as e:  # noqa: BLE001
                         log.warning("  %-30s intento %d falló (%s)",
                                     t["titulo"][:30], intento + 1, type(e).__name__)
-                if lp is None:
-                    prev = await almacen.entregas_previas(com["comision"], t["id"])
-                    entregas_acc.extend(prev)
-                    log.warning("  %-30s SALTEADA — reuso %d entregas previas", t["titulo"][:30], len(prev))
-                    degradadas.append({
-                        "comision": com["comision"],
-                        "tarea": t["titulo"],
-                        "assign_id": t["id"],
-                        "entregas_reusadas": len(prev),
-                        "detalle": ("Falló 3 veces: se reusaron los datos de la corrida "
-                                    "anterior. Estos números NO son de hoy."),
-                    })
-                    continue
+            return com, t, None
 
-                est = [p for p in lp if ws_api._es_estudiante(p)]
-                if t["inst"] not in grades_cache:
-                    grades_cache[t["inst"]] = await ws_api.grades_map(client, t["inst"])
-                gmap = grades_cache[t["inst"]]
+        resultados = await asyncio.gather(
+            *[_participantes(com, t) for com in comisiones for t in tareas]
+        )
 
-                rows = []
-                for p in est:
-                    submitted = bool(p.get("submitted"))
-                    requiere = bool(p.get("requiregrading"))
-                    nota = ws_api.nota_display(t["grade"], gmap.get(p["id"]))
-                    entregado = submitted
-                    calificado = submitted and not requiere and nota is not None
-                    pendiente = submitted and requiere
-                    email = (p.get("email") or "").lower()
-                    rows.append({"name": p.get("fullname"), "email": email,
-                                 "entregado": entregado, "calificado": calificado, "pendiente": pendiente})
-                    entregas_acc.append({
-                        "email": email, "comision": com["comision"],
-                        "assign_id": t["id"], "tarea": t["titulo"],
-                        "estado": ("Enviado para calificar" if pendiente else
-                                   "Calificado" if calificado else
-                                   "Enviado" if submitted else "Sin entrega"),
-                        "nota": nota, "pendiente": pendiente,
-                    })
-                    reg = padron.setdefault(email, {
-                        "nombre": p.get("fullname"), "comisiones": set(), "ultimo_acceso": 0})
-                    reg["comisiones"].add(com["comision"])
-                    reg["ultimo_acceso"] = max(reg["ultimo_acceso"], p.get("lastaccess") or 0)
-
-                c = _contar(rows)
-                await almacen.guardar_snapshot({
-                    "fecha": hoy, "comision": com["comision"],
-                    "assign_id": t["id"], "tarea": t["titulo"], **c,
-                    "datos_json": {
-                        "group_id": com["group_id"],
-                        "no_entregaron": [
-                            {"name": r["name"], "email": r["email"]}
-                            for r in rows if not r["entregado"]
-                        ],
-                    },
+        for com, t, lp in resultados:
+            if lp is None:
+                prev = await almacen.entregas_previas(com["comision"], t["id"])
+                entregas_acc.extend(prev)
+                log.warning("  %-30s SALTEADA — reuso %d entregas previas", t["titulo"][:30], len(prev))
+                degradadas.append({
+                    "comision": com["comision"],
+                    "tarea": t["titulo"],
+                    "assign_id": t["id"],
+                    "entregas_reusadas": len(prev),
+                    "detalle": ("Falló 3 veces: se reusaron los datos de la corrida "
+                                "anterior. Estos números NO son de hoy."),
                 })
-                filas += 1
-                log.info("  %-30s part=%2d entreg=%2d calif=%2d pend=%2d",
-                         t["titulo"][:30], c["participantes"], c["entregados"],
-                         c["calificados"], c["pendientes"])
+                continue
+
+            est = [p for p in lp if ws_api._es_estudiante(p)]
+            gmap = grades_cache.get(t["inst"], {})
+
+            rows = []
+            for p in est:
+                submitted = bool(p.get("submitted"))
+                requiere = bool(p.get("requiregrading"))
+                nota = ws_api.nota_display(t["grade"], gmap.get(p["id"]))
+                entregado = submitted
+                calificado = submitted and not requiere and nota is not None
+                pendiente = submitted and requiere
+                email = (p.get("email") or "").lower()
+                rows.append({"name": p.get("fullname"), "email": email,
+                             "entregado": entregado, "calificado": calificado, "pendiente": pendiente})
+                entregas_acc.append({
+                    "email": email, "comision": com["comision"],
+                    "assign_id": t["id"], "tarea": t["titulo"],
+                    "estado": ("Enviado para calificar" if pendiente else
+                               "Calificado" if calificado else
+                               "Enviado" if submitted else "Sin entrega"),
+                    "nota": nota, "pendiente": pendiente,
+                })
+                reg = padron.setdefault(email, {
+                    "nombre": p.get("fullname"), "comisiones": set(), "ultimo_acceso": 0})
+                reg["comisiones"].add(com["comision"])
+                reg["ultimo_acceso"] = max(reg["ultimo_acceso"], p.get("lastaccess") or 0)
+
+            c = _contar(rows)
+            await almacen.guardar_snapshot({
+                "fecha": hoy, "comision": com["comision"],
+                "assign_id": t["id"], "tarea": t["titulo"], **c,
+                "datos_json": {
+                    "group_id": com["group_id"],
+                    "no_entregaron": [
+                        {"name": r["name"], "email": r["email"]}
+                        for r in rows if not r["entregado"]
+                    ],
+                },
+            })
+            filas += 1
+            log.info("  %-30s part=%2d entreg=%2d calif=%2d pend=%2d",
+                     t["titulo"][:30], c["participantes"], c["entregados"],
+                     c["calificados"], c["pendientes"])
 
     if total_comisiones == 0:
         log.info("Sin comisiones en los cursos mapeados — snapshot omitido")
