@@ -841,9 +841,28 @@ async def activeia_pendientes() -> dict:
     """Mapa Moodle<->Active-IA: materias->unidades (con `cmid`=assign_id de Moodle y la
     `rubrica_id` inferida por título)->comisiones (con `comision_id` de Active-IA y
     `group_id` de Moodle). Sirve para resolver a mano comision_id/rubrica_id antes de
-    corregir. Trae contadores de en espera / corregidos / sin entrega. (API REST de
-    Active-IA, JWT — no toca Moodle.)"""
+    corregir.
+
+    ⚠️ Sus contadores `espera`/`corregidos` son del ESTADO EN MOODLE, no de Active-IA:
+    `corregidos: 0` quiere decir "sin nota cargada en el campus", NO "Active-IA no corrigió".
+    Para saber qué corrigió Active-IA y con qué nota, usá `activeia_correcciones`."""
     return await active_ia.activeia_pendientes()
+
+
+@mcp.tool()
+async def activeia_correcciones(comision_id: int, solo_corregidas: bool = True) -> dict:
+    """QUÉ CORRIGIÓ Active-IA y con qué nota, por comisión. La vista que `activeia_pendientes`
+    NO da (esa lee el estado de Moodle).
+
+    Usala sobre todo después de un error `GEMINI_OVERLOADED`: ese error significa que la
+    respuesta no llegó a tiempo, NO que la corrección se perdió — muchas terminan bien
+    minutos después. Antes de reintentar o de corregir a mano, mirá acá.
+
+    El `comision_id` sale de `activeia_resolver`. Devuelve `{comision_id, total,
+    correcciones:[{entrega_id, alumno, estado, nota, correccion_id, rubrica_id}]}`.
+    Que una entrega figure con nota acá NO significa que esté cargada en el campus: para
+    eso está `cargar_nota`, que es un paso aparte."""
+    return await active_ia.activeia_correcciones(comision_id, solo_corregidas)
 
 
 @mcp.tool()

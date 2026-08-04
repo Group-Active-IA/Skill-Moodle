@@ -143,7 +143,15 @@ async def activeia_pendientes() -> dict:
 
     Forma real de la API: `{materias:[{id,nombre,unidades:[{cmid,titulo,subtitulo,
     comisiones:[{id,nombre,codigo,groupId,moodleGraderUrl,...}]}]}]}`. Devolvemos una
-    versión aplanada por unidad, con la rúbrica inferida (por título) cuando se puede."""
+    versión aplanada por unidad, con la rúbrica inferida (por título) cuando se puede.
+
+    ⚠️ LOS CONTADORES SON DE MOODLE, NO DE ACTIVE-IA. `espera` / `corregidos` /
+    `sin_entrega` cuentan el estado de calificación **en el campus**: `corregidos: 0`
+    significa "ninguna tiene nota cargada en Moodle", NO "Active-IA no corrigió nada".
+    Los dos números difieren siempre, porque `corregir_con_active_ia` deja la corrección
+    en Active-IA y NO escribe la nota (eso es `cargar_nota`, aparte). El 2026-08-04 esto
+    hizo concluir que no se había corregido nada cuando ya había dos correcciones hechas.
+    Para ver lo que Active-IA realmente corrigió, usá `activeia_correcciones`."""
     try:
         resp = await _get_client().request("GET", "/pendientes/moodle")
     except httpx.HTTPError as e:
@@ -420,14 +428,20 @@ async def corregir_con_active_ia(
     if "error" in entrega or entrega.get("conflicto"):
         return entrega
     entrega_id = entrega["entrega_id"]
+    reusada = bool(entrega.get("reusada"))
 
     # --- c. Disparar la corrección ---
-    disparo = await _disparar_correccion(cli, entrega_id)
-    if "error" in disparo:
-        # Un timeout al DISPARAR no es fatal: la corrección puede haber arrancado igual;
-        # seguimos al polling. Cualquier otro error sí corta.
-        if not disparo.get("timeout"):
-            return {**disparo, "entrega_id": entrega_id}
+    # Si la entrega venía de un intento anterior (409 → retomada), NO se dispara de nuevo:
+    # puede estar corrigiéndose o ya corregida. Se va derecho al poll, que resuelve los dos
+    # casos y baja el PDF. Re-disparar sobre una corrección terminada es pedirle a Gemini
+    # que rehaga trabajo ya hecho, y encima puede fallar.
+    if not reusada:
+        disparo = await _disparar_correccion(cli, entrega_id)
+        if "error" in disparo:
+            # Un timeout al DISPARAR no es fatal: la corrección puede haber arrancado
+            # igual; seguimos al polling. Cualquier otro error sí corta.
+            if not disparo.get("timeout"):
+                return {**disparo, "entrega_id": entrega_id}
 
     # --- d. Polling hasta corregida / error / timeout ---
     resultado = await _poll_correccion(cli, entrega_id, comision_id, timeout_s)
@@ -514,10 +528,19 @@ async def _subir_entrega(
         return {"error": f"No pude subir la entrega a Active-IA: {_detalle_error(e)}"}
 
     if resp.status_code == 409:
+        # La entrega YA existe. El caso típico no es "quiero pisarla": es que un intento
+        # anterior la subió y después Gemini se saturó, así que quedó ahí — y muchas veces
+        # la corrección termina bien igual, minutos después. Antes se devolvía un
+        # `conflicto` sugiriendo `sobrescribir=true`, un parámetro que NO existe en la
+        # cadena: el alumno quedaba trabado sin salida desde la skill.
+        # Ahora la buscamos y devolvemos su id para RETOMAR el flujo (poll + PDF).
+        existente = await _buscar_entrega_existente(cli, alumno_nombre, comision_id, rubrica_id)
+        if existente is not None:
+            return {"entrega_id": existente, "reusada": True}
         return {
             "conflicto": True,
             "aviso": f"Ya existe una entrega de '{alumno_nombre}' para esa rúbrica/comisión "
-            "en Active-IA. Reintentá con sobrescribir=true si querés reemplazarla.",
+            "en Active-IA, pero no pude ubicarla para retomarla. Revisala en el panel.",
             "detalle": resp.text[:300],
         }
     if resp.status_code not in (200, 201):
@@ -607,6 +630,76 @@ async def _poll_correccion(
         "estado": "pendiente",
         "entrega_id": entrega_id,
     }
+
+
+async def activeia_correcciones(comision_id: int, solo_corregidas: bool = True) -> dict:
+    """QUÉ CORRIGIÓ ACTIVE-IA de verdad, con su nota. Es la vista que faltaba.
+
+    `activeia_pendientes` NO sirve para esto: sus contadores son del campus (ver su
+    docstring). Hasta que existió esta tool, la única forma de saber si una entrega se
+    había corregido era el panel web — y eso llevó a dar por perdidas correcciones que
+    estaban hechas (2026-08-04: dos alumnos figuraban trabados y ya tenían nota).
+
+    Sirve especialmente después de un `GEMINI_OVERLOADED`: ese error NO significa que la
+    corrección se perdió, sólo que la respuesta no llegó a tiempo. Muchas terminan bien
+    minutos después, y acá se ven.
+
+    Devuelve `{comision_id, total, correcciones:[{entrega_id, alumno, estado, nota,
+    correccion_id, rubrica_id}]}`."""
+    cli = _get_client()
+    try:
+        resp = await cli.request(
+            "GET", "/entregas/", params={"comision_id": comision_id, "per_page": 200}
+        )
+    except httpx.HTTPError as e:
+        return {"error": f"No pude consultar /entregas/: {_detalle_error(e)}"}
+    if resp.status_code != 200:
+        return {"error": f"/entregas/ devolvió {resp.status_code}", "body": resp.text[:300]}
+
+    filas = []
+    for item in resp.json().get("items", []):
+        estado = item.get("estado") or item.get("status")
+        nota = item.get("nota") or item.get("calificacion") or item.get("puntaje")
+        if solo_corregidas and nota is None:
+            continue
+        filas.append({
+            "entrega_id": item.get("id"),
+            "alumno": item.get("alumno_nombre"),
+            "estado": estado,
+            "nota": nota,
+            "correccion_id": item.get("correccion_id"),
+            "rubrica_id": item.get("rubrica_id"),
+        })
+    filas.sort(key=lambda f: str(f.get("alumno") or ""))
+    return {"comision_id": comision_id, "total": len(filas), "correcciones": filas,
+            "nota_criterio": "Estado de ACTIVE-IA (no de Moodle). Que figure con nota acá "
+                             "no significa que esté cargada en el campus: eso es cargar_nota."}
+
+
+async def _buscar_entrega_existente(
+    cli: ActiveIAClient, alumno_nombre: str, comision_id: int, rubrica_id: int
+) -> int | None:
+    """Ubica el id de una entrega ya subida de ese alumno en esa comisión/rúbrica.
+
+    Se usa cuando POST /entregas devuelve 409. Sirve para RETOMAR: si un intento previo
+    dejó la entrega arriba (típico cuando Gemini se satura), no hace falta volver a
+    subirla — se sigue el flujo con la que ya está, se hace el poll y se baja el PDF.
+    Devuelve None si no se puede ubicar (ahí sí, conflicto sin salida automática)."""
+    objetivo = _normalizar(alumno_nombre)
+    try:
+        resp = await cli.request(
+            "GET", "/entregas/", params={"comision_id": comision_id, "per_page": 200}
+        )
+        if resp.status_code != 200:
+            return None
+        for item in resp.json().get("items", []):
+            if item.get("rubrica_id") not in (None, rubrica_id):
+                continue
+            if _normalizar(item.get("alumno_nombre", "")) == objetivo:
+                return item.get("id")
+    except httpx.HTTPError:
+        return None
+    return None
 
 
 async def _buscar_error_entrega(
