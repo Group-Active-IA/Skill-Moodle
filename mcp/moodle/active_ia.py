@@ -693,6 +693,25 @@ async def activeia_correcciones(comision_id: int, solo_corregidas: bool = True) 
             "correccion_id": item.get("correccion_id"),
             "rubrica_id": item.get("rubrica_id"),
         })
+
+    # `/entregas/` NO trae el correccion_id, y sin él no se puede bajar el PDF de
+    # devolución: la lista quedaba mirable pero inservible para adjuntarle algo al alumno.
+    # Se completa pidiendo /correcciones/entregas/{id} sólo para las que ya tienen nota.
+    async def _completar(fila: dict) -> None:
+        if fila.get("correccion_id") is not None or fila.get("nota") is None:
+            return
+        try:
+            r = await cli.request("GET", f"/correcciones/entregas/{fila['entrega_id']}")
+            if r.status_code != 200:
+                return
+            d = r.json()
+            reg = d[0] if isinstance(d, list) and d else (d if isinstance(d, dict) else {})
+            fila["correccion_id"] = reg.get("id") or reg.get("correccion_id")
+        except httpx.HTTPError:
+            return
+
+    cli = _get_client()
+    await asyncio.gather(*[_completar(f) for f in filas])
     filas.sort(key=lambda f: str(f.get("alumno") or ""))
     return {"comision_id": comision_id, "total": len(filas), "correcciones": filas,
             "nota_criterio": "Estado de ACTIVE-IA (no de Moodle). Que figure con nota acá "
