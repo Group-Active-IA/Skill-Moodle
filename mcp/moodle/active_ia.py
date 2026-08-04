@@ -632,6 +632,35 @@ async def _poll_correccion(
     }
 
 
+# La API topea `per_page` en 100, así que se pagina. Pedir 200 devuelve 422 y, si no se
+# mira el status, se lee como "esta comisión no tiene entregas" — que es lo contrario.
+_ENTREGAS_PER_PAGE = 100
+_ENTREGAS_MAX_PAGINAS = 10
+
+
+async def _entregas_de_comision(cli: ActiveIAClient, comision_id: int) -> list | dict:
+    """Todas las entregas de una comisión, paginando. Devuelve la lista, o un dict de
+    error (para que el caller lo propague en vez de confundirlo con 'no hay nada')."""
+    todas: list = []
+    for pagina in range(1, _ENTREGAS_MAX_PAGINAS + 1):
+        try:
+            resp = await cli.request(
+                "GET", "/entregas/",
+                params={"comision_id": comision_id,
+                        "per_page": _ENTREGAS_PER_PAGE, "page": pagina},
+            )
+        except httpx.HTTPError as e:
+            return {"error": f"No pude consultar /entregas/: {_detalle_error(e)}"}
+        if resp.status_code != 200:
+            return {"error": f"/entregas/ devolvió {resp.status_code}",
+                    "body": resp.text[:300]}
+        lote = resp.json().get("items", [])
+        todas.extend(lote)
+        if len(lote) < _ENTREGAS_PER_PAGE:
+            break
+    return todas
+
+
 async def activeia_correcciones(comision_id: int, solo_corregidas: bool = True) -> dict:
     """QUÉ CORRIGIÓ ACTIVE-IA de verdad, con su nota. Es la vista que faltaba.
 
@@ -646,18 +675,12 @@ async def activeia_correcciones(comision_id: int, solo_corregidas: bool = True) 
 
     Devuelve `{comision_id, total, correcciones:[{entrega_id, alumno, estado, nota,
     correccion_id, rubrica_id}]}`."""
-    cli = _get_client()
-    try:
-        resp = await cli.request(
-            "GET", "/entregas/", params={"comision_id": comision_id, "per_page": 200}
-        )
-    except httpx.HTTPError as e:
-        return {"error": f"No pude consultar /entregas/: {_detalle_error(e)}"}
-    if resp.status_code != 200:
-        return {"error": f"/entregas/ devolvió {resp.status_code}", "body": resp.text[:300]}
+    items = await _entregas_de_comision(_get_client(), comision_id)
+    if isinstance(items, dict):          # dict = error
+        return items
 
     filas = []
-    for item in resp.json().get("items", []):
+    for item in items:
         estado = item.get("estado") or item.get("status")
         nota = item.get("nota") or item.get("calificacion") or item.get("puntaje")
         if solo_corregidas and nota is None:
@@ -686,19 +709,14 @@ async def _buscar_entrega_existente(
     subirla — se sigue el flujo con la que ya está, se hace el poll y se baja el PDF.
     Devuelve None si no se puede ubicar (ahí sí, conflicto sin salida automática)."""
     objetivo = _normalizar(alumno_nombre)
-    try:
-        resp = await cli.request(
-            "GET", "/entregas/", params={"comision_id": comision_id, "per_page": 200}
-        )
-        if resp.status_code != 200:
-            return None
-        for item in resp.json().get("items", []):
-            if item.get("rubrica_id") not in (None, rubrica_id):
-                continue
-            if _normalizar(item.get("alumno_nombre", "")) == objetivo:
-                return item.get("id")
-    except httpx.HTTPError:
+    items = await _entregas_de_comision(cli, comision_id)
+    if isinstance(items, dict):          # error consultando: no podemos ubicarla
         return None
+    for item in items:
+        if item.get("rubrica_id") not in (None, rubrica_id):
+            continue
+        if _normalizar(item.get("alumno_nombre", "")) == objetivo:
+            return item.get("id")
     return None
 
 
