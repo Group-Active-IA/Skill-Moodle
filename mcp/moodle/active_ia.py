@@ -661,6 +661,24 @@ async def _entregas_de_comision(cli: ActiveIAClient, comision_id: int) -> list |
     return todas
 
 
+# Los tres nombres con los que `/entregas/` viene devolviendo la nota según el caso. Se
+# prueban en orden y se corta en el PRIMERO QUE EXISTE, no en el primero que sea
+# "verdadero". Con un `or` encadenado, una nota **0** —entrega vacía, plagio, no entregó
+# nada evaluable— es falsy: caía hasta `None` y la entrega desaparecía de la lista como si
+# Active-IA nunca la hubiera corregido. Es el mismo fallo silencioso que esta tool vino a
+# arreglar, así que acá no se usa `or`.
+_CAMPOS_NOTA = ("nota", "calificacion", "puntaje")
+
+
+def _nota_de_entrega(item: dict):
+    """Nota de una entrega de Active-IA, o `None` si no trae ninguna. **0 es una nota.**"""
+    for campo in _CAMPOS_NOTA:
+        valor = item.get(campo)
+        if valor is not None:
+            return valor
+    return None
+
+
 async def activeia_correcciones(comision_id: int, solo_corregidas: bool = True) -> dict:
     """QUÉ CORRIGIÓ ACTIVE-IA de verdad, con su nota. Es la vista que faltaba.
 
@@ -682,7 +700,7 @@ async def activeia_correcciones(comision_id: int, solo_corregidas: bool = True) 
     filas = []
     for item in items:
         estado = item.get("estado") or item.get("status")
-        nota = item.get("nota") or item.get("calificacion") or item.get("puntaje")
+        nota = _nota_de_entrega(item)
         if solo_corregidas and nota is None:
             continue
         filas.append({
@@ -732,7 +750,15 @@ async def _buscar_entrega_existente(
     if isinstance(items, dict):          # error consultando: no podemos ubicarla
         return None
     for item in items:
-        if item.get("rubrica_id") not in (None, rubrica_id):
+        # La rúbrica tiene que COINCIDIR, y sin `rubrica_id` en el payload NO se retoma.
+        # Antes un item con el campo ausente o en null matcheaba cualquier rúbrica, con lo
+        # cual alcanzaba el nombre del alumno: se retomaba la entrega de OTRO TP suyo, se
+        # salteaba el disparo (`reusada=True`) y se bajaba el PDF de la corrección
+        # equivocada — el tutor le adjuntaba al alumno la devolución de otra unidad.
+        # Adjuntar la corrección de otra unidad es peor que un conflicto explícito.
+        # Se compara como texto porque la API no garantiza el tipo (12 vs "12"); None
+        # queda como "None" y no matchea ningún id real, que es justo lo que queremos.
+        if str(item.get("rubrica_id")) != str(rubrica_id):
             continue
         if _normalizar(item.get("alumno_nombre", "")) == objetivo:
             return item.get("id")
