@@ -463,6 +463,25 @@ async def responder_foro(post_id: int, mensaje: str, asunto: str | None = None,
 
 
 @mcp.tool()
+async def crear_discusion(forum_id: int, asunto: str, mensaje: str, group_id: int = 0,
+                          confirmado: bool = False) -> dict:
+    """Abre un tema NUEVO en un foro (una bienvenida, un aviso). Distinto de
+    `responder_foro`, que cuelga de un post que ya existe: usá esta cuando no hay hilo
+    del que colgarse.
+
+    EL `group_id` DECIDE QUIÉN LO VE. En los foros de "Avisos de la comisión"
+    (groupmode=1) el aviso llega SOLO a esa comisión; con group_id=0 se publica para el
+    curso entero — cientos de alumnos ajenos. Sacá el id de `descubrir_comisiones` o de
+    "Mis datos", nunca inventado. Para avisos de comisión NO uses "Avisos generales":
+    ese foro no tiene grupos y siempre va al curso completo.
+
+    ESCRITURA — llamala primero SIN `confirmado`: devuelve un preview que dice a qué
+    grupo va y a cuántas personas llega, verificado en vivo. Mostráselo al tutor y recién
+    con su OK explícito repetí con `confirmado=true`. Nunca publiques sin ese OK."""
+    return await ws_api.crear_discusion(_cli(), forum_id, asunto, mensaje, group_id, confirmado)
+
+
+@mcp.tool()
 async def descubrir_cursos() -> list[dict]:
     """Descubre EN VIVO los cursos del campus donde el tutor está matriculado
     (course_id + nombre). Fallback de `aulas` si el catálogo no sirve. (API REST.)"""

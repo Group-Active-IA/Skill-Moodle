@@ -1047,6 +1047,98 @@ async def responder_foro(client, post_id: int, mensaje: str, asunto: str | None 
     return {"ok": True, "post_id": (r or {}).get("postid"), "responde_a": post_id}
 
 
+def _a_html(texto: str) -> str:
+    """Texto plano -> HTML simple para el foro. Moodle guarda el mensaje con
+    messageformat=1 (HTML): si le mandás saltos de línea crudos, el campus los come y el
+    aviso queda como un ladrillo de una sola línea. Cada párrafo va en su <p>."""
+    parrafos = [p.strip() for p in re.split(r"\n\s*\n", (texto or "").strip()) if p.strip()]
+    return "".join("<p>" + p.replace("\n", "<br>") + "</p>" for p in parrafos)
+
+
+async def crear_discusion(client, forum_id: int, asunto: str, mensaje: str,
+                          group_id: int = 0, confirmado: bool = False) -> dict:
+    """Abre un tema NUEVO en un foro (mod_forum_add_discussion). Distinto de
+    `responder_foro`, que cuelga de un post existente: esto es lo que se usa para un
+    aviso o una bienvenida, donde todavía no hay hilo del que colgarse.
+
+    El `group_id` NO es opcional en la práctica. En los foros de "Avisos de la comisión"
+    (groupmode=1, grupos separados) el destinatario lo decide este número: con el group_id
+    de la comisión lo ven sus alumnos, con 0 se publica para el curso ENTERO. Publicar un
+    aviso de comisión a 500 alumnos de otras comisiones no se puede deshacer desde la API,
+    así que acá se valida antes y se avisa fuerte en el preview.
+
+    ESCRITURA — llamala primero SIN `confirmado` para ver el preview (incluye a qué grupo
+    y a cuánta gente llega, verificado en vivo). Solo con OK del tutor, confirmado=true.
+    """
+    # Resolver el foro para saber su groupmode y su curso: sin esto el preview diría
+    # "grupo 7740" sin poder afirmar que ese grupo existe ni de qué comisión es.
+    ctx: dict = {}
+    try:
+        cm = await client.ws("core_course_get_course_module_by_instance",
+                             {"module": "forum", "instance": forum_id})
+        info = (cm or {}).get("cm") or {}
+        ctx = {"foro": _plano(info.get("name", ""), 80), "cmid": info.get("id"),
+               "course_id": info.get("course"), "groupmode": info.get("groupmode")}
+    except MoodleWSError:
+        pass  # el preview sigue sirviendo aunque no podamos enriquecerlo
+
+    # ¿Tenemos permiso? Mejor enterarse en el preview que después de que el tutor dijo OK.
+    try:
+        permiso = await client.ws("mod_forum_can_add_discussion", {"forumid": forum_id})
+        if not (permiso or {}).get("status"):
+            return {"error": f"No tenés permiso para abrir tema en el foro {forum_id}."}
+    except MoodleWSError as e:
+        return {"error": f"No pude verificar permisos en el foro {forum_id}: {e.errorcode}"}
+
+    # Nombre real del grupo + cuánta gente hay adentro: es el dato que deja ver de un
+    # vistazo si el aviso va a la comisión correcta.
+    destino = {"group_id": group_id}
+    if group_id and ctx.get("course_id"):
+        try:
+            gs = await client.ws("core_group_get_course_groups", {"courseid": ctx["course_id"]})
+            g = next((x for x in (gs or []) if x.get("id") == group_id), None)
+            if g is None:
+                return {"error": f"El group_id {group_id} no existe en el curso "
+                                 f"{ctx['course_id']}. Sacá el id de descubrir_comisiones."}
+            destino["grupo_nombre"] = g.get("name")
+            # Cuánta gente hay en el grupo. NO se puede usar core_group_get_group_members:
+            # en este campus el rol de tutor no lo tiene habilitado y tira accessexception.
+            # La lista de matriculados filtrada por grupo sí está permitida, y además trae
+            # los roles — así el conteo son alumnos, sin contar al propio tutor.
+            us = await client.ws("core_enrol_get_enrolled_users",
+                                 {"courseid": ctx["course_id"],
+                                  "options[0][name]": "groupid",
+                                  "options[0][value]": group_id})
+            alumnos = [u for u in (us or [])
+                       if not any((r.get("shortname") or "") in ("editingteacher", "teacher", "manager")
+                                  for r in (u.get("roles") or []))]
+            destino["alcance_alumnos"] = len(alumnos)
+        except MoodleWSError:
+            pass
+
+    if not group_id and ctx.get("groupmode") == 1:
+        destino["ALERTA"] = ("Este foro tiene GRUPOS SEPARADOS y no pasaste group_id: "
+                             "el aviso se publicaría para el CURSO ENTERO, no para tu "
+                             "comisión. Pasá el group_id de la comisión.")
+
+    if not confirmado:
+        return {"requiere_confirmacion": True,
+                "preview": {"foro": ctx.get("foro"), "forum_id": forum_id,
+                            "asunto": asunto, "destino": destino, "texto": mensaje},
+                "aviso": "Confirmá (confirmado=true) para publicar el tema en el foro."}
+
+    params = {"forumid": forum_id, "subject": asunto, "message": _a_html(mensaje),
+              "options[0][name]": "discussionsubscribe", "options[0][value]": 1}
+    if group_id:
+        params["groupid"] = group_id
+    try:
+        r = await client.ws("mod_forum_add_discussion", params)
+    except MoodleWSError as e:
+        return {"error": f"No pude publicar el tema: {e.errorcode} — {e.message}"}
+    return {"ok": True, "discussion_id": (r or {}).get("discussionid"),
+            "forum_id": forum_id, "asunto": asunto, **destino}
+
+
 _RE_CONSULTAS = re.compile(r"consulta|duda", re.I)
 # Foros que NO son para que conteste el tutor, aunque digan "consulta": el de buscar
 # dupla es alumno-con-alumno (200+ hilos de "busco compañero" que nadie debe responder).
