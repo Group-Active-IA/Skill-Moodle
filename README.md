@@ -31,11 +31,14 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
   una sola confirmación —con el detalle de las N notas a la vista— escribe todo.
 - **En qué falla tu comisión**: registra los temas que marcás al corregir y te dice cuáles
   se repiten. Cuando un error aparece en más del 40%, el problema dejó de ser individual.
-- **Carga notas** con su devolución, mostrándote qué va a escribir y esperando tu OK.
-  Después de escribir **relee la nota** para confirmar que quedó guardada de verdad.
+- **Carga notas** con su devolución —y el PDF adjunto, si la tarea acepta archivos—,
+  mostrándote qué va a escribir y esperando tu OK. Después de escribir **relee la nota**
+  para confirmar que quedó guardada de verdad.
 - **Corrección automática con Active-IA** (opcional): baja el trabajo del alumno,
   lo corrige con IA (Gemini, contra la rúbrica) y **te descarga el PDF de devolución**
-  en tu carpeta `salidas/`. Todo con tu OK antes de escribir la nota.
+  en tu carpeta `salidas/`. Todo con tu OK antes de escribir la nota. Si Gemini se satura,
+  la entrega no se pierde: se retoma, y **`activeia_correcciones` te muestra qué corrigió
+  de verdad** en vez de adivinarlo por el estado del campus.
 
 Reusa la lógica de API REST ya probada en producción (token `moodle_mobile_app`,
 `mod_assign_*`), empaquetada para correr **local**: cada tutor con sus credenciales,
@@ -116,7 +119,7 @@ Skill-Moodle/
 ├── VERSION                   # Versión publicada (la compara `version_skill`)
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 37 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, Active-IA…)
+│   ├── server.py             # 39 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, Active-IA…)
 │   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
 │   ├── comisiones.json       # Catálogo tutor→comisión y cmid de actividades por materia
 │   ├── requirements.txt

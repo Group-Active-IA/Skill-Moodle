@@ -194,10 +194,10 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Conteo confiable de una tarea | `sumario` |
 | **Quiénes entregaron y quiénes deben, con nombre** | `entregas_tarea` |
 | Quién entregó y falta corregir | `pendientes_por_corregir` |
-| Buscar un alumno (caché del snapshot) | `buscar_alumno` |
+| Buscar un alumno (en vivo, sin depender del snapshot) | `buscar_alumno` |
 | PDF de pendientes | `armar_informe` |
 | **Auditar cómo está armada un aula** (read-only) | `auditar_aula` |
-| Cargar una nota (con devolución) | `cargar_nota` |
+| Cargar una nota (con devolución, y `adjunto` si va un PDF) | `cargar_nota` |
 | **Mensajes privados que te faltan contestar** | `mensajes_pendientes` |
 | Bandeja de conversaciones · hilo completo | `leer_mensajes` · `leer_conversacion` |
 | Mandar un privado a un alumno (pide OK) | `responder_mensaje` |
@@ -206,6 +206,7 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Mensajes de una discusión | `leer_discusion` |
 | Responder en el foro (pide OK) | `responder_foro` |
 | Ver el mapa Moodle ↔ Active-IA | `activeia_pendientes` |
+| **Qué corrigió Active-IA de verdad, con su nota** | `activeia_correcciones` |
 | Resolver comisión/rúbrica de Active-IA | `activeia_resolver` |
 | **Corregir con Active-IA + PDF de devolución** | `corregir_con_active_ia` |
 
@@ -224,7 +225,11 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
    `responder_mensaje` tocan el campus de alumnos reales. Mostrá exactamente qué vas a
    escribir y esperá el OK del tutor ANTES de ejecutar.
 6. **Snapshot solo a pedido.** `actualizar_tableros` corre cuando el tutor lo pide, no
-   solo. Avisá que puede tardar.
+   solo. Avisá que puede tardar. Releva en paralelo (6 requests simultáneos; bajalo con
+   `SNAPSHOT_CONCURRENCIA=3` si el campus está lento, subí el techo con
+   `REFRESCO_TIMEOUT_S=600`). **Si devuelve `timeout`, leé `que_quedo` y decíselo al
+   tutor**: se guarda por curso, así que el que estaba a mitad de camino no guardó nada, y
+   padrón y entregas siguen mostrando la corrida anterior.
 7. **Conteo confiable = `sumario`.** No cuentes filas a mano; el sumario oficial es la
    fuente.
 
@@ -236,6 +241,11 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
   error de base de datos engañoso. `cargar_nota` ya la manda.
 - **Escala invertida.** En Aprobado/Desaprobado los valores están invertidos
   (Aprobado=1, Desaprobado=2). NO hardcodear: leer la opción por texto.
+- **Hay más de una escala, y no siguen la misma regla.** La 5 (Aprobado/Desaprobado) va
+  invertida; la 3 (No satisfactorio / Satisfactorio / Supera lo esperado, en Prog IV) va
+  en orden creciente. **No existe "1 es la peor"**: cada escala se releva del `<select>`
+  del grader. Si `cargar_nota` dice que no sabe si la tarea usa escala o número, **no
+  insistas con un número**: andá al grader del campus y confirmá.
 - **"Pendiente de corregir" ≠ "deuda del alumno".** El que no entregó nada tiene 0
   para corregir y NO está al día: es el que más debe. `pendientes_por_corregir` solo ve la
   cola de corrección: si devuelve 0, eso NO significa "todos entregaron". Para el padrón
@@ -338,6 +348,21 @@ Active-IA — el tutor NO pasa una API key de Gemini.
    baja el trabajo del alumno de Moodle (REST), lo sube a Active-IA, que lo corrige
    con Gemini, y **descarga el PDF de devolución** a `$MOODLE_SKILL_HOME/salidas/`.
    Devuelve `{ok, nota, devolucion_pdf_local, correccion_id, estado}`.
+3. La corrección **NO carga la nota en Moodle**: eso es `cargar_nota`, un paso aparte.
+   Si le pasás el PDF en `adjunto`, va adjunto a la devolución — pero sólo si la tarea
+   acepta archivos de retroalimentación; si no, te avisa y **no promete lo que no hizo**.
+
+**Ante `GEMINI_OVERLOADED`, NO vuelvas a disparar la corrección.** Ese error significa
+que la respuesta no llegó a tiempo, **no** que la corrección se perdió: la entrega quedó
+subida y muchas veces termina bien minutos después. Mirá primero
+`activeia_correcciones(comision_id)`, que es lo que Active-IA corrigió **de verdad** con
+su nota. Si reintentás igual, la skill detecta la entrega ya subida y **retoma** ese
+trabajo en vez de duplicarlo.
+
+⚠️ **`activeia_pendientes` NO sirve para saber qué corrigió Active-IA.** Sus contadores
+`espera`/`corregidos` son del estado **en Moodle**: `corregidos: 0` quiere decir "sin nota
+cargada en el campus", no "Active-IA no corrigió". Confundirlos hizo dar por perdidas
+correcciones que ya estaban hechas. Para eso está `activeia_correcciones`.
 
 **Es una ESCRITURA** (dispara la corrección y puede cargar la nota en Moodle): con
 `confirmado=false` devuelve un preview de lo que va a hacer SIN ejecutar. Mostráselo
