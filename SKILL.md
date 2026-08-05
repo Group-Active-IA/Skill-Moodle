@@ -205,6 +205,7 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Foros del curso · hilos de un foro | `listar_foros` · `leer_foro` |
 | Mensajes de una discusión | `leer_discusion` |
 | Responder en el foro (pide OK) | `responder_foro` |
+| **Abrir un tema nuevo: aviso, bienvenida** (pide OK) | `crear_discusion` |
 | Ver el mapa Moodle ↔ Active-IA | `activeia_pendientes` |
 | **Qué corrigió Active-IA de verdad, con su nota** | `activeia_correcciones` |
 | Resolver comisión/rúbrica de Active-IA | `activeia_resolver` |
@@ -222,8 +223,12 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 4. **Multi-curso.** Un tutor puede tener Prog I, II y III a la vez. Nunca fijes un
    curso: operá sobre TODOS los de `mis_datos`.
 5. **Escrituras con OK explícito.** `cargar_nota`, `responder_foro`,
-   `responder_mensaje` tocan el campus de alumnos reales. Mostrá exactamente qué vas a
-   escribir y esperá el OK del tutor ANTES de ejecutar.
+   `responder_mensaje` y `crear_discusion` tocan el campus de alumnos reales. Mostrá
+   exactamente qué vas a escribir y esperá el OK del tutor ANTES de ejecutar.
+   **En `crear_discusion`, mostrá siempre `alcance_alumnos`**: es a cuánta gente le llega
+   el aviso, y un tema publicado NO se borra desde la API. Si la tool se niega porque no
+   pudo determinar el alcance, **no la fuerces con `group_id=0`**: ese valor significa
+   "que lo vea el curso entero" y eso lo decide el tutor, no vos.
 6. **Snapshot solo a pedido.** `actualizar_tableros` corre cuando el tutor lo pide, no
    solo. Avisá que puede tardar. Releva en paralelo (6 requests simultáneos; bajalo con
    `SNAPSHOT_CONCURRENCIA=3` si el campus está lento, subí el techo con

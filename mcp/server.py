@@ -463,21 +463,26 @@ async def responder_foro(post_id: int, mensaje: str, asunto: str | None = None,
 
 
 @mcp.tool()
-async def crear_discusion(forum_id: int, asunto: str, mensaje: str, group_id: int = 0,
-                          confirmado: bool = False) -> dict:
+async def crear_discusion(forum_id: int, asunto: str, mensaje: str,
+                          group_id: int | None = None, confirmado: bool = False) -> dict:
     """Abre un tema NUEVO en un foro (una bienvenida, un aviso). Distinto de
     `responder_foro`, que cuelga de un post que ya existe: usá esta cuando no hay hilo
     del que colgarse.
 
-    EL `group_id` DECIDE QUIÉN LO VE. En los foros de "Avisos de la comisión"
-    (groupmode=1) el aviso llega SOLO a esa comisión; con group_id=0 se publica para el
-    curso entero — cientos de alumnos ajenos. Sacá el id de `descubrir_comisiones` o de
-    "Mis datos", nunca inventado. Para avisos de comisión NO uses "Avisos generales":
-    ese foro no tiene grupos y siempre va al curso completo.
+    EL `group_id` DECIDE QUIÉN LO VE. En los foros de "Avisos de la comisión" el aviso
+    llega SOLO a esa comisión; con `group_id=0` se publica para el curso entero —
+    cientos de alumnos ajenos, y **no se puede borrar desde la API**. Sacá el id de
+    `mis_datos` o `descubrir_comisiones`, nunca inventado. Para avisos de comisión NO uses
+    "Avisos generales": ese foro no tiene grupos y siempre va al curso completo.
+
+    Si no pasás `group_id` en un foro con grupos, o si no se puede determinar el alcance,
+    la tool **se niega a publicar** y te dice por qué. No insistas mandando `group_id=0`
+    para saltar el error: ese valor significa "quiero que lo vea el curso entero" y hay
+    que preguntárselo al tutor primero.
 
     ESCRITURA — llamala primero SIN `confirmado`: devuelve un preview que dice a qué
-    grupo va y a cuántas personas llega, verificado en vivo. Mostráselo al tutor y recién
-    con su OK explícito repetí con `confirmado=true`. Nunca publiques sin ese OK."""
+    grupo va y **a cuántos alumnos llega**, verificado en vivo. Mostráselo al tutor —
+    sobre todo ese número — y recién con su OK explícito repetí con `confirmado=true`."""
     return await ws_api.crear_discusion(_cli(), forum_id, asunto, mensaje, group_id, confirmado)
 
 

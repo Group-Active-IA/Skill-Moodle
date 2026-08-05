@@ -119,7 +119,7 @@ Skill-Moodle/
 ├── VERSION                   # Versión publicada (la compara `version_skill`)
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 39 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, Active-IA…)
+│   ├── server.py             # 40 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, Active-IA…)
 │   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
 │   ├── comisiones.json       # Catálogo tutor→comisión y cmid de actividades por materia
 │   ├── requirements.txt

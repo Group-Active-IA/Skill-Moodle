@@ -1050,37 +1050,82 @@ async def responder_foro(client, post_id: int, mensaje: str, asunto: str | None 
 def _a_html(texto: str) -> str:
     """Texto plano -> HTML simple para el foro. Moodle guarda el mensaje con
     messageformat=1 (HTML): si le mandás saltos de línea crudos, el campus los come y el
-    aviso queda como un ladrillo de una sola línea. Cada párrafo va en su <p>."""
+    aviso queda como un ladrillo de una sola línea. Cada párrafo va en su <p>.
+
+    El texto se ESCAPA, igual que en `cargar_nota`. Esto es un foro de **programación**:
+    un aviso que diga `if (a < b)` o `List<int>` se renderiza mutilado si el campus lo lee
+    como markup, y el tutor no se entera hasta que lo ve publicado."""
     parrafos = [p.strip() for p in re.split(r"\n\s*\n", (texto or "").strip()) if p.strip()]
-    return "".join("<p>" + p.replace("\n", "<br>") + "</p>" for p in parrafos)
+    return "".join("<p>" + _html.escape(p).replace("\n", "<br>") + "</p>"
+                   for p in parrafos)
+
+
+# Modos de grupo de Moodle: 0 = sin grupos, 1 = separados, 2 = visibles. En 1 y 2 el
+# `groupid` del post decide quién lo ve; en 0 el foro es del curso entero y no hay a quién
+# dirigirlo. El 2 cuenta igual que el 1 para esto: "visibles" es quién PUEDE leer, no a
+# quién se publica.
+_GROUPMODES_CON_GRUPOS = (1, 2)
+
+
+async def _contar_alumnos(client, course_id: int, group_id: int | None = None) -> int | None:
+    """Cuántos ALUMNOS hay en el curso, o en uno de sus grupos. `None` = no se pudo saber.
+
+    NO se usa `core_group_get_group_members`: en este campus el rol de tutor no lo tiene
+    habilitado y tira `accessexception`. La lista de matriculados sí está permitida y
+    además trae los roles, así que el conteo son alumnos y no incluye al propio tutor."""
+    params: dict = {"courseid": course_id}
+    if group_id:
+        params["options[0][name]"] = "groupid"
+        params["options[0][value]"] = group_id
+    try:
+        us = await client.ws("core_enrol_get_enrolled_users", params)
+    except MoodleWSError:
+        return None
+    if not isinstance(us, list):
+        return None
+    return len([u for u in us if _es_estudiante(u)])
 
 
 async def crear_discusion(client, forum_id: int, asunto: str, mensaje: str,
-                          group_id: int = 0, confirmado: bool = False) -> dict:
+                          group_id: int | None = None, confirmado: bool = False) -> dict:
     """Abre un tema NUEVO en un foro (mod_forum_add_discussion). Distinto de
     `responder_foro`, que cuelga de un post existente: esto es lo que se usa para un
     aviso o una bienvenida, donde todavía no hay hilo del que colgarse.
 
-    El `group_id` NO es opcional en la práctica. En los foros de "Avisos de la comisión"
-    (groupmode=1, grupos separados) el destinatario lo decide este número: con el group_id
-    de la comisión lo ven sus alumnos, con 0 se publica para el curso ENTERO. Publicar un
-    aviso de comisión a 500 alumnos de otras comisiones no se puede deshacer desde la API,
-    así que acá se valida antes y se avisa fuerte en el preview.
+    El `group_id` decide QUIÉN LO VE. En los foros de "Avisos de la comisión"
+    (groupmode 1 o 2) con el id de la comisión lo ven sus alumnos; con `0` se publica al
+    curso ENTERO. Un aviso de comisión que sale a 500 alumnos ajenos **no se deshace desde
+    la API**, así que acá no alcanza con avisar: si no se puede determinar a cuánta gente
+    llega, esta función **se niega a publicar**.
+
+    Tres valores distintos, a propósito:
+      - `None` (default) → "no me lo dijiste". En un foro con grupos, se rechaza.
+      - un id de comisión → va a esa comisión, validado en vivo contra el curso.
+      - `0` EXPLÍCITO → "sí, quiero el curso entero". Se permite, y el preview dice a
+        cuántos alcanza.
 
     ESCRITURA — llamala primero SIN `confirmado` para ver el preview (incluye a qué grupo
     y a cuánta gente llega, verificado en vivo). Solo con OK del tutor, confirmado=true.
     """
-    # Resolver el foro para saber su groupmode y su curso: sin esto el preview diría
-    # "grupo 7740" sin poder afirmar que ese grupo existe ni de qué comisión es.
+    avisos: list[str] = []
+
+    # Resolver el foro para saber su groupmode y su curso. Esto NO es decoración del
+    # preview: es lo que determina el alcance. Si falla, no sabemos a cuántos les llega.
     ctx: dict = {}
+    ctx_ok = True
     try:
         cm = await client.ws("core_course_get_course_module_by_instance",
                              {"module": "forum", "instance": forum_id})
         info = (cm or {}).get("cm") or {}
         ctx = {"foro": _plano(info.get("name", ""), 80), "cmid": info.get("id"),
                "course_id": info.get("course"), "groupmode": info.get("groupmode")}
-    except MoodleWSError:
-        pass  # el preview sigue sirviendo aunque no podamos enriquecerlo
+        if ctx.get("course_id") is None or ctx.get("groupmode") is None:
+            ctx_ok = False
+    except MoodleWSError as e:
+        ctx_ok = False
+        avisos.append(f"No pude leer la configuración del foro {forum_id}: {e.errorcode}")
+    if not ctx_ok and not avisos:
+        avisos.append(f"El campus no devolvió curso/modo de grupo del foro {forum_id}.")
 
     # ¿Tenemos permiso? Mejor enterarse en el preview que después de que el tutor dijo OK.
     try:
@@ -1090,42 +1135,63 @@ async def crear_discusion(client, forum_id: int, asunto: str, mensaje: str,
     except MoodleWSError as e:
         return {"error": f"No pude verificar permisos en el foro {forum_id}: {e.errorcode}"}
 
-    # Nombre real del grupo + cuánta gente hay adentro: es el dato que deja ver de un
-    # vistazo si el aviso va a la comisión correcta.
-    destino = {"group_id": group_id}
-    if group_id and ctx.get("course_id"):
-        try:
-            gs = await client.ws("core_group_get_course_groups", {"courseid": ctx["course_id"]})
-            g = next((x for x in (gs or []) if x.get("id") == group_id), None)
-            if g is None:
-                return {"error": f"El group_id {group_id} no existe en el curso "
-                                 f"{ctx['course_id']}. Sacá el id de descubrir_comisiones."}
-            destino["grupo_nombre"] = g.get("name")
-            # Cuánta gente hay en el grupo. NO se puede usar core_group_get_group_members:
-            # en este campus el rol de tutor no lo tiene habilitado y tira accessexception.
-            # La lista de matriculados filtrada por grupo sí está permitida, y además trae
-            # los roles — así el conteo son alumnos, sin contar al propio tutor.
-            us = await client.ws("core_enrol_get_enrolled_users",
-                                 {"courseid": ctx["course_id"],
-                                  "options[0][name]": "groupid",
-                                  "options[0][value]": group_id})
-            alumnos = [u for u in (us or [])
-                       if not any((r.get("shortname") or "") in ("editingteacher", "teacher", "manager")
-                                  for r in (u.get("roles") or []))]
-            destino["alcance_alumnos"] = len(alumnos)
-        except MoodleWSError:
-            pass
+    con_grupos = ctx.get("groupmode") in _GROUPMODES_CON_GRUPOS
+    destino: dict = {"group_id": group_id,
+                     "alcance": "comisión" if group_id else "curso entero"}
+    bloqueo: str | None = None
 
-    if not group_id and ctx.get("groupmode") == 1:
-        destino["ALERTA"] = ("Este foro tiene GRUPOS SEPARADOS y no pasaste group_id: "
-                             "el aviso se publicaría para el CURSO ENTERO, no para tu "
-                             "comisión. Pasá el group_id de la comisión.")
+    if not ctx_ok:
+        # No sabemos si el foro tiene grupos ni de qué curso es: no se puede afirmar a
+        # cuánta gente llega. "No sé" no puede publicarse como si fuera "no hay problema".
+        bloqueo = ("No pude determinar el alcance de este foro (no sé si tiene grupos "
+                   "separados ni a qué curso pertenece), así que no publico: un aviso de "
+                   "comisión que sale al curso entero no se puede borrar desde la API. "
+                   "Verificá el foro en el campus o reintentá.")
+    elif group_id is None and con_grupos:
+        bloqueo = (f"El foro '{ctx.get('foro')}' tiene GRUPOS SEPARADOS y no pasaste "
+                   "group_id: el aviso saldría para el CURSO ENTERO. Pasá el group_id de "
+                   "tu comisión (sacalo de `mis_datos` o `descubrir_comisiones`), o "
+                   "group_id=0 si de verdad querés que lo vea todo el curso.")
+    elif group_id:
+        # ID validado contra el campus, como manda la Regla de Oro. No es opcional:
+        # publicar en el grupo equivocado tiene el mismo costo que publicar de más.
+        try:
+            gs = await client.ws("core_group_get_course_groups",
+                                 {"courseid": ctx["course_id"]})
+        except MoodleWSError as e:
+            return {"error": f"No pude validar el group_id {group_id} contra el curso "
+                             f"{ctx['course_id']} ({e.errorcode}), así que no publico."}
+        g = next((x for x in (gs or []) if x.get("id") == group_id), None)
+        if g is None:
+            return {"error": f"El group_id {group_id} no existe en el curso "
+                             f"{ctx['course_id']}. Sacá el id de descubrir_comisiones."}
+        destino["grupo_nombre"] = g.get("name")
+        if not con_grupos:
+            avisos.append(
+                f"Pasaste group_id pero el foro '{ctx.get('foro')}' NO tiene grupos "
+                "(groupmode=0): Moodle lo ignora y el aviso lo va a ver el curso entero.")
+            destino["alcance"] = "curso entero"
+
+    # A cuánta gente llega, verificado en vivo. Es EL número del preview.
+    if ctx.get("course_id") is not None:
+        alcance_grupo = group_id if destino["alcance"] == "comisión" else None
+        n = await _contar_alumnos(client, ctx["course_id"], alcance_grupo)
+        destino["alcance_alumnos"] = n
+        if n is None:
+            avisos.append("No pude contar a cuántos alumnos llega — el número de abajo "
+                          "es desconocido, no cero.")
+
+    if bloqueo:
+        return {"error": bloqueo, "foro": ctx.get("foro"), "forum_id": forum_id,
+                "groupmode": ctx.get("groupmode"),
+                "_meta": {"fuente": "vivo", "degradado": not ctx_ok, "avisos": avisos}}
 
     if not confirmado:
         return {"requiere_confirmacion": True,
                 "preview": {"foro": ctx.get("foro"), "forum_id": forum_id,
                             "asunto": asunto, "destino": destino, "texto": mensaje},
-                "aviso": "Confirmá (confirmado=true) para publicar el tema en el foro."}
+                "aviso": "Confirmá (confirmado=true) para publicar el tema en el foro.",
+                "_meta": {"fuente": "vivo", "degradado": False, "avisos": avisos}}
 
     params = {"forumid": forum_id, "subject": asunto, "message": _a_html(mensaje),
               "options[0][name]": "discussionsubscribe", "options[0][value]": 1}
@@ -1136,7 +1202,9 @@ async def crear_discusion(client, forum_id: int, asunto: str, mensaje: str,
     except MoodleWSError as e:
         return {"error": f"No pude publicar el tema: {e.errorcode} — {e.message}"}
     return {"ok": True, "discussion_id": (r or {}).get("discussionid"),
-            "forum_id": forum_id, "asunto": asunto, **destino}
+            "forum_id": forum_id, "asunto": asunto, **destino,
+            "nota": "Quedaste suscripto a la discusión (te llegan las respuestas por mail).",
+            "_meta": {"fuente": "vivo", "degradado": False, "avisos": avisos}}
 
 
 _RE_CONSULTAS = re.compile(r"consulta|duda", re.I)

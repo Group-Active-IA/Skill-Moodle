@@ -16,11 +16,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp"))
 
+from moodle.cliente import MoodleWSError  # noqa: E402
 from moodle.ws_api import (  # noqa: E402
+    _a_html,
     _clasificar_riesgo,
     _racha_final_sin_entregar,
     _resolver_valor_nota,
     clasificar_mensaje_entrante,
+    crear_discusion,
     es_actividad_de_cierre,
     nota_display,
 )
@@ -427,6 +430,113 @@ class TestNotaDeEntregaActiveIA(unittest.TestCase):
 
     def test_sin_ningun_campo_es_None(self):
         self.assertIsNone(_nota_de_entrega({"alumno_nombre": "x"}))
+
+
+class TestAvisoAHtml(unittest.TestCase):
+    """El aviso del foro se guarda con messageformat=1, o sea HTML."""
+
+    def test_cada_parrafo_en_su_p_y_el_salto_simple_es_br(self):
+        # Sin esto el campus se come los saltos y el aviso queda como un ladrillo.
+        self.assertEqual(_a_html("uno\n\ndos"), "<p>uno</p><p>dos</p>")
+        self.assertEqual(_a_html("uno\ndos"), "<p>uno<br>dos</p>")
+
+    def test_escapa_el_codigo(self):
+        # Es un foro de PROGRAMACIÓN: sin escapar, un aviso que diga "if (a < b)" o
+        # "List<int>" se renderiza mutilado y el tutor se entera cuando ya está publicado.
+        self.assertEqual(_a_html("if (a < b)"), "<p>if (a &lt; b)</p>")
+        self.assertIn("&amp;&amp;", _a_html("a && b"))
+        self.assertNotIn("<int>", _a_html("List<int>"))
+
+    def test_vacio_no_rompe(self):
+        for v in ("", "   ", "\n\n", None):
+            self.assertEqual(_a_html(v), "", f"con {v!r}")
+
+
+class ClienteFalso:
+    """Doble mínimo del cliente Moodle: devuelve lo que le pusiste, por función."""
+
+    def __init__(self, respuestas):
+        self.respuestas = respuestas
+        self.llamadas = []
+
+    async def ws(self, fn, params=None):
+        self.llamadas.append(fn)
+        r = self.respuestas.get(fn)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+class TestCrearDiscusionNoPublicaAlCursoEntero(unittest.TestCase):
+    """Publicar un aviso de comisión a cientos de alumnos ajenos NO se deshace desde la
+    API. Por eso acá "no sé a cuántos llega" tiene que ser un freno, no un cartel.
+    """
+
+    FORO_CON_GRUPOS = {
+        "core_course_get_course_module_by_instance": {
+            "cm": {"id": 1, "name": "Avisos de la comisión", "course": 74, "groupmode": 1}},
+        "mod_forum_can_add_discussion": {"status": True},
+        "core_group_get_course_groups": [{"id": 7740, "name": "A26 C1-6"}],
+        "core_enrol_get_enrolled_users": [
+            {"id": 1, "roles": [{"shortname": "student"}]},
+            {"id": 2, "roles": [{"shortname": "student"}]},
+            {"id": 3, "roles": [{"shortname": "editingteacher"}]},   # el tutor no cuenta
+        ],
+        "mod_forum_add_discussion": {"discussionid": 999},
+    }
+
+    def _correr(self, respuestas, **kw):
+        import asyncio
+        cli = ClienteFalso(respuestas)
+        r = asyncio.run(crear_discusion(cli, 55, "Aviso", "hola", **kw))
+        return r, cli
+
+    def test_foro_con_grupos_sin_group_id_NO_publica_aunque_confirmes(self):
+        # EL test. El freno no puede vivir sólo en el preview: si alguien llama directo
+        # con confirmado=true, tiene que seguir frenando igual.
+        r, cli = self._correr(self.FORO_CON_GRUPOS, confirmado=True)
+        self.assertIn("error", r)
+        self.assertIn("GRUPOS SEPARADOS", r["error"])
+        self.assertNotIn("mod_forum_add_discussion", cli.llamadas)
+
+    def test_si_no_puede_leer_el_foro_NO_publica(self):
+        # Antes, si esta llamada fallaba el contexto quedaba vacío, la alerta no se
+        # disparaba y la tool publicaba callada. Justo cuando menos se sabe.
+        resp = dict(self.FORO_CON_GRUPOS)
+        resp["core_course_get_course_module_by_instance"] = MoodleWSError(
+            "core_course_get_course_module_by_instance", {"errorcode": "accessexception"})
+        r, cli = self._correr(resp, confirmado=True)
+        self.assertIn("error", r)
+        self.assertNotIn("mod_forum_add_discussion", cli.llamadas)
+        self.assertTrue(r["_meta"]["degradado"])
+
+    def test_group_id_inexistente_no_se_publica_en_otro_lado(self):
+        r, cli = self._correr(self.FORO_CON_GRUPOS, group_id=9999, confirmado=True)
+        self.assertIn("no existe", r["error"])
+        self.assertNotIn("mod_forum_add_discussion", cli.llamadas)
+
+    def test_con_group_id_valido_el_preview_dice_a_cuantos_llega(self):
+        r, _ = self._correr(self.FORO_CON_GRUPOS, group_id=7740)
+        self.assertTrue(r["requiere_confirmacion"])
+        destino = r["preview"]["destino"]
+        self.assertEqual(destino["grupo_nombre"], "A26 C1-6")
+        self.assertEqual(destino["alcance_alumnos"], 2)      # el editingteacher no cuenta
+        self.assertEqual(destino["alcance"], "comisión")
+
+    def test_group_id_cero_EXPLICITO_es_una_decision_y_se_permite(self):
+        # 0 no es "no me lo dijiste": es "quiero que lo vea el curso entero".
+        r, cli = self._correr(self.FORO_CON_GRUPOS, group_id=0, confirmado=True)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["alcance"], "curso entero")
+        self.assertIn("mod_forum_add_discussion", cli.llamadas)
+
+    def test_no_contar_alumnos_no_es_contar_cero(self):
+        resp = dict(self.FORO_CON_GRUPOS)
+        resp["core_enrol_get_enrolled_users"] = MoodleWSError(
+            "core_enrol_get_enrolled_users", {"errorcode": "accessexception"})
+        r, _ = self._correr(resp, group_id=7740)
+        self.assertIsNone(r["preview"]["destino"]["alcance_alumnos"])
+        self.assertTrue(any("desconocido" in a for a in r["_meta"]["avisos"]))
 
 
 if __name__ == "__main__":
