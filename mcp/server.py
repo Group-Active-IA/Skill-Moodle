@@ -551,10 +551,13 @@ async def actualizar_tableros() -> dict:
         return {
             "error": True, "timeout": True,
             "mensaje": f"El refresco tardó más de {_REFRESCO_TIMEOUT_S}s y se cortó.",
-            "que_quedo": "Los conteos por tarea que alcanzó a relevar SÍ se guardaron, pero "
-                         "el padrón de alumnos y las entregas se escriben al final, así que "
-                         "ESOS quedaron con los datos de la corrida anterior. No los leas "
-                         "como si fueran de hoy.",
+            "que_quedo": "Se guarda por CURSO, no por tarea: desde que el relevamiento es "
+                         "paralelo, las filas de un curso se escriben recién cuando "
+                         "terminan TODAS sus tareas. Los cursos que alcanzaron a terminar "
+                         "quedaron guardados enteros; el que estaba a mitad de camino "
+                         "cuando se cortó no guardó nada. El padrón de alumnos y las "
+                         "entregas se escriben al final de todo, así que ESOS siguen "
+                         "mostrando la corrida anterior. No los leas como si fueran de hoy.",
             "que_hacer": "Reintentá: la segunda corrida suele entrar. Si vuelve a cortarse, "
                          "bajá la concurrencia con SNAPSHOT_CONCURRENCIA=3 (el campus puede "
                          "estar rechazando requests) o subí el techo con "

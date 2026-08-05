@@ -74,11 +74,18 @@ async def _assign_map(client, refrescar: bool = False) -> dict:
             # campus TUP está apagado en todas (sólo `comments` y `editpdf`): mandar un
             # archivo igual hace que Moodle lo ignore en silencio y la tool reporte un
             # éxito que no ocurrió.
+            # TRI-ESTADO a propósito: None = el WS no trajo `configs`, o sea que NO SÉ.
+            # Con un booleano, "no pude leer la config" se volvía "está deshabilitado", y
+            # el aviso al tutor afirmaba algo que nadie verificó. Misma doctrina que
+            # `es_escala` y que `disponible` en version_skill.
+            # `cfg` y no `c`: `c` es el curso del bucle de afuera. La genexp tiene scope
+            # propio y hoy no rompe, pero desarmarla en un `for` la rompería en silencio.
+            configs = a.get("configs") or []
             acepta_archivos = any(
-                c.get("subtype") == "assignfeedback" and c.get("plugin") == "file"
-                and c.get("name") == "enabled" and str(c.get("value")) == "1"
-                for c in a.get("configs", [])
-            )
+                cfg.get("subtype") == "assignfeedback" and cfg.get("plugin") == "file"
+                and cfg.get("name") == "enabled" and str(cfg.get("value")) == "1"
+                for cfg in configs
+            ) if configs else None
             m[str(a.get("cmid"))] = {
                 "id": a.get("id"),
                 "course": a.get("course"),
@@ -884,7 +891,8 @@ async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str,
     plugindata: dict = {"assignfeedbackcomments_editor": {"text": html_msg, "format": 1}}
     adjunto_aviso = None
     if adjunto:
-        if not cfg.get("feedback_file"):
+        acepta_adjuntos = cfg.get("feedback_file")
+        if acepta_adjuntos is False:
             # La tarea NO tiene habilitado el plugin de archivos de retroalimentación.
             # Moodle acepta el itemid y lo DESCARTA sin error, así que subirlo daría un
             # éxito falso: el alumno leería "te adjunto el PDF" y no habría nada.
@@ -893,6 +901,14 @@ async def cargar_nota(client, cmid: str, email: str, nota, mensaje: str,
                 "'assignfeedback_file' está deshabilitado), así que el adjunto no se subió. "
                 "Moodle lo habría ignorado en silencio. Si el mensaje promete un archivo, "
                 "sacá esa frase o pedile a la cátedra que habilite el plugin."
+            )
+        elif acepta_adjuntos is None:
+            # No pudimos leer la config de la tarea. Eso NO es "está deshabilitado": es
+            # que no sabemos. No se sube a ciegas, pero tampoco se afirma una causa falsa.
+            adjunto_aviso = (
+                "No pude leer la configuración de la tarea, así que no sé si acepta "
+                "archivos de retroalimentación — no subí el adjunto a ciegas. Verificá el "
+                "grader en el campus; si el mensaje promete un archivo, sacá esa frase."
             )
         else:
             itemid, motivo = await _subir_a_draft(client, adjunto)
