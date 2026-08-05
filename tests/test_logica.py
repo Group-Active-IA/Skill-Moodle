@@ -24,6 +24,7 @@ from moodle.ws_api import (  # noqa: E402
     es_actividad_de_cierre,
     nota_display,
 )
+from moodle.active_ia import _nota_de_entrega  # noqa: E402
 from moodle.version import _tupla, hay_novedad  # noqa: E402
 
 
@@ -324,6 +325,108 @@ class TestErroresFrecuentes(unittest.TestCase):
         r = self.correr(self.almacen.errores_frecuentes(course_id=74))
         for t in r["temas"]:
             self.assertEqual(t["de_corregidos"], r["correcciones_registradas"])
+
+    def test_recargar_una_nota_NO_cuenta_al_alumno_dos_veces(self):
+        # Recargar una nota —para arreglar la devolución, o tras un fallo— deja OTRA fila
+        # en la bitácora. Contando filas, 6 alumnos cargados dos veces informaban "12
+        # correcciones". Lo grave no es el número inflado: al superar así la muestra
+        # mínima, la tool marcaba `sistemico` sin evidencia — y ese es el dato con el que
+        # se decide rehacer material de cátedra.
+        import tempfile
+        from moodle import almacen as alm
+        prev_db = alm.DB_PATH
+        alm.DB_PATH = f"{tempfile.mkdtemp()}/dedup.db"
+        try:
+            self.correr(alm.init_db())
+            for _ in range(2):                     # cada alumno, cargado DOS veces
+                for a in ("ana", "beto", "caro", "dani", "eve", "fer"):
+                    self.correr(alm.guardar_correccion({
+                        "course_id": 7, "assign_id": "u1", "comision": "c",
+                        "email": f"{a}@x", "alumno": a, "nota": "Aprobado",
+                        "devolucion": "", "etiquetas": ["tema-x"] if a == "ana" else []}))
+            r = self.correr(alm.errores_frecuentes(course_id=7))
+            self.assertEqual(r["correcciones_registradas"], 6)   # 6 alumnos, no 12 filas
+            temas = {t["tema"]: t for t in r["temas"]}
+            self.assertEqual(temas["tema-x"]["alumnos_afectados"], 1)   # 1 persona, no 2
+            self.assertFalse(temas["tema-x"]["sistemico"])
+        finally:
+            alm.DB_PATH = prev_db
+
+
+class TestEscala3(unittest.TestCase):
+    """Escala 3 (Prog IV): No satisfactorio / Satisfactorio / Supera lo esperado.
+
+    Relevada del `<select>` del grader real el 2026-08-04. Antes devolvía "escala
+    desconocida" y `cargar_nota` pedía un número para un desplegable de tres opciones.
+    """
+
+    def test_lee_las_tres_etiquetas(self):
+        self.assertEqual(nota_display(-3, "1.00000"), "No satisfactorio")
+        self.assertEqual(nota_display(-3, "2.00000"), "Satisfactorio")
+        self.assertEqual(nota_display(-3, "3.00000"), "Supera lo esperado")
+
+    def test_satisfactorio_NO_matchea_dentro_de_no_satisfactorio(self):
+        # "satisfactorio" es substring de "no satisfactorio". Si el match fuera por
+        # inclusión en vez de exacto, un "No satisfactorio" se guardaría como Satisfactorio
+        # — el alumno aprobado por un substring. Este test fija que el match es exacto.
+        self.assertEqual(_resolver_valor_nota(-3, "No satisfactorio")[:2],
+                         (1.0, "No satisfactorio"))
+        self.assertEqual(_resolver_valor_nota(-3, "satisfactorio")[:2],
+                         (2.0, "Satisfactorio"))
+
+    def test_esta_escala_NO_va_invertida_y_la_5_si(self):
+        # Las dos conviven en el mismo campus, así que no hay una regla general: cada
+        # escala se releva del grader. Hardcodear "1 es la peor" rompe la 5.
+        self.assertEqual(nota_display(-3, "1.00000"), "No satisfactorio")   # 1 = la peor
+        self.assertEqual(nota_display(-5, "1.00000"), "Aprobado")           # 1 = la mejor
+
+
+class TestNoSeSiEsEscalaONumerica(unittest.TestCase):
+    """Ante la duda NO se adivina.
+
+    Antes, un `grade_cfg` ilegible caía a `0` = numérica — y numérica es justamente el modo
+    que corrompe: en la escala 5 un "1" pensado como la peor nota guarda APROBADO.
+    """
+
+    def test_no_resuelve_la_nota_si_no_sabe_el_tipo(self):
+        for gc in (None, "", "chau"):
+            self.assertIsNone(_resolver_valor_nota(gc, "Aprobado")[0],
+                              f"con grade_cfg={gc!r} resolvió igual")
+
+    def test_tampoco_acepta_un_numero_a_ciegas(self):
+        # El que importa: antes, con el tipo ilegible, un 9.5 se escribía como numérica sin
+        # chistar. Si la tarea era de escala, eso queda mal en el legajo de una persona.
+        self.assertIsNone(_resolver_valor_nota(None, "9.5")[0])
+
+    def test_nota_display_avisa_en_vez_de_inventar(self):
+        r = nota_display(None, "1.00000")
+        self.assertNotIn(r.strip(), ("1", "1.0", "1.00000"))
+        self.assertIn("no sé", r.lower())
+
+
+class TestNotaDeEntregaActiveIA(unittest.TestCase):
+    """Una nota 0 es una nota.
+
+    `/entregas/` devuelve la nota bajo tres nombres posibles según el caso. Encadenarlos
+    con `or` hacía que un 0 —entrega vacía, plagio— cayera hasta `None` y la entrega
+    desapareciera de `activeia_correcciones` como si nunca se hubiera corregido.
+    """
+
+    def test_cero_no_desaparece(self):
+        self.assertEqual(_nota_de_entrega({"nota": 0}), 0)
+        self.assertEqual(_nota_de_entrega({"puntaje": 0.0}), 0.0)
+
+    def test_el_primero_que_EXISTE_gana_aunque_sea_cero(self):
+        # Con el `or` encadenado esto devolvía 99: el 0 real se perdía y se reportaba la
+        # nota de otro campo.
+        self.assertEqual(_nota_de_entrega({"nota": 0, "calificacion": 99}), 0)
+
+    def test_cae_al_campo_siguiente_solo_si_el_anterior_FALTA(self):
+        self.assertEqual(_nota_de_entrega({"calificacion": 87}), 87)
+        self.assertEqual(_nota_de_entrega({"nota": None, "puntaje": 70}), 70)
+
+    def test_sin_ningun_campo_es_None(self):
+        self.assertIsNone(_nota_de_entrega({"alumno_nombre": "x"}))
 
 
 if __name__ == "__main__":
