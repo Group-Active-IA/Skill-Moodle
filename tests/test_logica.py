@@ -27,6 +27,7 @@ from moodle.ws_api import (  # noqa: E402
     es_actividad_de_cierre,
     nota_display,
 )
+from moodle import panorama  # noqa: E402
 from moodle.active_ia import _nota_de_entrega  # noqa: E402
 from moodle.version import _tupla, hay_novedad  # noqa: E402
 
@@ -537,6 +538,131 @@ class TestCrearDiscusionNoPublicaAlCursoEntero(unittest.TestCase):
         r, _ = self._correr(resp, group_id=7740)
         self.assertIsNone(r["preview"]["destino"]["alcance_alumnos"])
         self.assertTrue(any("desconocido" in a for a in r["_meta"]["avisos"]))
+
+
+class TestPanoramaClasificaEntregas(unittest.TestCase):
+    """La capa que decide QUÉ SIGNIFICA una entrega en la vista del profesor.
+
+    Existe por un bug real de la primera corrida (2026-08-07): `mod_assign_get_grades`
+    devuelve una fila con grade `-1.00000` para las entregas que TODAVÍA no se corrigieron.
+    Tomar "hay registro de nota" como "está corregida" mandó las 22 pendientes del curso a
+    otro balde y el tablero mostró CERO pendientes en las 16 comisiones — le decía al
+    profesor que estaba todo al día cuando no lo estaba.
+    """
+
+    @staticmethod
+    def _subs(*filas):
+        """filas: (userid, status, gradingstatus, timemodified)."""
+        return {"assignments": [{"submissions": [
+            {"userid": u, "status": st, "gradingstatus": gs, "timemodified": tm}
+            for u, st, gs, tm in filas]}]}
+
+    @staticmethod
+    def _notas(*filas):
+        """filas: (userid, grade, timemodified)."""
+        return {"assignments": [{"grades": [
+            {"userid": u, "grade": g, "timemodified": tm} for u, g, tm in filas]}]}
+
+    def test_el_menos_uno_con_notgraded_es_PENDIENTE_no_corregido(self):
+        # EL bug. Hay registro de nota, pero vale -1 y la entrega dice `notgraded`.
+        r = panorama.clasificar_entregas(
+            self._subs((7, "submitted", "notgraded", 1000)),
+            self._notas((7, "-1.00000", 1000)))
+        self.assertIn(7, r["pendientes"])
+        self.assertNotIn(7, r["calificadas"])
+        self.assertNotIn(7, r["sin_nota"])
+
+    def test_los_new_no_son_entregas(self):
+        # 21 de los 46 registros de la unidad 1 estaban en `new`: el alumno abrió la tarea
+        # y nunca entregó. Contarlos casi duplicaba el trabajo reportado.
+        r = panorama.clasificar_entregas(
+            self._subs((1, "submitted", "notgraded", 1000), (2, "new", "notgraded", 1000)),
+            self._notas())
+        self.assertEqual(list(r["entregas"]), [1])
+
+    def test_graded_con_nota_real_es_corregida(self):
+        r = panorama.clasificar_entregas(
+            self._subs((3, "submitted", "graded", 1000)),
+            self._notas((3, "1.00000", 87400)))
+        self.assertEqual(r["calificadas"][3], 87400)
+        self.assertFalse(r["pendientes"])
+
+    def test_graded_con_calificacion_vacia_es_hallazgo_no_corregida(self):
+        # Moodle la saca de la cola, pero el alumno quedó sin nota y nadie lo espera.
+        r = panorama.clasificar_entregas(
+            self._subs((4, "submitted", "graded", 1000)),
+            self._notas((4, "-1.00000", 2000)))
+        self.assertIn(4, r["sin_nota"])
+        self.assertNotIn(4, r["calificadas"])
+        self.assertNotIn(4, r["pendientes"])
+
+    def test_released_cuenta_como_corregida(self):
+        r = panorama.clasificar_entregas(
+            self._subs((5, "submitted", "released", 1000)),
+            self._notas((5, "2.00000", 3000)))
+        self.assertIn(5, r["calificadas"])
+
+    def test_estado_intermedio_del_flujo_NO_cuenta_como_corregida(self):
+        # La nota existe pero el alumno todavía no la tiene: el trabajo no está cerrado.
+        r = panorama.clasificar_entregas(
+            self._subs((6, "submitted", "readyforreview", 1000)),
+            self._notas((6, "1.00000", 3000)))
+        self.assertIn(6, r["pendientes"])
+        self.assertNotIn(6, r["calificadas"])
+
+    def test_sin_gradingstatus_no_se_asume_ninguno_de_los_dos(self):
+        # "No sé" no se disfraza ni de corregido ni de pendiente: se cuenta aparte.
+        r = panorama.clasificar_entregas(
+            self._subs((8, "submitted", None, 1000)), self._notas())
+        self.assertIn(8, r["sin_clasificar"])
+        self.assertFalse(r["pendientes"])
+        self.assertFalse(r["calificadas"])
+
+    def test_vale_el_ultimo_intento(self):
+        r = panorama.clasificar_entregas(
+            self._subs((9, "submitted", "graded", 1000)),
+            self._notas((9, "1.00000", 5000), (9, "2.00000", 9000)))
+        self.assertEqual(r["calificadas"][9], 9000)
+
+    def test_los_libros_cierran(self):
+        # Réplica de la forma real de la unidad 1 de Prog I: 25 entregadas (15 corregidas /
+        # 10 pendientes) + 21 `new`. La suma de los baldes tiene que dar las entregas.
+        filas_sub, filas_nota = [], []
+        for i in range(15):
+            filas_sub.append((i, "submitted", "graded", 1000))
+            filas_nota.append((i, "1.00000", 2000))
+        for i in range(15, 25):
+            filas_sub.append((i, "submitted", "notgraded", 1000))
+            filas_nota.append((i, "-1.00000", 1000))
+        for i in range(25, 46):
+            filas_sub.append((i, "new", "notgraded", 1000))
+        r = panorama.clasificar_entregas(self._subs(*filas_sub), self._notas(*filas_nota))
+        self.assertEqual(len(r["entregas"]), 25)
+        self.assertEqual(len(r["calificadas"]), 15)
+        self.assertEqual(len(r["pendientes"]), 10)
+        self.assertEqual(
+            len(r["calificadas"]) + len(r["pendientes"]) + len(r["sin_nota"])
+            + len(r["sin_clasificar"]), len(r["entregas"]))
+
+
+class TestPanoramaEtiquetasYDias(unittest.TestCase):
+    def test_reconoce_la_comision_y_descarta_lo_que_no_lo_es(self):
+        self.assertEqual(panorama._etiqueta_comision("A26 C1-06"), "com6")
+        self.assertEqual(panorama._etiqueta_comision("M26 C2-01"), "com1")
+        self.assertEqual(panorama._etiqueta_comision("A25 C3-14"), "com14")
+        # Grupos regionales y auxiliares NO son comisiones de tutoría.
+        self.assertIsNone(panorama._etiqueta_comision("R-Rosario"))
+        self.assertIsNone(panorama._etiqueta_comision("Grupo_2"))
+        self.assertIsNone(panorama._etiqueta_comision("Entrego_1er_examen"))
+        self.assertIsNone(panorama._etiqueta_comision(""))
+
+    def test_sin_una_de_las_dos_fechas_devuelve_None_y_no_cero(self):
+        # Un 0 acá se leería "se corrigió el mismo día". Es "no sé cuándo".
+        self.assertIsNone(panorama._dias(0, 90000))
+        self.assertIsNone(panorama._dias(90000, 0))
+        # Corrección anterior a la entrega: dato incoherente, tampoco se inventa.
+        self.assertIsNone(panorama._dias(90000, 1000))
+        self.assertEqual(panorama._dias(0 + 86400, 86400 * 3), 2.0)
 
 
 if __name__ == "__main__":

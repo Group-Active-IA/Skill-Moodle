@@ -24,6 +24,12 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
 - **Detecta quién está abandonando**: cruza días sin entrar con tareas seguidas sin
   entregar. Ninguna vista del campus junta esas dos señales, y la deserción avisa antes
   de pasar.
+- **Vista del profesor**: el curso entero en una tabla, una fila por comisión, con el tutor
+  a cargo, lo que falta corregir, hace cuántos días espera la entrega más vieja y las
+  consultas de foro que no contestó nadie. Lo que hoy son 176 pantallas de Moodle (16
+  comisiones × 11 actividades) sale en quince segundos. Son **hechos por comisión, no un
+  puntaje del tutor**: nombra a quién llamar y explica cada blanco, para que un 0 de
+  "comisión vacía" nunca se lea como un 0 de "trabajo al día".
 - **Informes en PDF** de pendientes por comisión.
 - **Ver la entrega antes de calificar**: baja el trabajo del alumno, descomprime el `.zip`
   y te muestra el código. Calificar sin haber visto lo entregado deja de ser posible.
@@ -119,7 +125,7 @@ Skill-Moodle/
 ├── VERSION                   # Versión publicada (la compara `version_skill`)
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 40 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, Active-IA…)
+│   ├── server.py             # 42 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, panorama del curso, Active-IA…)
 │   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
 │   ├── comisiones.json       # Catálogo tutor→comisión y cmid de actividades por materia
 │   ├── requirements.txt
@@ -130,6 +136,7 @@ Skill-Moodle/
 │       ├── snapshot.py       # Relevo on-demand, multi-curso
 │       ├── informes.py       # PDF (reportlab)
 │       ├── auditoria.py      # Auditoría de aula por REST (presencia/ausencia/consistencia)
+│       ├── panorama.py       # Vista del profesor: todas las comisiones del curso a la vez
 │       ├── navegador.py      # Pase con Playwright para lo que la API REST no expone
 │       ├── active_ia.py      # Cliente de la API de Active-IA (corrección con Gemini)
 │       ├── version.py        # Chequeo de versión nueva + actualización por git

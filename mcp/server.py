@@ -24,7 +24,16 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from moodle import active_ia, almacen, auditoria, informes, snapshot, version, ws_api
+from moodle import (
+    active_ia,
+    almacen,
+    auditoria,
+    informes,
+    panorama,
+    snapshot,
+    version,
+    ws_api,
+)
 from moodle.cliente import MobileWSClient
 
 log = logging.getLogger("skill.server")
@@ -847,6 +856,64 @@ async def auditar_aula(course_id: int, materia: str = "", evaluador: str = "",
     return await auditoria.auditar_aula(
         _cli(), course_id, almacen.SALIDAS_DIR, materia=materia, evaluador=evaluador,
         rol=rol, con_navegador=con_navegador, unidad=unidad)
+
+
+# ---------- VISTA DEL PROFESOR (todas las comisiones a la vez) ----------
+
+async def _cmids_del_curso(course_id: int, cmids: list[str] | None) -> list[str]:
+    """Tareas a mirar: las que se pidieron, o TODAS las del curso descubiertas en vivo.
+
+    En vivo y no de "Mis datos" a propósito: el profesor mira un curso entero, y el mapeo
+    local es el de SUS comisiones como tutor — usarlo acá le escondería tareas del curso
+    que él no tiene mapeadas. `listar_tareas` sale del `_assign_map`, que es una request.
+    """
+    if cmids:
+        return [str(c) for c in cmids]
+    return [str(t["id"]) for t in await ws_api.listar_tareas(_cli(), course_id)]
+
+
+@mcp.tool()
+async def panorama_comisiones(course_id: int, cmids: list[str] | None = None,
+                              incluir_foros: bool = True) -> dict:
+    """LA VISTA DEL PROFESOR: una fila por comisión del curso — tutor a cargo, alumnos,
+    entregas, cuántas siguen sin corregir, hace cuántos días espera la más vieja y cuántas
+    consultas de foro no contestó nadie. Responde "¿dónde hay trabajo parado, y a quién
+    llamo?" sin abrir las 16 comisiones a mano.
+
+    Es distinto de todo el resto de la skill, que mira UNA comisión (la del tutor logueado).
+    Requiere ver comisiones ajenas: si tu rol en el campus no lo permite, las filas vuelven
+    con `sin_dato` explicando el motivo — nunca con un 0.
+
+    CÓMO SE LEE, y esto no es opcional: **las filas son HECHOS, no una evaluación del
+    tutor.** Nombrar al docente de una comisión es un dato de ruteo (a quién llamar), no un
+    juicio. Un número alto puede ser una comisión más grande, una consigna más difícil o una
+    semana de parcial. Antes de cualquier conclusión, mirá `sin_dato` de esa fila: distingue
+    "0 porque está al día" de "0 porque la comisión está vacía", "porque nadie entregó
+    todavía" o "porque no pude leer". Un 0 con motivo NO es trabajo terminado.
+    NO ordenes las filas como ranking ni las presentes como puntaje de nadie.
+
+    `cmids` acota a ciertas tareas; sin pasarlo mira TODAS las del curso (más lento).
+    `incluir_foros=False` saltea los foros, que son la parte más cara.
+    Es READ-ONLY: no escribe nada en el campus."""
+    return await panorama.panorama_comisiones(
+        _cli(), course_id, await _cmids_del_curso(course_id, cmids), incluir_foros)
+
+
+@mcp.tool()
+async def demora_correccion(course_id: int, cmids: list[str] | None = None) -> dict:
+    """Cuánto ESPERA un alumno desde que entrega hasta que le cargan la nota, por comisión.
+    Es la pregunta que el conteo de pendientes no contesta: 20 entregas de ayer están bien,
+    3 esperando hace tres semanas están mal. El conteo no las distingue; esto sí.
+
+    Devuelve dos bloques que no hay que mezclar:
+      - `demora_*`  → sobre entregas YA corregidas. Es historia.
+      - `espera_*`  → sobre las que siguen sin corregir, contra hoy. Es lo accionable.
+
+    Misma regla de lectura que `panorama_comisiones`: son hechos por comisión, no un puntaje
+    del tutor. `sin_dato` avisa cuándo no hay nada medible — que no es lo mismo que estar
+    al día. Sin `cmids` mira todas las tareas del curso. READ-ONLY."""
+    return await panorama.demora_correccion(
+        _cli(), course_id, await _cmids_del_curso(course_id, cmids))
 
 
 # ---------- INFORME (PDF) ----------

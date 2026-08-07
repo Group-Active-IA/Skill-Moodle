@@ -10,10 +10,14 @@ description: >-
   virtual** ("auditá el aula", "puesta a punto del Moodle", "links rotos", "revisá cómo
   está armada el aula", "planilla de auditoría") y corrección automática con Active-IA
   (importar entregas → corregir con IA → devolver la nota).
+  Cubre además la **vista del profesor / coordinador de materia**, que mira TODAS las
+  comisiones del curso a la vez y no sólo la propia: "cómo viene el curso", "todas las
+  comisiones", "qué comisión está atrasada", "quién tiene que corregir", "cuánto tardan
+  en corregir", "panorama del curso". Esas vistas devuelven HECHOS por comisión y nombran
+  al tutor a cargo como dato de ruteo — nunca un ranking ni un puntaje de personas.
   La skill habla con Moodle por peticiones REST (token moodle_mobile_app), NO por
   navegador. NO la uses para campus que no sean el de la TUP, ni para tareas de
-  Moodle como administrador (crear cursos, matricular): es para el trabajo de un
-  tutor sobre SUS comisiones.
+  Moodle como administrador (crear cursos, matricular).
 license: Apache-2.0
 ---
 
@@ -197,6 +201,8 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | Buscar un alumno (en vivo, sin depender del snapshot) | `buscar_alumno` |
 | PDF de pendientes | `armar_informe` |
 | **Auditar cómo está armada un aula** (read-only) | `auditar_aula` |
+| **Vista del PROFESOR: todas las comisiones del curso a la vez** | `panorama_comisiones` |
+| **Cuánto espera un alumno para que le corrijan, por comisión** | `demora_correccion` |
 | Cargar una nota (con devolución, y `adjunto` si va un PDF) | `cargar_nota` |
 | **Mensajes privados que te faltan contestar** | `mensajes_pendientes` |
 | Bandeja de conversaciones · hilo completo | `leer_mensajes` · `leer_conversacion` |
@@ -244,6 +250,23 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
   tarea, no el cmid de la URL. El cliente ya mapea cmid→instanceid.
 - **`mod_assign_save_grade` exige la devolución** (plugindata con contenido) o tira un
   error de base de datos engañoso. `cargar_nota` ya la manda.
+- **Existe un registro de nota en `-1` para lo que TODAVÍA no se corrigió.**
+  `mod_assign_get_grades` devuelve fila igual, con `grade` = `-1.00000`. Tomar "hay
+  registro de nota" como "está corregida" apagó las 22 pendientes del curso entero en la
+  primera corrida de `panorama_comisiones`: el tablero decía 0 pendientes en las 16
+  comisiones. Quien decide es **`gradingstatus` de la ENTREGA** (`graded`/`released` =
+  corregida), que viene en la misma request. Verificado: el cruce dio
+  `('graded','1.00000')→13`, `('graded','2.00000')→2`, `('notgraded','-1.00000')→10`, y ese
+  10 coincide exacto con `sumario`.
+- **`get_submissions` devuelve también los que NO entregaron.** 46 registros donde el
+  conteo oficial decía 25: los otros 21 están en `status: "new"` (abrieron la tarea y no
+  entregaron). Filtrar por `status == "submitted"` o el trabajo pendiente sale casi al doble.
+- **El `groupid` de una entrega viene 0 y no es "grupo 0".** Es "no aplica" (la tarea no es
+  de entrega grupal). No sirve para repartir entregas por comisión: eso se hace cruzando el
+  `userid` contra el padrón de cada grupo.
+- **El tutor de una comisión no siempre tiene el mismo rol.** En Prog I, 15 de 16 son
+  `editingteacher` y C1-14 es `teacher`. Filtrar por una lista blanca de roles reportaba una
+  comisión de 35 alumnos como huérfana. Se toma **todo el que no es `student`**.
 - **Escala invertida.** En Aprobado/Desaprobado los valores están invertidos
   (Aprobado=1, Desaprobado=2). NO hardcodear: leer la opción por texto.
 - **Hay más de una escala, y no siguen la misma regla.** La 5 (Aprobado/Desaprobado) va
@@ -289,6 +312,36 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 - No correr snapshots automáticos ni de otros tutores: solo el actual, a pedido.
 - No escribir en el campus sin el OK del tutor.
 - No dar por bueno un dato que no se pudo verificar en vivo.
+
+## Vista del profesor — el curso entero, por comisión (read-only)
+
+Todo el resto de la skill mira **una** comisión: la del tutor logueado. Estas dos miran las
+**16 a la vez**, y son para quien coordina la materia.
+
+`panorama_comisiones(course_id, cmids?, incluir_foros?)` — una fila por comisión: tutor a
+cargo, alumnos, entregas, cuántas siguen sin corregir, hace cuántos días espera la más vieja
+y cuántas consultas de foro no contestó nadie. Sin `cmids` mira todas las tareas del curso
+(~15 s en Prog I). Contrastada contra el conteo oficial de Moodle: da exacto.
+
+`demora_correccion(course_id, cmids?)` — días entre la entrega y la nota, por comisión.
+Devuelve dos bloques que **no** son lo mismo: `demora_*` es historia (ya corregidas) y
+`espera_*` es lo que un alumno está esperando ahora. Para actuar se mira `espera_max_dias`.
+
+### Cómo presentar el resultado (esto no es opcional)
+
+**Son HECHOS por comisión, no una evaluación del tutor.** Nombrar al docente es un dato de
+ruteo — a quién llamar — no un juicio. Es la misma línea que ya traza `auditar_aula` cuando
+deja la hoja EQUIPO vacía: un agente verifica trabajo, nunca califica personas.
+
+- **NO** armes un ranking, un podio ni un puntaje por tutor. Ordenar por `espera_max_dias`
+  para saber por dónde empezar está bien; presentarlo como "tabla de posiciones" no.
+- **Leé `sin_dato` de cada fila antes de concluir nada.** Distingue "0 porque está al día"
+  de "0 porque la comisión está vacía", "porque nadie entregó todavía" o "porque no pude
+  leer". Un 0 con motivo NO es trabajo terminado, y esa confusión cae sobre una persona.
+- Un número alto puede ser una comisión más grande, una consigna más difícil o una semana
+  de parcial. Ofrecé el dato, no el veredicto.
+- Requiere ver comisiones ajenas. Si el rol del usuario no lo permite, las filas vuelven con
+  `sin_dato` explicando el motivo — nunca con un 0.
 
 ## Auditoría de aula virtual (read-only)
 
