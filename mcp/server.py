@@ -1170,6 +1170,58 @@ async def informes_nexos(course_id: int, dias_desenganche: int = 7,
     return datos
 
 
+@mcp.tool()
+async def avance_alumnos(course_id: int, cmids: list[str] | None = None,
+                         dias_desenganche: int = 7, incluir_foros: bool = True,
+                         pdf: bool = True, emails: bool = True) -> dict:
+    """Cómo van los ALUMNOS con las entregas y las notas, por comisión. Con PDF.
+
+    La tercera vista del curso, y responde lo que las otras dos no:
+    - `informes_nexos` → si el alumno APARECE por la materia.
+    - `panorama_comisiones` → si el TUTOR corrigió.
+    - ésta → si el alumno **entrega y aprueba**.
+
+    **No devuelve un porcentaje de avance y no lo inventes vos.** Un porcentaje necesita saber
+    cuántas actividades ya deberían estar, y ese dato no existe: la mayoría de las actividades
+    de este campus no tiene fecha de entrega (35 de 42 en Prog III, 10 de 11 en Prog I). Se
+    compara contra lo que el curso realmente hizo: cada alumno contra la mediana de su comisión
+    (`entregas_mediana`), cada comisión contra la del curso (`entregas_mediana_curso`).
+
+    **Lo más útil es la `lectura` de cada comisión**, que es el cruce con el reloj de la materia
+    y distingue dos atrasos que se ven iguales:
+    - *"atrasada con los alumnos entrando"* → están ahí y entregan poco: consigna, dificultad,
+      acompañamiento.
+    - *"atrasada y con muchos que no abren la materia"* → se fueron; el problema es retención.
+    Medido en Prog III: com4 y com6 tienen la misma mediana (0) y casi los mismos alumnos en
+    cero, y son los dos casos distintos. Presentá esa diferencia, no el número solo.
+
+    **`esperando_correccion` es el único renglón donde el problema NO es del alumno**: entregó
+    y no recibió nada. Nombralo aparte de los que no entregaron.
+
+    Advertencias que van SIEMPRE al presentarlo: **no se puede saber cuándo se matriculó** un
+    alumno (la API no lo expone, verificado), así que el que entró tarde entregó menos y no es
+    peor alumno. Y las notas se leen por el texto de la escala, nunca por el número: la escala
+    de TPs va invertida en este campus.
+
+    `emails=True` incluye el mail de cada alumno. Son personales: al pasar la ruta avisá que el
+    PDF no va a un repo ni a una nota compartida. READ-ONLY sobre el campus."""
+    from datetime import date
+
+    datos = await panorama.avance_alumnos(
+        _cli(), course_id, await _cmids_del_curso(course_id, cmids), dias_desenganche,
+        incluir_foros)
+    if datos.get("error") or not pdf:
+        return datos
+    try:
+        datos["pdf"] = informes.avance_pdf(
+            datos, str(Path(almacen.SALIDAS_DIR) / "informes"),
+            materia=datos.get("curso") or "", fecha=date.today().isoformat(), emails=emails)
+    except Exception as e:  # noqa: BLE001
+        datos["pdf"] = {"error": f"No pude escribir el PDF: {type(e).__name__}: {e}"}
+        datos["_meta"]["degradado"] = True
+    return datos
+
+
 # ---------- INFORME (PDF) ----------
 @mcp.tool()
 async def armar_informe(course_id: int | None = None, group_id: int = 0) -> dict:

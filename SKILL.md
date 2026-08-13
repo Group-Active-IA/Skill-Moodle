@@ -230,6 +230,7 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | **Vista del PROFESOR: todas las comisiones del curso a la vez** | `panorama_comisiones` |
 | **Cuánto espera un alumno para que le corrijan, por comisión** | `demora_correccion` |
 | **Informe para los TUTORES NEXO (+ PDF): alumnos que no abren la materia, por regional** | `informes_nexos` |
+| **Cómo van los alumnos con las entregas y las notas, por comisión (+ PDF)** | `avance_alumnos` |
 | Cargar una nota (con devolución, y `adjunto` si va un PDF) | `cargar_nota` |
 | **Mensajes privados que te faltan contestar** | `mensajes_pendientes` |
 | Bandeja de conversaciones · hilo completo | `leer_mensajes` · `leer_conversacion` |
@@ -345,12 +346,23 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 Todo el resto de la skill mira **una** comisión: la del tutor logueado. Éstas miran las
 **16 a la vez**, y son para quien coordina la materia.
 
-**Hay DOS informes de curso y no son intercambiables**, porque tienen destinatarios distintos:
+**Hay TRES informes de curso y contestan preguntas distintas.** Elegí por la pregunta:
 
-- **`informes_nexos(course_id)`** → los **ALUMNOS** que dejaron de abrir la materia, agrupados
-  por regional, con el Tutor Nexo de cada sede. Va a los nexos.
-- **`panorama_comisiones(course_id)`** → el **TRABAJO DE CORRECCIÓN**, por comisión, por tutor y
-  por actividad. Va a coordinación.
+- **`informes_nexos(course_id)`** → ¿el alumno **APARECE** por la materia? Los desenganchados
+  agrupados por regional, con el Tutor Nexo de cada sede. Va a los nexos.
+- **`panorama_comisiones(course_id)`** → ¿el **TUTOR CORRIGIÓ**? El trabajo de corrección por
+  comisión, por tutor y por actividad. Va a coordinación.
+- **`avance_alumnos(course_id)`** → ¿el alumno **ENTREGA y aprueba**? Entregas, aprobadas,
+  desaprobadas y quién menos entregó, por comisión.
+
+`avance_alumnos` **no devuelve un porcentaje de avance y no lo inventes vos**: sin fechas de
+entrega no hay denominador honesto (35 de 42 actividades de Prog III no la tienen). Compara cada
+alumno contra la mediana de su comisión. Lo más útil es la `lectura` de cada comisión, que cruza
+el avance con el reloj de la materia y separa dos atrasos que se ven idénticos: *"atrasada con
+los alumnos entrando"* (están y entregan poco: consigna, acompañamiento) de *"atrasada y con
+muchos que no abren la materia"* (se fueron: es retención). Medido en Prog III, com4 y com6
+tienen la misma mediana y son los dos casos distintos. Y `esperando_correccion` es el único
+renglón donde el problema **no** es del alumno: entregó y no recibió nada.
 
 Estaban juntos en un mismo PDF y el costo no era de formato: un tutor que abre un documento
 donde su comisión aparece medida al lado de una lista de alumnos lo lee como una evaluación

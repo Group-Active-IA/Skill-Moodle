@@ -355,11 +355,12 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
                                "(mcp/nexos.json). Sin contacto para esta regional.", alerta))
         E.append(Spacer(1, 4))
 
-        cab = ["Alumno", "Com.", "Caso", "Sin abrir\nla materia", "Sin entrar\nal campus"]
-        anchos = [6.4, 1.4, 4.2, 2.5, 2.5]
+        cab = ["Alumno", "Com.", "Situación", "Sin abrir\nla materia",
+               "Sin entrar\nal campus"]
+        anchos = [6.0, 1.3, 4.7, 2.5, 2.5]
         if emails:
             cab.insert(1, "Email")
-            anchos = [4.3, 4.7, 1.2, 3.15, 1.85, 1.8]
+            anchos = [4.0, 4.4, 1.15, 4.0, 1.75, 1.7]
         rr = [cab]
         for a in b["lista"]:
             aula = ("Nunca" if a.get("estado_aula") == "nunca_abrio"
@@ -367,12 +368,15 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
                           else f"{a.get('dias_sin_abrir_la_materia')} d"))
             camp = ("Nunca" if a.get("dias_sin_entrar_al_campus") is None
                     else f"{a['dias_sin_entrar_al_campus']} d")
+            # Los valores tienen que explicarse solos: preguntaron qué significaba "Caso" y
+            # la explicación estaba en la intro de la sección, tres páginas antes. Un informe
+            # que hay que explicar aparte no se lee.
             if a.get("estado_aula") == "sin_dato":
-                caso = "sin dato — no medido"
+                caso = "sin dato: no se pudo medir"
             elif a.get("entra_al_campus_sin_abrir_la_materia"):
-                caso = "está en el campus"
+                caso = "entra al campus, no abre la materia"
             else:
-                caso = "no aparece"
+                caso = "no entra al campus"
             com = "s/com" if a.get("comision") == "(sin comisión)" else a.get("comision")
             fila = [Paragraph(a.get("nombre") or "", est_celda),
                     Paragraph(com or "—", est_celda), Paragraph(caso, est_celda), aula, camp]
@@ -442,11 +446,28 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
         + f" · relevamiento en {meta.get('segundos')} s · este informe mide ALUMNOS, no "
         "el trabajo de los tutores.", small))
 
-    doc = SimpleDocTemplate(path, pagesize=A4, topMargin=1.4 * cm, bottomMargin=1.4 * cm,
+    def _pie(canvas, doc_):
+        """Leyenda de la columna Situación, en CADA página.
+
+        Va al pie y no en la intro porque el informe se lee salteado: el nexo abre el PDF,
+        busca su regional y cae en la página 5. La explicación tiene que estar donde está
+        mirando, no tres páginas antes."""
+        canvas.saveState()
+        canvas.setFont("Helvetica", 6.2)
+        canvas.setFillColor(colors.HexColor("#888888"))
+        canvas.drawString(
+            2.0 * cm, 0.85 * cm,
+            "Situación: «entra al campus, no abre la materia» = eligió no entrar, es el más "
+            "recuperable · «no entra al campus» = tampoco aparece por Moodle · «sin dato» = no "
+            "se pudo medir, NO es que no la haya abierto.")
+        canvas.drawRightString(19.0 * cm, 0.85 * cm, f"pág. {doc_.page}")
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(path, pagesize=A4, topMargin=1.4 * cm, bottomMargin=1.7 * cm,
                             leftMargin=2.0 * cm, rightMargin=2.0 * cm,
                             title=f"Seguimiento de alumnos — {titulo}",
                             author="tup-campus-navigator")
-    doc.build(E)
+    doc.build(E, onFirstPage=_pie, onLaterPages=_pie)
     return {"archivo": path, "paginas": getattr(doc, "page", None),
             "incluye_emails": bool(emails), "degradado": bool(meta.get("degradado"))}
 
@@ -504,13 +525,20 @@ def focos_de_correccion(datos: dict, tope: int = 4) -> list[tuple]:
 
     act_cola = [a for a in act if a.get("sin_corregir")]
     if act_cola:
+        # `por_actividad` viene ordenado por ESPERA, no por volumen: el título tiene que decir
+        # eso. Decía "la actividad con más cola" y mostraba una de 1 sola entrega — la etiqueta
+        # contradecía al dato, que es la forma más barata de que nadie le crea al informe.
         a0 = act_cola[0]
+        varias = (a0.get("comisiones_con_cola") or 0) >= 2
         puntos.append((
-            f"La actividad con más cola: {sin_emoji(a0['titulo'])[:60]}",
-            f"{a0['sin_corregir']} sin corregir repartidas en {a0['comisiones_con_cola']} "
-            f"comisión(es), la más vieja esperando {_dias_txt(a0.get('espera_max_dias'))} "
-            "día(s). Cuando una actividad se atrasa en varias comisiones a la vez, suele ser "
-            "de la consigna o del calendario, no de una persona."))
+            f"La actividad que más espera: {sin_emoji(a0['titulo'])[:60]}",
+            f"{a0['sin_corregir']} sin corregir en {a0['comisiones_con_cola']} comisión(es), la "
+            f"más vieja esperando {_dias_txt(a0.get('espera_max_dias'))} día(s)."
+            + (" Cuando una actividad se atrasa en varias comisiones a la vez, suele ser de la "
+               "consigna o del calendario y no de una persona." if varias else "")
+            + (f" La de más volumen es otra: {sin_emoji(max(act_cola, key=lambda a: a['sin_corregir'])['titulo'])[:50]}"
+               f" ({max(a['sin_corregir'] for a in act_cola)} en cola)."
+               if max(act_cola, key=lambda a: a["sin_corregir"]) is not a0 else "")))
 
     sin_nota = sum(f.get("calificado_sin_nota") or 0 for f in filas)
     if sin_nota:
@@ -722,3 +750,240 @@ def panorama_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "")
     doc.build(E)
     return {"archivo": path, "paginas": getattr(doc, "page", None),
             "incluye_emails": False, "degradado": bool(avisos)}
+
+
+# ---------------------------------------------------------------------------
+# PDF de AVANCE — cómo van los alumnos con las entregas. Render PURO.
+# ---------------------------------------------------------------------------
+
+def focos_de_avance(datos: dict, tope: int = 4) -> list[tuple]:
+    """PURA: los focos del avance. Hechos con su cuenta, sin adjetivos ni porcentajes."""
+    coms = datos.get("por_comision") or []
+    puntos: list[tuple] = []
+
+    cero = datos.get("alumnos_en_cero") or 0
+    if cero:
+        top = sorted(coms, key=lambda c: -(c["alumnos_en_cero"] or 0))[:3]
+        puntos.append((
+            f"{cero} de {datos.get('alumnos')} alumnos no entregaron NADA",
+            "Donde más se concentra: "
+            + ", ".join(f"{c['comision']} ({c['alumnos_en_cero']} de {c['alumnos']})"
+                        for c in top if c["alumnos_en_cero"])
+            + ". Ojo: quien se matriculó tarde también aparece acá, y la API no expone la fecha "
+              "de matriculación."))
+
+    atrasadas = [c for c in coms if c.get("atrasada")]
+    if atrasadas:
+        se_fueron = [c for c in atrasadas if "no abren la materia" in (c.get("lectura") or "")]
+        estan = [c for c in atrasadas if c not in se_fueron]
+        detalle = []
+        if estan:
+            detalle.append("con los alumnos entrando (entregan poco, no es que se fueron): "
+                           + ", ".join(c["comision"] for c in estan))
+        if se_fueron:
+            detalle.append("y por alumnos que dejaron de abrir la materia: "
+                           + ", ".join(c["comision"] for c in se_fueron))
+        puntos.append((
+            f"{len(atrasadas)} comisión(es) por debajo de la mediana del curso",
+            "Son dos problemas distintos y se resuelven distinto — " + " · ".join(detalle)
+            + f". La mediana del curso es {datos.get('entregas_mediana_curso')} entrega(s)."))
+
+    esp = datos.get("esperando_correccion") or 0
+    if esp:
+        peor = max((f for f in datos.get("flojos") or []
+                    if f.get("espera_correccion_dias")),
+                   key=lambda f: f["espera_correccion_dias"], default=None)
+        puntos.append((
+            f"{esp} alumnos entregaron y siguen esperando la corrección",
+            "Es el único renglón donde el problema NO es del alumno: entregó y no recibió "
+            "nada. La espera más larga es de "
+            f"{_dias_txt(peor['espera_correccion_dias']) if peor else '—'} día(s)"
+            + (f", en {peor['comision']}." if peor else ".")))
+
+    desap = datos.get("con_desaprobadas") or 0
+    if desap:
+        puntos.append((
+            f"{desap} alumnos tienen al menos una actividad desaprobada",
+            "La nota se lee por el texto de la escala, no por el número: en este campus la "
+            "escala de TPs va invertida y un índice suelto se leería al revés."))
+
+    return puntos[:tope]
+
+
+def avance_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "",
+               emails: bool = True) -> dict:
+    """Renderiza el informe de avance de alumnos. PURA.
+
+    La tercera vista del curso: `informes_nexos` dice si el alumno APARECE,
+    `panorama_comisiones` si el tutor CORRIGIÓ, y ésta si el alumno ENTREGA y aprueba.
+
+    **No hay porcentaje de avance y es deliberado**: sin fechas de entrega no existe un
+    denominador honesto, así que cada alumno va contra la mediana de su comisión y cada
+    comisión contra la del curso. Un "35% del plan" sería inventado.
+    """
+    ss = getSampleStyleSheet()
+    h0 = ParagraphStyle("h0", parent=ss["Heading1"], fontSize=17, leading=20, textColor=NAVY,
+                        spaceAfter=2)
+    h2 = ParagraphStyle("h2", parent=ss["Heading2"], fontSize=11.5, textColor=NAVY,
+                        spaceBefore=10, spaceAfter=4)
+    h3 = ParagraphStyle("h3", parent=ss["Heading3"], fontSize=10, textColor=TEAL,
+                        spaceBefore=9, spaceAfter=2)
+    body = ParagraphStyle("b", parent=ss["Normal"], fontSize=8.5, leading=11.5)
+    small = ParagraphStyle("s", parent=ss["Normal"], fontSize=7, leading=9,
+                           textColor=colors.HexColor("#666666"))
+    kicker = ParagraphStyle("k", parent=ss["Normal"], fontSize=7.5, leading=9,
+                            textColor=TEAL, fontName="Helvetica-Bold")
+    alerta = ParagraphStyle("a", parent=ss["Normal"], fontSize=8, leading=11, textColor=RED)
+    est_celda = ParagraphStyle("cel", parent=ss["Normal"], fontSize=7, leading=8.2)
+
+    meta = datos.get("_meta", {})
+    coms = datos.get("por_comision") or []
+    flojos = datos.get("flojos") or []
+    titulo = materia or f"Curso {datos.get('course_id')}"
+    os.makedirs(dest_dir, exist_ok=True)
+    path = os.path.join(dest_dir, f"avance_curso{datos.get('course_id')}"
+                        + (f"_{fecha}" if fecha else "") + ".pdf")
+
+    E = [Paragraph("UTN · TECNICATURA UNIVERSITARIA EN PROGRAMACIÓN", kicker),
+         Paragraph(f"Avance de los alumnos — {titulo}", h0),
+         Paragraph("Entregas y notas por comisión · vista de coordinación"
+                   + (f" · {fecha}" if fecha else ""), small),
+         Spacer(1, 12)]
+
+    E.append(_tiles([
+        (datos.get("alumnos", "—"), "alumnos", NAVY),
+        (_dias_txt(datos.get("entregas_mediana_curso")), "mediana de entregas del curso", TEAL),
+        (datos.get("alumnos_en_cero", "—"), "no entregaron nada", RED),
+        (datos.get("con_desaprobadas", "—"), "con alguna desaprobada", AMBER),
+        (datos.get("esperando_correccion", "—"), "esperando corrección", NAVY),
+    ]))
+    E.append(Spacer(1, 12))
+
+    if meta.get("degradado"):
+        E.append(Paragraph("⚠️ Leé esto antes de los números:", alerta))
+        for s in meta.get("sin_dato", [])[:6]:
+            E.append(Paragraph(f"· {s}", small))
+        E.append(Spacer(1, 8))
+
+    E.append(Paragraph("Cómo leer esto", h2))
+    E.append(Paragraph(
+        f"<b>No hay porcentaje de avance, y es a propósito.</b> Un porcentaje necesita saber "
+        "cuántas actividades ya deberían estar entregadas, y ese dato no existe en este campus: "
+        "la mayoría de las actividades no tiene fecha de entrega. Así que se compara contra lo "
+        "que el curso realmente hizo: cada alumno contra la <b>mediana de su comisión</b>, y "
+        f"cada comisión contra la del curso ({_dias_txt(datos.get('entregas_mediana_curso'))} "
+        "entrega(s)). «Entregó 0 donde la mediana de su comisión es 4» es un hecho; «va al 35% "
+        "del plan» sería un número inventado.", body))
+    E.append(Spacer(1, 4))
+    E.append(Paragraph(
+        "<b>Tres advertencias.</b> (1) <b>No se puede saber cuándo se matriculó un alumno</b> — "
+        "la API no lo expone, está verificado. El que entró tarde entregó menos y NO es peor "
+        "alumno. (2) Las notas se leen por el <b>texto</b> de la escala y nunca por el número: "
+        "la escala de TPs de este campus va invertida. (3) La lectura de cada comisión dice "
+        "<b>qué mirar</b>, no de quién es la culpa.", small))
+
+    focos = focos_de_avance(datos)
+    if focos:
+        E.append(Paragraph("Focos de hoy", h2))
+        est_t = ParagraphStyle("pt", parent=body, fontName="Helvetica-Bold", fontSize=8.5)
+        colores = [RED, AMBER, NAVY, TEAL]
+        rows = []
+        for i, (tp, det) in enumerate(focos):
+            num = Paragraph(f'<font color="white"><b>{i + 1}</b></font>',
+                            ParagraphStyle("n", parent=body, alignment=1, fontSize=11))
+            cuerpo = Table([[Paragraph(tp, est_t)], [Paragraph(det, small)]],
+                           style=TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 6),
+                                             ("TOPPADDING", (0, 0), (-1, -1), 1),
+                                             ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
+            rows.append([num, cuerpo])
+        t = Table(rows, colWidths=[0.9 * cm, 16.1 * cm])
+        est = [("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+               ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+               ("ROWBACKGROUNDS", (1, 0), (1, -1), [colors.white, LT])]
+        for i in range(len(rows)):
+            est.append(("BACKGROUND", (0, i), (0, i), colores[i % len(colores)]))
+        t.setStyle(TableStyle(est))
+        E.append(t)
+
+    # ---- Por comisión ----
+    E.append(PageBreak())
+    E.append(Paragraph("Por comisión", h2))
+    E.append(Paragraph(
+        f"{datos.get('tareas_miradas')} de {datos.get('tareas_pedidas')} actividades relevadas. "
+        "Ordenadas por mediana de entregas, la más baja primero. «No abren la materia» es el "
+        "cruce que explica el atraso: una comisión atrasada con los alumnos entrando es un "
+        "problema distinto de una donde se fueron.", small))
+    E.append(Spacer(1, 5))
+    rows = [["Com.", "Alum.", "Entregas\nmediana", "Entregas\nmáx", "No entre-\ngaron nada",
+             "Desapro-\nbadas", "No abren\nla materia", "Esperando\ncorrección", "Lectura"]]
+    for c in coms:
+        rows.append([c["comision"], c["alumnos"], _dias_txt(c["entregas_mediana"]),
+                     c["entregas_max"], c["alumnos_en_cero"], c["desaprobadas"],
+                     c["no_abren_la_materia"], c["esperando_correccion"],
+                     Paragraph(c["lectura"], est_celda)])
+    E.append(_tabla(rows, [1.2, 1.0, 1.5, 1.2, 1.5, 1.4, 1.5, 1.5, 6.2],
+                    alinear_der=[1, 2, 3, 4, 5, 6, 7]))
+
+    # ---- Los que menos entregaron, por comisión ----
+    E.append(PageBreak())
+    E.append(Paragraph("Alumnos que menos entregaron, por comisión", h2))
+    E.append(Paragraph(
+        "De cada comisión salen los que están <b>por debajo de la mediana de su propia "
+        "comisión</b> más todos los que no entregaron nada. Los demás están en la mediana o "
+        "arriba y no se listan — el total va en cada encabezado. «Sin abrir» son los días sin "
+        "abrir la materia, no sin entrar al campus.", small))
+    E.append(Spacer(1, 6))
+
+    por_com = {}
+    for f in flojos:
+        por_com.setdefault(f["comision"], []).append(f)
+    for c in coms:
+        de_com = por_com.get(c["comision"], [])
+        med = c["entregas_mediana"] or 0
+        lista = [f for f in de_com if f["entregas"] == 0 or f["entregas"] < med]
+        E.append(Paragraph(
+            f"{c['comision']} — {len(lista)} de {c['alumnos']} alumnos "
+            f"(mediana de la comisión: {_dias_txt(c['entregas_mediana'])})", h3))
+        if not lista:
+            E.append(Paragraph("Nadie por debajo de la mediana de su comisión.", small))
+            continue
+        cab = ["Alumno", "Entre-\ngadas", "Apro-\nbadas", "Desapro-\nbadas", "Sin abrir\nla materia",
+               "Espera\ncorrec. (d)"]
+        anchos = [7.3, 1.6, 1.6, 1.9, 2.3, 2.3]
+        if emails:
+            cab.insert(1, "Email")
+            anchos = [4.6, 4.4, 1.4, 1.4, 1.6, 1.9, 1.7]
+        rr = [cab]
+        for f in sorted(lista, key=lambda x: (x["entregas"],
+                                              -(x["dias_sin_abrir_la_materia"] or 0))):
+            aula = ("Nunca" if f.get("estado_aula") == "nunca_abrio"
+                    else ("—" if f.get("estado_aula") == "sin_dato"
+                          else f"{f.get('dias_sin_abrir_la_materia')} d"))
+            fila = [Paragraph(f.get("nombre") or "", est_celda), f["entregas"], f["aprobadas"],
+                    f["desaprobadas"], aula, _dias_txt(f.get("espera_correccion_dias"))]
+            if emails:
+                fila.insert(1, Paragraph(f.get("email") or "—", est_celda))
+            rr.append(fila)
+        E.append(_tabla(rr, anchos,
+                        alinear_der=list(range(len(cab) - 5, len(cab)))))
+        E.append(Spacer(1, 6))
+
+    E.append(Spacer(1, 8))
+    if emails:
+        E.append(Paragraph(
+            "⚠️ Este documento incluye datos de contacto de alumnos (mails personales). No lo "
+            "subas a repositorios ni lo compartas fuera del equipo docente.", alerta))
+        E.append(Spacer(1, 4))
+    E.append(Paragraph(
+        f"UTN · {titulo} · datos leídos EN VIVO de la API REST del campus"
+        + (f" el {fecha}" if fecha else "")
+        + f" · relevamiento en {meta.get('segundos')} s · sin porcentajes de avance: no hay "
+        "fechas de entrega contra las que medirlos.", small))
+
+    doc = SimpleDocTemplate(path, pagesize=A4, topMargin=1.4 * cm, bottomMargin=1.4 * cm,
+                            leftMargin=2.0 * cm, rightMargin=2.0 * cm,
+                            title=f"Avance de los alumnos — {titulo}",
+                            author="tup-campus-navigator")
+    doc.build(E)
+    return {"archivo": path, "paginas": getattr(doc, "page", None),
+            "incluye_emails": bool(emails), "degradado": bool(meta.get("degradado"))}

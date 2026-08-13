@@ -10,6 +10,7 @@ Se usa `unittest` (stdlib) y no pytest a propósito: no agrega una dependencia q
 tendría que instalar para poder verificar su propia herramienta.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -1256,3 +1257,124 @@ class TestCortesDelTrabajo(unittest.TestCase):
         f = informes.focos_de_correccion({"tareas_miradas": 5, "filas": [], "por_actividad": []})
         self.assertIn("No hay entregas esperando", f[0][0])
         self.assertIn("5 actividades miradas", f[0][1])
+
+
+class TestAvanceDeAlumnos(unittest.TestCase):
+    """La tercera vista: cuánto entregó cada alumno y cómo le fue. Todo puro."""
+
+    def test_lee_la_nota_por_texto_y_respeta_la_escala_invertida(self):
+        # La trampa central del dominio: en la escala 5 el 1 es Aprobado y el 2 Desaprobado.
+        self.assertIs(panorama._aprobo(panorama.nota_texto(-5, 1.0)), True)
+        self.assertIs(panorama._aprobo(panorama.nota_texto(-5, 2.0)), False)
+
+    def test_numerica_aprueba_con_seis(self):
+        self.assertIs(panorama._aprobo(panorama.nota_texto(100, 8.5)), True)
+        self.assertIs(panorama._aprobo(panorama.nota_texto(100, 4.0)), False)
+
+    def test_no_satisfactorio_no_se_confunde_con_satisfactorio(self):
+        # "satisfactorio" es substring de "no satisfactorio": el negativo tiene que ganar.
+        self.assertIs(panorama._aprobo("No satisfactorio"), False)
+        self.assertIs(panorama._aprobo("Satisfactorio"), True)
+        self.assertIs(panorama._aprobo("Supera lo esperado"), True)
+
+    def test_escala_desconocida_no_se_asume_aprobada_ni_desaprobada(self):
+        self.assertIsNone(panorama._aprobo("⚠️ escala 99 desconocida (valor crudo: 1)"))
+        self.assertIsNone(panorama._aprobo(None))
+
+    # --- la lectura de cada comisión: el cruce que explica el atraso ---
+
+    @staticmethod
+    def _padron(uids, dias_materia):
+        import time
+        ahora = int(time.time())
+        return {"alumnos": {u: f"A{u}" for u in uids},
+                "accesos": {u: {"id": u, "fullname": f"A{u}", "email": f"a{u}@x.com",
+                                "lastaccess": ahora,
+                                "lastcourseaccess": (0 if dias_materia.get(u) == "nunca"
+                                                     else ahora - dias_materia.get(u, 0) * 86400)}
+                            for u in uids}}
+
+    def test_atrasada_con_los_alumnos_entrando_vs_atrasada_porque_se_fueron(self):
+        # Dos comisiones con la MISMA mediana de entregas (0) y distinto diagnóstico. Es el
+        # caso real de Prog III com4 vs com6: por comisión se ven iguales.
+        coms = [{"comision": "com_presentes", "group_id": 1},
+                {"comision": "com_se_fueron", "group_id": 2}]
+        padrones = {
+            1: self._padron([10, 11, 12], {10: 0, 11: 0, 12: 0}),          # todos entrando
+            2: self._padron([20, 21, 22], {20: "nunca", 21: 30, 22: 40}),  # todos desenganchados
+        }
+        # una tercera comisión que sí entrega, para que la mediana del curso sea > 0
+        coms.append({"comision": "com_ok", "group_id": 3})
+        padrones[3] = self._padron([30, 31, 32], {30: 0, 31: 0, 32: 0})
+        datos_tareas = {"100": {"entregas": {30: 1000, 31: 1000, 32: 1000},
+                                "calificadas": {30: 1100, 31: 1100, 32: 1100},
+                                "sin_nota": set(), "pendientes": set(),
+                                "notas": {30: 1.0, 31: 1.0, 32: 1.0}}}
+        r = panorama.avance_de_alumnos(datos_tareas, {"100": {"grade_cfg": -5}}, padrones, coms)
+        lect = {c["comision"]: c["lectura"] for c in r["por_comision"]}
+        self.assertIn("los alumnos siguen entrando", lect["com_presentes"])
+        self.assertIn("no abren la materia", lect["com_se_fueron"])
+        self.assertEqual(lect["com_ok"], "en línea con el curso")
+
+    def test_si_NADIE_del_curso_entrego_no_dice_que_estan_en_linea(self):
+        # La saturación al revés: con todo el curso en cero, la mediana del curso es 0 y
+        # comparar contra ella diría "todas en línea". Eso es un cero mudo.
+        coms = [{"comision": "com1", "group_id": 1}]
+        padrones = {1: self._padron([1, 2], {1: 0, 2: 0})}
+        r = panorama.avance_de_alumnos({}, {}, padrones, coms)
+        lect = r["por_comision"][0]["lectura"]
+        self.assertIn("no hay con qué comparar", lect)
+        self.assertFalse(r["por_comision"][0]["atrasada"])
+
+    def test_una_comision_en_cero_se_marca_aunque_la_mediana_del_curso_sea_cero(self):
+        coms = [{"comision": "com_cero", "group_id": 1}, {"comision": "com_ok", "group_id": 2}]
+        padrones = {1: self._padron([1, 2, 3], {1: 0, 2: 0, 3: 0}),
+                    2: self._padron([4, 5], {4: 0, 5: 0})}
+        # sólo 2 de 5 alumnos entregaron -> mediana del curso = 0
+        datos = {"100": {"entregas": {4: 1000, 5: 1000},
+                         "calificadas": {4: 1100, 5: 1100}, "sin_nota": set(),
+                         "pendientes": set(), "notas": {4: 1.0, 5: 1.0}}}
+        r = panorama.avance_de_alumnos(datos, {"100": {"grade_cfg": -5}}, padrones, coms)
+        por = {c["comision"]: c for c in r["por_comision"]}
+        self.assertEqual(r["entregas_mediana_curso"], 0)
+        self.assertTrue(por["com_cero"]["atrasada"])
+        self.assertIn("en el curso sí hay entregas", por["com_cero"]["lectura"])
+
+    def test_cuenta_aprobadas_desaprobadas_y_esperando_por_separado(self):
+        coms = [{"comision": "com1", "group_id": 1}]
+        padrones = {1: self._padron([1, 2, 3], {1: 0, 2: 0, 3: 0})}
+        datos_tareas = {"100": {
+            "entregas": {1: 1000, 2: 1000, 3: 1000},
+            "calificadas": {1: 1100, 2: 1100}, "sin_nota": set(), "pendientes": {3},
+            "notas": {1: 1.0, 2: 2.0}}}
+        r = panorama.avance_de_alumnos(datos_tareas, {"100": {"grade_cfg": -5}}, padrones, coms)
+        por_uid = {f["userid"]: f for f in r["flojos"]}
+        self.assertEqual(por_uid[1]["aprobadas"], 1)
+        self.assertEqual(por_uid[2]["desaprobadas"], 1)
+        # el 3 entregó y espera: no es un desaprobado ni un "no entregó"
+        self.assertEqual(por_uid[3]["entregas"], 1)
+        self.assertIsNotNone(por_uid[3]["espera_correccion_dias"])
+        self.assertEqual(r["esperando_correccion"], 1)
+
+    def test_NO_devuelve_porcentaje_de_avance(self):
+        # Es una decisión, no un olvido: sin fechas de entrega no hay denominador honesto.
+        r = panorama.avance_de_alumnos({}, {}, {1: self._padron([1], {1: 0})},
+                                       [{"comision": "com1", "group_id": 1}])
+        texto = json.dumps(r, ensure_ascii=False, default=str)
+        self.assertNotIn("porcentaje_avance", texto)
+        self.assertNotIn("pct_avance", texto)
+        self.assertIn("mediana", texto)
+
+    def test_los_focos_de_avance_NO_emiten_veredicto(self):
+        datos = {"alumnos": 239, "alumnos_en_cero": 107, "entregas_mediana_curso": 1,
+                 "con_desaprobadas": 2, "esperando_correccion": 5,
+                 "por_comision": [{"comision": "com4", "alumnos": 32, "alumnos_en_cero": 18,
+                                   "atrasada": True,
+                                   "lectura": "atrasada y con muchos alumnos que no abren la materia"}],
+                 "flojos": [{"comision": "com4", "espera_correccion_dias": 0.7}]}
+        texto = " ".join(t + " " + d
+                         for t, d in informes.focos_de_avance(datos, tope=9)).lower()
+        for p in ("sano", "excelente", "crisis", "grave", "estado general", "preocupante"):
+            self.assertNotIn(p, texto, f"apareció un veredicto: {p!r}")
+        # y siempre declara lo que no se puede saber
+        self.assertIn("matriculación", texto)
