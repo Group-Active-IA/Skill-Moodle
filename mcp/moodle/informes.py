@@ -910,19 +910,27 @@ def avance_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "",
     E.append(Paragraph("Por comisión", h2))
     E.append(Paragraph(
         f"{datos.get('tareas_miradas')} de {datos.get('tareas_pedidas')} actividades relevadas. "
-        "Ordenadas por mediana de entregas, la más baja primero. «No abren la materia» es el "
+        "Ordenadas por proporción sin entregar, la más alta primero. «No abren la materia» es el "
         "cruce que explica el atraso: una comisión atrasada con los alumnos entrando es un "
         "problema distinto de una donde se fueron.", small))
+    if datos.get("mediana_no_discrimina"):
+        E.append(Paragraph(
+            f"⚠️ Más de la mitad del curso no entregó nada ({datos.get('pct_sin_entregar_curso')}"
+            "%), así que la mediana da 0 en casi todas las comisiones y NO sirve para "
+            "compararlas. La comparación de abajo va por <b>proporción de alumnos sin ninguna "
+            "entrega</b> contra la del curso, que sí discrimina.", alerta))
+        E.append(Spacer(1, 4))
     E.append(Spacer(1, 5))
-    rows = [["Com.", "Alum.", "Entregas\nmediana", "Entregas\nmáx", "No entre-\ngaron nada",
-             "Desapro-\nbadas", "No abren\nla materia", "Esperando\ncorrección", "Lectura"]]
+    rows = [["Com.", "Alum.", "Sin entregar\nnada", "Entregas\nmed · máx", "Desapro-\nbadas",
+             "No abren\nla materia", "Esperando\ncorrección", "Lectura"]]
     for c in coms:
-        rows.append([c["comision"], c["alumnos"], _dias_txt(c["entregas_mediana"]),
-                     c["entregas_max"], c["alumnos_en_cero"], c["desaprobadas"],
-                     c["no_abren_la_materia"], c["esperando_correccion"],
+        rows.append([c["comision"], c["alumnos"],
+                     f"{c['alumnos_en_cero']} ({c.get('pct_sin_entregar')}%)",
+                     f"{_dias_txt(c['entregas_mediana'])} · {c['entregas_max']}",
+                     c["desaprobadas"], c["no_abren_la_materia"], c["esperando_correccion"],
                      Paragraph(c["lectura"], est_celda)])
-    E.append(_tabla(rows, [1.2, 1.0, 1.5, 1.2, 1.5, 1.4, 1.5, 1.5, 6.2],
-                    alinear_der=[1, 2, 3, 4, 5, 6, 7]))
+    E.append(_tabla(rows, [1.2, 1.0, 1.9, 1.7, 1.4, 1.5, 1.5, 6.8],
+                    alinear_der=[1, 2, 3, 4, 5, 6]))
 
     # ---- Los que menos entregaron, por comisión ----
     E.append(PageBreak())

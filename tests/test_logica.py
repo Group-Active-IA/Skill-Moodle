@@ -1312,9 +1312,9 @@ class TestAvanceDeAlumnos(unittest.TestCase):
                                 "notas": {30: 1.0, 31: 1.0, 32: 1.0}}}
         r = panorama.avance_de_alumnos(datos_tareas, {"100": {"grade_cfg": -5}}, padrones, coms)
         lect = {c["comision"]: c["lectura"] for c in r["por_comision"]}
-        self.assertIn("los alumnos siguen entrando", lect["com_presentes"])
+        self.assertIn("no es que se fueron", lect["com_presentes"])
         self.assertIn("no abren la materia", lect["com_se_fueron"])
-        self.assertEqual(lect["com_ok"], "en línea con el curso")
+        self.assertIn("en línea con el curso", lect["com_ok"])
 
     def test_si_NADIE_del_curso_entrego_no_dice_que_estan_en_linea(self):
         # La saturación al revés: con todo el curso en cero, la mediana del curso es 0 y
@@ -1338,7 +1338,38 @@ class TestAvanceDeAlumnos(unittest.TestCase):
         por = {c["comision"]: c for c in r["por_comision"]}
         self.assertEqual(r["entregas_mediana_curso"], 0)
         self.assertTrue(por["com_cero"]["atrasada"])
-        self.assertIn("en el curso sí hay entregas", por["com_cero"]["lectura"])
+        self.assertIn("sin entregar contra", por["com_cero"]["lectura"])
+
+    def test_la_mediana_saturada_se_declara_y_no_marca_a_todas(self):
+        # Prog I real: 437 de 566 alumnos en cero -> la mediana del curso da 0 y comparar
+        # contra ella marcaba 16 de 16 comisiones. Con proporciones sólo se despega la que
+        # de verdad se despega.
+        coms = [{"comision": f"com{i}", "group_id": i} for i in (1, 2, 3)]
+        padrones = {
+            1: self._padron([1, 2, 3, 4], {u: 0 for u in (1, 2, 3, 4)}),      # 4 en cero
+            2: self._padron([5, 6, 7, 8], {u: 0 for u in (5, 6, 7, 8)}),      # 2 entregan
+            3: self._padron([9, 10, 11, 12], {u: 0 for u in (9, 10, 11, 12)}),  # 2 entregan
+        }
+        datos = {"100": {"entregas": {6: 1000, 7: 1000, 10: 1000, 11: 1000},
+                         "calificadas": {6: 1100, 7: 1100, 10: 1100, 11: 1100},
+                         "sin_nota": set(), "pendientes": set(),
+                         "notas": {u: 1.0 for u in (6, 7, 10, 11)}}}
+        r = panorama.avance_de_alumnos(datos, {"100": {"grade_cfg": -5}}, padrones, coms)
+        self.assertEqual(r["entregas_mediana_curso"], 0)
+        self.assertTrue(r["mediana_no_discrimina"])
+        marcadas = [c["comision"] for c in r["por_comision"] if c["atrasada"]]
+        self.assertEqual(marcadas, ["com1"])   # la única despegada, no las tres
+
+    def test_mediana_cero_no_dice_que_nadie_entrego(self):
+        # Etiqueta falsa que apareció en Prog I: com9 tenía un alumno con 7 entregas y la
+        # lectura decía "nadie entregó en esta comisión". Mediana 0 = más de la mitad, no todos.
+        coms = [{"comision": "com1", "group_id": 1}]
+        padrones = {1: self._padron([1, 2, 3], {1: 0, 2: 0, 3: 0})}
+        datos = {"100": {"entregas": {1: 1000}, "calificadas": {1: 1100}, "sin_nota": set(),
+                         "pendientes": set(), "notas": {1: 1.0}}}
+        r = panorama.avance_de_alumnos(datos, {"100": {"grade_cfg": -5}}, padrones, coms)
+        self.assertEqual(r["por_comision"][0]["entregas_mediana"], 0)
+        self.assertNotIn("nadie entregó en esta comisión", r["por_comision"][0]["lectura"])
 
     def test_cuenta_aprobadas_desaprobadas_y_esperando_por_separado(self):
         coms = [{"comision": "com1", "group_id": 1}]

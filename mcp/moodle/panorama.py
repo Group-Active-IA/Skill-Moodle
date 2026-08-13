@@ -90,6 +90,11 @@ _SIN_CALIFICAR = -1.0
 # existe pero el alumno todavía no la tiene, así que el trabajo no está cerrado.
 _ESTADOS_CORREGIDA = {"graded", "released"}
 
+# Cuántos puntos porcentuales tiene que despegarse una comisión del curso para
+# llamarla atrasada. Sin margen sale marcada la mitad de la cohorte por estar a un
+# punto de la media, y una lista con la mitad adentro no la mira nadie.
+_MARGEN_ATRASO_PP = 10
+
 
 def _num(x) -> float | None:
     try:
@@ -1312,6 +1317,14 @@ def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones
 
     todas = [f["entregas"] for f in filas]
     mediana_curso = _mediana(todas)
+    hay_movimiento = max(todas or [0]) > 0
+    # La proporción de alumnos SIN NINGUNA entrega es el comparador que sirve en cualquier
+    # momento del cuatrimestre. La mediana no: probado en Prog I, con 437 de 566 alumnos en
+    # cero la mediana del curso es 0, ninguna comisión queda "por debajo" y marcaba 16 de 16 —
+    # la misma saturación de la racha, ahora en este informe. Con proporciones, Prog I da una
+    # sola comisión despegada del resto (94% contra 77% del curso), que es una lista accionable.
+    pct_cero_curso = (round(100 * sum(1 for f in filas if f["entregas"] == 0) / len(filas))
+                      if filas else None)
 
     por_comision = []
     for c in comisiones:
@@ -1323,43 +1336,43 @@ def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones
         deseng = sum(1 for f in de_com if f["estado_aula"] == _AULA_NUNCA
                      or (f["dias_sin_abrir_la_materia"] or 0) >= dias_desenganche)
         en_cero = sum(1 for f in de_com if f["entregas"] == 0)
+        pct_cero = round(100 * en_cero / len(de_com))
+
+        # Atrasada = se despega del curso, por proporción de alumnos en cero o por mediana.
+        # El margen existe para que no salga marcada media cohorte por estar a un punto.
+        atrasada = bool(
+            (pct_cero_curso is not None and pct_cero >= pct_cero_curso + _MARGEN_ATRASO_PP)
+            or (med is not None and mediana_curso is not None and mediana_curso > 0
+                and med < mediana_curso))
+
         # El *por qué*: atrasada con los alumnos presentes no es lo mismo que atrasada porque
         # se fueron. Es lectura, no veredicto: dice qué mirar, no quién tiene la culpa.
-        #
-        # OJO con el segundo término, que lo destapó un test: comparar sólo contra la mediana
-        # del curso se satura igual que la racha. Si más de la mitad del curso no entregó, la
-        # mediana del curso es 0, una comisión en 0 NO queda por debajo y sale "en línea" —
-        # o sea que a principio de cuatrimestre, con todos en cero, el informe diría que todas
-        # están bien. Una comisión donde NADIE entregó se marca igual, siempre que en el curso
-        # haya movimiento con el cual comparar.
-        hay_movimiento = max([f["entregas"] for f in filas] or [0]) > 0
-        atrasada = med is not None and (
-            (mediana_curso is not None and med < mediana_curso)
-            or (med == 0 and hay_movimiento))
-        if not atrasada:
-            lectura = ("en línea con el curso" if hay_movimiento
-                       else "nadie entregó todavía en el curso: no hay con qué comparar")
+        if not hay_movimiento:
+            lectura = "nadie entregó todavía en el curso: no hay con qué comparar"
+        elif not atrasada:
+            lectura = (f"en línea con el curso ({pct_cero}% sin entregar, "
+                       f"{pct_cero_curso}% en el curso)")
         elif deseng > len(de_com) / 3:
-            lectura = "atrasada y con muchos alumnos que no abren la materia"
-        elif med == 0:
-            lectura = ("nadie entregó en esta comisión y en el curso sí hay entregas; "
-                       "los alumnos siguen entrando a la materia")
+            lectura = (f"atrasada y con muchos alumnos que no abren la materia "
+                       f"({pct_cero}% sin entregar contra {pct_cero_curso}% del curso)")
         else:
-            lectura = "atrasada con los alumnos entrando: entregan poco, no es que se fueron"
+            lectura = (f"atrasada con los alumnos entrando: entregan poco, no es que se fueron "
+                       f"({pct_cero}% sin entregar contra {pct_cero_curso}% del curso)")
         por_comision.append({
             "comision": c["comision"],
             "alumnos": len(de_com),
             "entregas_mediana": med,
             "entregas_max": max(vals),
             "alumnos_en_cero": en_cero,
+            "pct_sin_entregar": pct_cero,
             "desaprobadas": sum(f["desaprobadas"] for f in de_com),
             "no_abren_la_materia": deseng,
             "esperando_correccion": sum(1 for f in de_com if f["espera_correccion_dias"]),
             "atrasada": atrasada,
             "lectura": lectura,
         })
-    por_comision.sort(key=lambda c: (c["entregas_mediana"] if c["entregas_mediana"] is not None
-                                     else 1e9, -c["alumnos_en_cero"]))
+    # Primero la que más se despega: por proporción sin entregar, no por mediana.
+    por_comision.sort(key=lambda c: (-c["pct_sin_entregar"], -c["alumnos_en_cero"]))
 
     # Los que menos entregaron, del curso entero. Se ordena por entregas y después por días
     # sin abrir la materia: el que entregó poco Y no aparece es el más urgente.
@@ -1368,12 +1381,19 @@ def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones
     return {
         "alumnos": len(filas),
         "entregas_mediana_curso": mediana_curso,
+        "pct_sin_entregar_curso": pct_cero_curso,
+        # Si más de la mitad del curso no entregó nada, la mediana es 0 y NO sirve para
+        # comparar comisiones. Se declara para que nadie la lea como si discriminara.
+        "mediana_no_discrimina": bool(mediana_curso == 0 and hay_movimiento),
         "alumnos_en_cero": sum(1 for f in filas if f["entregas"] == 0),
         "con_desaprobadas": sum(1 for f in filas if f["desaprobadas"]),
         "esperando_correccion": sum(1 for f in filas if f["espera_correccion_dias"]),
         "por_comision": por_comision,
         "flojos": flojos,
         "criterio": {
+            "comparador": "La comisión se compara por PROPORCIÓN de alumnos sin ninguna "
+                          "entrega, no por mediana: con el curso arrancando la mediana da 0 en "
+                          "todas y no discrimina (Prog I: 437 de 566 en cero).",
             "sin_porcentaje": "No hay % de avance a propósito: sin fechas de entrega no existe "
                               "un denominador honesto. Cada alumno se compara contra la mediana "
                               "de su comisión y cada comisión contra la del curso.",
