@@ -20,14 +20,19 @@ from moodle.cliente import MoodleWSError  # noqa: E402
 from moodle.ws_api import (  # noqa: E402
     _a_html,
     _clasificar_riesgo,
+    _fila_aula,
+    _lectura_aula,
+    _orden_aula,
     _racha_final_sin_entregar,
     _resolver_valor_nota,
     clasificar_mensaje_entrante,
     crear_discusion,
     es_actividad_de_cierre,
     nota_display,
+    sin_entrar_al_aula,
 )
 from moodle import panorama  # noqa: E402
+from moodle import informes  # noqa: E402
 from moodle.active_ia import _nota_de_entrega  # noqa: E402
 from moodle.version import _tupla, hay_novedad  # noqa: E402
 
@@ -114,38 +119,219 @@ class TestRachaSinEntregar(unittest.TestCase):
 
 
 class TestClasificarRiesgo(unittest.TestCase):
+    """El reloj que manda es el de la MATERIA. `dias_campus` entra sólo para distinguir al
+    que elige no entrar del que no está en ninguna parte.
+    """
+
     def test_al_dia_es_verde(self):
-        nivel, _ = _clasificar_riesgo(dias_sin_entrar=1, racha=0)
+        nivel, _ = _clasificar_riesgo("abrio", 1, racha=0, dias_campus=1)
         self.assertEqual(nivel, "verde")
 
     def test_dos_tareas_seguidas_sin_entregar_es_rojo_aunque_entre_todos_los_dias(self):
-        # La señal fuerte: entrar al campus sin entregar no es estar al día.
-        nivel, motivos = _clasificar_riesgo(dias_sin_entrar=0, racha=2)
+        # La señal fuerte: entrar y abrir la materia sin entregar no es estar al día.
+        nivel, motivos = _clasificar_riesgo("abrio", 0, racha=2, dias_campus=0)
         self.assertEqual(nivel, "rojo")
         self.assertTrue(any("seguidas" in m for m in motivos))
 
-    def test_muchos_dias_sin_entrar_pero_al_dia_con_las_tareas_es_amarillo(self):
-        # Puede estar trabajando; no es abandono todavía.
-        nivel, _ = _clasificar_riesgo(dias_sin_entrar=20, racha=0)
+    def test_muchos_dias_sin_abrir_la_materia_pero_al_dia_con_las_tareas_es_amarillo(self):
+        # No abre la materia hace 20 días y tampoco pisa el campus: puede estar trabajando o
+        # sin acceso. No es abandono todavía, y no es "eligió no entrar".
+        nivel, _ = _clasificar_riesgo("abrio", 20, racha=0, dias_campus=20)
         self.assertEqual(nivel, "amarillo")
 
-    def test_muchos_dias_sin_entrar_mas_una_sin_entregar_es_rojo(self):
-        nivel, _ = _clasificar_riesgo(dias_sin_entrar=20, racha=1)
+    def test_muchos_dias_sin_abrir_mas_una_sin_entregar_es_rojo(self):
+        nivel, _ = _clasificar_riesgo("abrio", 20, racha=1, dias_campus=20)
         self.assertEqual(nivel, "rojo")
 
-    def test_una_semana_sin_entrar_es_amarillo(self):
-        self.assertEqual(_clasificar_riesgo(dias_sin_entrar=8, racha=0)[0], "amarillo")
+    def test_una_semana_sin_abrir_la_materia_es_amarillo(self):
+        self.assertEqual(
+            _clasificar_riesgo("abrio", 8, racha=0, dias_campus=8)[0], "amarillo")
 
-    def test_nunca_entro_es_rojo_y_no_verde(self):
-        # `None` = nunca entró. Tratarlo como "sin datos" perdería justo al que más ayuda
-        # necesita.
-        nivel, motivos = _clasificar_riesgo(dias_sin_entrar=None, racha=0)
+    def test_nunca_entro_a_nada_es_rojo_y_no_verde(self):
+        # Nunca abrió la materia y nunca entró al campus: el único caso donde la frase
+        # "nunca entró al campus" es verdadera.
+        nivel, motivos = _clasificar_riesgo("nunca_abrio", None, racha=0, dias_campus=None)
         self.assertEqual(nivel, "rojo")
-        self.assertTrue(any("nunca entró" in m for m in motivos))
+        self.assertTrue(any("nunca entró al campus" in m for m in motivos))
 
     def test_los_umbrales_son_configurables(self):
-        self.assertEqual(_clasificar_riesgo(10, 0, dias_alerta=30, dias_aviso=20)[0], "verde")
-        self.assertEqual(_clasificar_riesgo(10, 0, dias_alerta=5, dias_aviso=3)[0], "amarillo")
+        self.assertEqual(
+            _clasificar_riesgo("abrio", 10, 0, 10, dias_alerta=30, dias_aviso=20)[0], "verde")
+        self.assertEqual(
+            _clasificar_riesgo("abrio", 10, 0, 10, dias_alerta=5, dias_aviso=3)[0], "amarillo")
+
+    # --- Los casos REALES que el código viejo daba verde (relevamiento de un tutor, 13/08) ---
+    #
+    # Corrido contra HEAD, que sólo veía el reloj del sitio: Carina, Cristian, Alochis, Astrid
+    # y Aguirre daban **verde**, y los verdes NO se devuelven — eran invisibles. Petrozzelli
+    # era el único que salía, como "9 días sin entrar", ocultando que nunca abrió la materia.
+
+    def test_carina_entro_al_campus_hoy_y_nunca_abrio_la_materia(self):
+        # El código viejo veía "0 días sin entrar, racha 0" -> verde -> no se devolvía.
+        nivel, motivos = _clasificar_riesgo("nunca_abrio", None, racha=0, dias_campus=0)
+        self.assertNotEqual(nivel, "verde")
+        self.assertEqual(nivel, "amarillo")  # no rojo: puede haberse matriculado esta semana
+        self.assertTrue(any("está cursando otra cosa" in m for m in motivos))
+
+    def test_alochis_entro_al_campus_hoy_y_hace_10_dias_que_no_abre_la_materia(self):
+        # Viejo: "0 días sin entrar" -> verde. Éste es el caso más claro de "eligió no entrar".
+        nivel, motivos = _clasificar_riesgo("abrio", 10, racha=0, dias_campus=0)
+        self.assertEqual(nivel, "rojo")
+        self.assertTrue(any("10 días sin abrir la materia" in m for m in motivos))
+        self.assertTrue(any("no perdió el acceso" in m for m in motivos))
+
+    def test_petrozzelli_nunca_abrio_la_materia_y_hace_9_dias_que_no_pisa_el_campus(self):
+        # Viejo: salía "9 días sin entrar" (amarillo) y se perdía el hecho más importante.
+        # Tampoco es "eligió no entrar": hace 9 días que no aparece por Moodle.
+        nivel, motivos = _clasificar_riesgo("nunca_abrio", None, racha=0, dias_campus=9)
+        self.assertEqual(nivel, "amarillo")
+        self.assertTrue(any("nunca abrió la materia" in m for m in motivos))
+        self.assertTrue(any("tampoco" in m for m in motivos))
+        self.assertFalse(any("cursando otra cosa" in m for m in motivos))
+
+    def test_nunca_abrio_la_materia_y_encima_dejo_de_entregar_es_rojo(self):
+        # Acá ya no hay duda de matriculación reciente: hubo algo que venció y no entregó.
+        nivel, _ = _clasificar_riesgo("nunca_abrio", None, racha=1, dias_campus=0)
+        self.assertEqual(nivel, "rojo")
+
+    def test_nunca_abrio_y_hace_un_mes_que_no_pisa_el_campus_es_rojo(self):
+        nivel, _ = _clasificar_riesgo("nunca_abrio", None, racha=0, dias_campus=30)
+        self.assertEqual(nivel, "rojo")
+
+    def test_sin_dato_de_la_materia_no_es_verde_nunca(self):
+        # El cero mudo: si no se pudo leer, no se dice "está al día".
+        nivel, motivos = _clasificar_riesgo("sin_dato", None, racha=0, dias_campus=0)
+        self.assertEqual(nivel, "sin_datos")
+        self.assertTrue(any("no se sabe" in m for m in motivos))
+
+    def test_sin_dato_de_la_materia_pero_con_racha_sigue_siendo_rojo(self):
+        # Que falte un reloj no borra la otra señal.
+        self.assertEqual(
+            _clasificar_riesgo("sin_dato", None, racha=2, dias_campus=0)[0], "rojo")
+
+    def test_abrir_la_materia_hace_dos_dias_entrando_al_campus_hoy_sigue_siendo_verde(self):
+        # El umbral importa: sin él, cualquier brecha marcaba a medio padrón.
+        self.assertEqual(_clasificar_riesgo("abrio", 2, racha=0, dias_campus=0)[0], "verde")
+
+
+class TestDesengancheDeLaMateria(unittest.TestCase):
+    """El reloj del CURSO vs. el reloj del SITIO. Son dos y el campus no avisa cuál mirás.
+
+    El bug que motivó esto: `dias_sin_entrar` es del sitio, así que el alumno que entra
+    todos los días para otra materia y nunca abre la propia figuraba con `0` — al día para
+    la herramienta, desaparecido en la realidad. Verificado en vivo el 2026-08-13 sobre 119
+    alumnos: 10 entran al campus sin haber abierto NUNCA la materia.
+    """
+
+    @staticmethod
+    def _hace(dias: float) -> int:
+        import time
+        return int(time.time() - dias * 86400)
+
+    def test_sin_el_campo_es_sin_dato_y_NO_nunca_abrio(self):
+        # La distinción que más importa: "no se pudo leer" no es "no la abrió". Confundirlas
+        # es lo que hace ilegible el "Nunca" de la página de participantes.
+        estado, dias = _lectura_aula({"lastaccess": self._hace(1)})
+        self.assertEqual(estado, "sin_dato")
+        self.assertIsNone(dias)
+
+    def test_campo_en_cero_es_nunca_abrio_sin_numero_gigante(self):
+        estado, dias = _lectura_aula({"lastcourseaccess": 0})
+        self.assertEqual(estado, "nunca_abrio")
+        # Nada de 20.000 días: el estado lo dice, el número no se inventa.
+        self.assertIsNone(dias)
+
+    def test_campo_basura_es_sin_dato_no_nunca_abrio(self):
+        self.assertEqual(_lectura_aula({"lastcourseaccess": "ayer"})[0], "sin_dato")
+
+    def test_con_timestamp_devuelve_los_dias(self):
+        estado, dias = _lectura_aula({"lastcourseaccess": self._hace(10.7)})
+        self.assertEqual(estado, "abrio")
+        self.assertEqual(dias, 10)
+
+    def test_entra_al_campus_y_nunca_abrio_la_materia_se_marca(self):
+        # El caso estrella: para `dias_sin_entrar` estaba perfecto.
+        f = _fila_aula({"lastaccess": self._hace(0.1), "lastcourseaccess": 0})
+        self.assertTrue(f["entra_al_campus_sin_abrir_la_materia"])
+        self.assertIn("está cursando otra cosa", f["detalle"])
+
+    def test_entra_al_campus_pero_no_abre_la_materia_hace_dias(self):
+        f = _fila_aula({"lastaccess": self._hace(0.1), "lastcourseaccess": self._hace(10.7)})
+        self.assertTrue(f["entra_al_campus_sin_abrir_la_materia"])
+        self.assertEqual(f["dias_sin_abrir_la_materia"], 10)
+        self.assertEqual(f["dias_sin_entrar_al_campus"], 0)
+
+    def test_el_que_no_aparece_por_ningun_lado_no_se_marca_como_activo(self):
+        # No abrió la materia hace 20 días y tampoco entró al campus: es otro problema
+        # (puede haberse quedado sin acceso), no "eligió no entrar".
+        f = _fila_aula({"lastaccess": self._hace(20), "lastcourseaccess": self._hace(20)})
+        self.assertFalse(f["entra_al_campus_sin_abrir_la_materia"])
+
+    def test_nunca_abrio_pero_hace_41_dias_que_no_pisa_el_campus_no_es_elegir_otra_materia(self):
+        # Caso real de com6 (ADRIAN FREI). La primera versión lo marcaba "está cursando otra
+        # cosa" por tener el reloj del sitio más fresco que el del curso — y era falso: ése
+        # no está en ninguna parte. Sigue en la lista, pero no en la de contactar.
+        f = _fila_aula({"lastaccess": self._hace(41), "lastcourseaccess": 0})
+        self.assertTrue(f["desenganchado_de_la_materia"])
+        self.assertFalse(f["entra_al_campus_sin_abrir_la_materia"])
+        self.assertIn("no aparece por ningún lado", f["detalle"])
+
+    def test_abrir_la_materia_dos_veces_por_semana_no_es_desenganche(self):
+        # Sin umbral, la sola brecha entre los dos relojes marcaba 18 de 36 alumnos de com6:
+        # media comisión. Una lista así no la mira nadie — es el error de `alumnos_en_riesgo`
+        # devolviendo 69/69 en rojo, repetido.
+        f = _fila_aula({"lastaccess": self._hace(0), "lastcourseaccess": self._hace(4)})
+        self.assertFalse(f["desenganchado_de_la_materia"])
+        self.assertFalse(f["entra_al_campus_sin_abrir_la_materia"])
+
+    def test_el_umbral_es_configurable(self):
+        u = {"lastaccess": self._hace(0), "lastcourseaccess": self._hace(4)}
+        self.assertTrue(_fila_aula(u, dias_desenganche=3)["entra_al_campus_sin_abrir_la_materia"])
+        self.assertFalse(_fila_aula(u, dias_desenganche=10)["entra_al_campus_sin_abrir_la_materia"])
+
+    def test_el_desfasaje_de_segundos_entre_los_dos_relojes_no_es_una_brecha(self):
+        # Moodle actualiza los dos con bandas muertas de 60 s (LASTACCESS_UPDATE_SECS), así
+        # que el del curso puede quedar hasta un minuto adelantado. Visto en vivo: 46 s.
+        ahora = self._hace(0)
+        f = _fila_aula({"lastaccess": ahora - 46, "lastcourseaccess": ahora})
+        self.assertFalse(f["entra_al_campus_sin_abrir_la_materia"])
+        self.assertEqual(f["dias_sin_abrir_la_materia"], 0)  # nunca negativo
+
+    def test_nunca_entro_ni_al_campus_se_dice_completo(self):
+        f = _fila_aula({"lastaccess": 0, "lastcourseaccess": 0})
+        self.assertEqual(f["estado_aula"], "nunca_abrio")
+        self.assertIsNone(f["dias_sin_entrar_al_campus"])
+        self.assertFalse(f["entra_al_campus_sin_abrir_la_materia"])
+        self.assertIn("nunca entró al campus", f["detalle"])
+
+    def test_el_orden_pone_los_que_nunca_abrieron_arriba_y_los_sin_dato_al_final(self):
+        filas = [
+            _fila_aula({"lastaccess": self._hace(1), "lastcourseaccess": self._hace(3)}),
+            _fila_aula({"lastaccess": self._hace(1)}),                                  # sin dato
+            _fila_aula({"lastaccess": self._hace(1), "lastcourseaccess": self._hace(30)}),
+            _fila_aula({"lastaccess": self._hace(2), "lastcourseaccess": 0}),           # nunca
+        ]
+        orden = [f["estado_aula"] for f in sorted(filas, key=_orden_aula)]
+        self.assertEqual(orden, ["nunca_abrio", "abrio", "abrio", "sin_dato"])
+
+    def test_entre_los_que_abrieron_el_mas_atrasado_va_primero(self):
+        filas = [
+            _fila_aula({"lastaccess": self._hace(1), "lastcourseaccess": self._hace(3)}),
+            _fila_aula({"lastaccess": self._hace(1), "lastcourseaccess": self._hace(30)}),
+            _fila_aula({"lastaccess": self._hace(1), "lastcourseaccess": self._hace(9)}),
+        ]
+        dias = [f["dias_sin_abrir_la_materia"] for f in sorted(filas, key=_orden_aula)]
+        self.assertEqual(dias, [30, 9, 3])
+
+    def test_entre_los_que_nunca_abrieron_va_primero_el_mas_activo_en_el_campus(self):
+        # El que entró hoy y nunca abrió la materia es el caso más accionable de todos.
+        filas = [
+            _fila_aula({"lastaccess": self._hace(12), "lastcourseaccess": 0}),
+            _fila_aula({"lastaccess": 0, "lastcourseaccess": 0}),
+            _fila_aula({"lastaccess": self._hace(0.1), "lastcourseaccess": 0}),
+        ]
+        dias = [f["dias_sin_entrar_al_campus"] for f in sorted(filas, key=_orden_aula)]
+        self.assertEqual(dias, [0, 12, None])
 
 
 class TestQueCuentaParaLaRacha(unittest.TestCase):
@@ -468,6 +654,62 @@ class ClienteFalso:
         return r
 
 
+class TestSinEntrarAlAulaNoDevuelveCeroMudo(unittest.TestCase):
+    """En este proyecto un 0 que significa "no se relevó" es peor que un error: se lee como
+    "está todo al día" y el tutor no le escribe a nadie. Estos tests cubren los tres modos de
+    mentir callado que tiene esta tool.
+    """
+
+    @staticmethod
+    def _alumnos(n, con_campo=True, desde=0):
+        import time
+        ahora = int(time.time())
+        return [{"id": 100 + i, "fullname": f"Alumno {i}", "email": f"a{i}@x.com",
+                 "lastaccess": ahora, "roles": [{"shortname": "student"}],
+                 **({"lastcourseaccess": ahora} if i >= desde and con_campo else {})}
+                for i in range(n)]
+
+    def _correr(self, alumnos):
+        import asyncio
+        cli = ClienteFalso({"core_enrol_get_enrolled_users": alumnos})
+        return asyncio.run(sin_entrar_al_aula(cli, 74, 7740))
+
+    def test_si_el_campo_no_viene_para_nadie_es_error_y_no_una_lista_de_ceros(self):
+        # El escenario de permisos. Una lista de ceros acá se leería como "todos abrieron la
+        # materia hoy", que es lo contrario de lo que sabemos (que no sabemos nada).
+        r = self._correr(self._alumnos(3, con_campo=False))
+        self.assertIn("error", r)
+        self.assertNotIn("alumnos", r)
+        self.assertTrue(r["_meta"]["degradado"])
+        self.assertIs(r["_meta"]["campo_disponible"], False)
+
+    def test_relevamiento_parcial_no_cuenta_como_relevado_al_que_no_se_pudo_leer(self):
+        # 2 con dato y 2 sin. Decir "los 4 abrieron la materia" es el cero mudo con otra cara.
+        r = self._correr(self._alumnos(4, desde=2))
+        self.assertEqual(r["sin_dato"], 2)
+        self.assertTrue(r["_meta"]["degradado"])
+        self.assertIn("Los 2 alumnos relevados", r["resumen"])
+        self.assertIn("sin relevar", r["resumen"])
+        self.assertIn("aviso", r)
+
+    def test_comision_vacia_no_es_estan_todos_entrando(self):
+        r = self._correr([])
+        self.assertTrue(r["sin_alumnos"])
+        self.assertEqual(r["alumnos_totales"], 0)
+        self.assertIn("no hay a quién medir", r["aviso"])
+
+    def test_comision_al_dia_lo_dice_con_el_numero_del_peor_no_con_un_cero(self):
+        r = self._correr(self._alumnos(5))
+        self.assertEqual(r["desenganchados"], 0)
+        self.assertFalse(r["_meta"]["degradado"])
+        self.assertIn("el más atrasado hace 0 día(s)", r["resumen"])
+
+    def test_un_error_de_la_comision_se_devuelve_no_se_traga(self):
+        r = self._correr(MoodleWSError("core_enrol_get_enrolled_users",
+                                       {"errorcode": "nopermissions", "message": "no"}))
+        self.assertIn("error", r)
+
+
 class TestCrearDiscusionNoPublicaAlCursoEntero(unittest.TestCase):
     """Publicar un aviso de comisión a cientos de alumnos ajenos NO se deshace desde la
     API. Por eso acá "no sé a cuántos llega" tiene que ser un freno, no un cartel.
@@ -667,3 +909,213 @@ class TestPanoramaEtiquetasYDias(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestDesengancheDelCurso(unittest.TestCase):
+    """La mitad de la vista del profesor que habla de ALUMNOS, no de tutores.
+
+    Lo que se está protegiendo acá es la lección del informe de coordinación del 13/08: cortaba
+    la inactividad por el reloj del CAMPUS y sobre datos medidos eso pierde el ~90% de los
+    desenganchados, porque al que entra todos los días para otra materia lo muestra impecable.
+    """
+
+    @staticmethod
+    def _hace(dias):
+        import time
+        return int(time.time() - dias * 86400)
+
+    def _padron(self, alumnos, error=None, sin_accesos=False):
+        """alumnos: lista de (uid, nombre, dias_campus|None, dias_materia|'nunca'|'sin_dato')."""
+        if error:
+            return {"error": error}
+        accesos = {}
+        for fila in alumnos:
+            uid, nombre, dc, dm = fila[:4]
+            reg = fila[4] if len(fila) > 4 else "Rosario"
+            u = {"id": uid, "fullname": nombre, "email": f"{uid}@x.com"}
+            if reg:
+                u["groups"] = [{"name": f"R-{reg}"}, {"name": "M25 C4-01"}]
+            u["lastaccess"] = 0 if dc is None else self._hace(dc)
+            if dm == "nunca":
+                u["lastcourseaccess"] = 0
+            elif dm != "sin_dato":
+                u["lastcourseaccess"] = self._hace(dm)
+            accesos[uid] = u
+        p = {"alumnos": {u[0]: u[1] for u in alumnos}, "docentes": []}
+        if not sin_accesos:
+            p["accesos"] = accesos
+        return p
+
+    COMS = [{"comision": "com1", "group_id": 11}, {"comision": "com2", "group_id": 22}]
+
+    def test_el_que_entra_al_campus_y_no_abre_la_materia_va_PRIMERO(self):
+        # Es el más accionable y el más recuperable: no perdió el acceso, eligió no entrar.
+        # El de 247 días es más extremo pero es otro problema, y va después.
+        padrones = {
+            11: self._padron([(1, "Perdido Total", 247, "nunca"),
+                              (2, "Elige No Entrar", 0, "nunca")]),
+            22: self._padron([(3, "Al Dia", 0, 1)]),
+        }
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        self.assertEqual([a["nombre"] for a in r["alumnos"]],
+                         ["Elige No Entrar", "Perdido Total"])
+        self.assertEqual(r["totales"]["entran_al_campus_sin_abrir_la_materia"], 1)
+
+    def test_no_devuelve_a_los_que_estan_al_dia_pero_los_cuenta(self):
+        # El recorte se declara: si no, una lista de 7 sobre 238 se lee como cobertura total.
+        padrones = {11: self._padron([(1, "Al Dia", 0, 1), (2, "Tambien", 1, 2)]),
+                    22: self._padron([(3, "Deseng", 0, 20)])}
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        self.assertEqual(len(r["alumnos"]), 1)
+        self.assertEqual(r["relevados"], 3)
+        self.assertEqual(r["al_dia"], 2)
+        self.assertIn("1 de 3", r["criterio"]["recorte"])
+
+    def test_una_comision_que_no_se_pudo_leer_queda_SIN_MEDIR_y_se_grita(self):
+        # Nunca un 0 mudo: "no pude leer com2" no puede parecerse a "com2 está bien".
+        padrones = {11: self._padron([(1, "Deseng", 0, 20)]),
+                    22: self._padron([], error="no pude leer el padrón: nopermissions")}
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        self.assertTrue(r["por_comision"]["com2"]["sin_medir"])
+        self.assertTrue(any("SIN MEDIR" in s for s in r["sin_dato"]))
+
+    def test_padron_viejo_sin_datos_de_acceso_no_se_lee_como_comision_sana(self):
+        # Compatibilidad hacia atrás: un padrón sin la clave `accesos` es "no medido".
+        padrones = {11: self._padron([(1, "X", 0, 20)], sin_accesos=True),
+                    22: self._padron([(2, "Y", 0, 1)])}
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        self.assertTrue(r["por_comision"]["com1"]["sin_medir"])
+        self.assertEqual(r["relevados"], 1)
+
+    def test_sin_dato_del_aula_no_se_cuenta_como_desenganchado_ni_como_al_dia(self):
+        # Tres estados, no dos: aparece en la lista para que se lo vea, pero no infla el total.
+        padrones = {11: self._padron([(1, "No Se Sabe", 0, "sin_dato")]), 22: self._padron([])}
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        self.assertEqual(r["totales"]["sin_dato"], 1)
+        self.assertEqual(r["totales"]["desenganchados"], 0)
+        self.assertEqual(r["al_dia"], 0)
+        self.assertEqual(len(r["alumnos"]), 1)
+        self.assertTrue(any("no cubre" in s for s in r["sin_dato"]))
+
+    def test_cuenta_por_comision_para_ver_donde_se_concentra(self):
+        padrones = {11: self._padron([(1, "A", 0, "nunca"), (2, "B", 0, 30), (3, "C", 0, 1)]),
+                    22: self._padron([(4, "D", 0, 1)])}
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        self.assertEqual(r["por_comision"]["com1"]["desenganchados"], 2)
+        self.assertEqual(r["por_comision"]["com1"]["nunca_abrieron"], 1)
+        self.assertEqual(r["por_comision"]["com2"]["desenganchados"], 0)
+
+    def test_agrupa_por_regional_con_las_que_mas_concentran_primero(self):
+        # Pedido de coordinación: el seguimiento lo hacen los tutores nexos, que trabajan por
+        # sede. Una lista global los obliga a filtrar a ojo.
+        padrones = {11: self._padron([(1, "A", 0, "nunca", "Rosario"),
+                                      (2, "B", 0, 30, "Rosario"),
+                                      (3, "C", 0, 20, "Chubut")]),
+                    22: self._padron([(4, "D", 0, 25, "Rosario")])}
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        bloques = r["por_regional_bloques"]
+        self.assertEqual([b["regional"] for b in bloques], ["Rosario", "Chubut"])
+        self.assertEqual(bloques[0]["desenganchados"], 3)
+
+    def test_dentro_de_la_regional_los_accionables_siguen_arriba(self):
+        # Agrupar cambia dónde busca cada nexo, no qué es urgente: el que entra al campus y no
+        # abre la materia sigue primero dentro de su bloque.
+        padrones = {11: self._padron([(1, "Desaparecido", 40, 40, "Rosario"),
+                                      (2, "Elige No Entrar", 0, 20, "Rosario")]),
+                    22: self._padron([])}
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        lista = r["por_regional_bloques"][0]["lista"]
+        self.assertEqual([a["nombre"] for a in lista], ["Elige No Entrar", "Desaparecido"])
+
+    def test_los_alumnos_sin_comision_se_miden_igual_y_no_quedan_afuera(self):
+        # Los 11 de Prog I que están en el curso y en su regional pero en ninguna comisión: no
+        # los ve ningún tutor porque toda vista por comisión los saltea.
+        padrones = {11: self._padron([(1, "Con Comision", 0, 20, "Rosario")]),
+                    22: self._padron([])}
+        suelto = self._padron([(9, "Sin Comision", 0, "nunca", "Chubut")])["accesos"][9]
+        r = panorama.desenganche_del_curso(padrones, self.COMS, sueltos=[suelto])
+        self.assertEqual(r["relevados"], 2)
+        self.assertIn("(sin comisión)", r["por_comision"])
+        self.assertTrue(any(a["comision"] == "(sin comisión)" for a in r["alumnos"]))
+
+    def test_sin_regional_es_su_propia_categoria_y_no_se_esconde(self):
+        padrones = {11: self._padron([(1, "A", 0, 20, None)]), 22: self._padron([])}
+        r = panorama.desenganche_del_curso(padrones, self.COMS)
+        self.assertEqual(r["por_regional_bloques"][0]["regional"], "(sin regional)")
+
+    def test_el_umbral_de_dias_es_configurable(self):
+        padrones = {11: self._padron([(1, "A", 0, 4)]), 22: self._padron([])}
+        self.assertEqual(len(panorama.desenganche_del_curso(padrones, self.COMS)["alumnos"]), 0)
+        self.assertEqual(
+            len(panorama.desenganche_del_curso(padrones, self.COMS, 3)["alumnos"]), 1)
+
+
+class TestPuntosDeAtencion(unittest.TestCase):
+    """Los focos del informe del profesor: calculados de los datos, sin adjetivos.
+
+    En el informe original este bloque lo escribía un modelo a partir de los números y salía
+    "Estado general: sano" sobre un curso con 60 alumnos que no abrían la materia. Acá se
+    calcula, y estos tests fijan que siga siendo hechos con su cuenta al lado.
+    """
+
+    @staticmethod
+    def _datos(**kw):
+        base = {
+            "hechos": {"entregadas": 170, "corregidas": 162, "sin_corregir": 8,
+                       "espera_max_dias_del_curso": 0.9, "calificado_sin_nota": 0},
+            "desenganche": {
+                "totales": {"desenganchados": 60, "entran_al_campus_sin_abrir_la_materia": 50,
+                            "nunca_abrieron": 14, "nunca_entraron_ni_al_campus": 0},
+                "por_comision": {"com4": {"entran_al_campus_sin_abrir_la_materia": 6},
+                                 "com1": {"entran_al_campus_sin_abrir_la_materia": 5}},
+            },
+            "por_comision": [{"comision": "com12", "tutor": {"nombre": "T Uno"},
+                              "espera_max_dias": 0.9, "sin_corregir": 3}],
+        }
+        for k, v in kw.items():
+            base[k] = {**base[k], **v} if isinstance(v, dict) and k in base else v
+        return base
+
+    def test_lo_primero_es_el_grupo_recuperable(self):
+        p = informes.puntos_de_atencion(self._datos())
+        self.assertIn("50 alumnos entran al campus", p[0][0])
+        self.assertIn("com4 (6)", p[0][1])
+
+    def test_separa_a_los_que_no_aparecen_por_ningun_lado(self):
+        p = informes.puntos_de_atencion(self._datos())
+        self.assertTrue(any("no aparecen ni por el campus" in t for t, _ in p))
+        # 60 desenganchados - 50 que entran al campus = 10 fríos.
+        self.assertTrue(any("10 alumnos" in t for t, _ in p))
+
+    def test_sin_cola_de_correccion_lo_dice_acotado_a_lo_relevado(self):
+        d = self._datos(hechos={"sin_corregir": 0})
+        p = informes.puntos_de_atencion(d)
+        texto = " ".join(t + " " + x for t, x in p)
+        self.assertIn("No hay entregas esperando", texto)
+        self.assertIn("actividades relevadas", texto)
+
+    def test_el_cuarto_estado_del_campus_aparece(self):
+        d = self._datos(hechos={"calificado_sin_nota": 3})
+        p = informes.puntos_de_atencion(d, tope=9)
+        self.assertTrue(any("SIN nota" in t for t, _ in p))
+
+    def test_NUNCA_emite_un_veredicto(self):
+        # El test que fija la doctrina: ninguna palabra que cierre el diagnóstico por el lector.
+        # Un "sano" no lo audita nadie; un número raro sí.
+        prohibidas = ("sano", "saludable", "excelente", "crisis", "grave", "todo al día",
+                      "estado general", "impecable", "preocupante")
+        for datos in (self._datos(), self._datos(hechos={"sin_corregir": 0}),
+                      self._datos(desenganche={"totales": {
+                          "desenganchados": 0, "entran_al_campus_sin_abrir_la_materia": 0,
+                          "nunca_abrieron": 0, "nunca_entraron_ni_al_campus": 0}})):
+            texto = " ".join(t + " " + x for t, x in informes.puntos_de_atencion(datos)).lower()
+            for p in prohibidas:
+                self.assertNotIn(p, texto, f"apareció un veredicto: {p!r}")
+
+    def test_curso_sin_nada_para_reportar_no_inventa_focos(self):
+        d = self._datos(
+            hechos={"sin_corregir": 0, "entregadas": 0, "corregidas": 0},
+            desenganche={"totales": {"desenganchados": 0,
+                                     "entran_al_campus_sin_abrir_la_materia": 0,
+                                     "nunca_abrieron": 0, "nunca_entraron_ni_al_campus": 0}})
+        self.assertEqual(informes.puntos_de_atencion(d), [])

@@ -711,12 +711,23 @@ async def buscar_alumno(texto: str, traza: bool = False) -> dict:
 async def alumnos_en_riesgo(course_id: int | None = None, group_id: int = 0,
                             dias_alerta: int = 14, dias_aviso: int = 7) -> dict:
     """Quiénes están abandonando, ANTES de que se note. Cruza dos señales que ya estaban
-    en el campus y que ninguna vista junta: hace cuántos días que no entra + cuántas
-    tareas seguidas dejó de entregar.
+    en el campus y que ninguna vista junta: hace cuántos días que no abre ESTA materia +
+    cuántas tareas seguidas dejó de entregar.
 
-    🔴 rojo: 2+ tareas SEGUIDAS sin entregar · o >`dias_alerta` días sin entrar con al
-       menos una sin entregar · o nunca entró al campus.
-    🟡 amarillo: >`dias_aviso` días sin entrar, o la última tarea sin entregar.
+    **Los días son SIN ABRIR ESTA MATERIA**, no sin entrar al campus. Son dos relojes
+    distintos y hasta la v1.13.0 esto leía el equivocado: el alumno que entra todos los días
+    para otra materia y nunca abrió la tuya daba 0 días → verde → y los verdes no se
+    devuelven, así que era invisible. Cada fila trae ahora los dos relojes
+    (`dias_sin_abrir_la_materia`, `dias_sin_entrar_al_campus`) más `estado_aula`.
+
+    🔴 rojo: 2+ tareas SEGUIDAS sin entregar · o >`dias_aviso` días sin abrir la materia
+       entrando al campus igual (**eligió no entrar**: la señal más fuerte) · o
+       >`dias_alerta` días sin abrirla con al menos una sin entregar · o nunca la abrió y
+       encima dejó de entregar o tampoco pisa el campus.
+    🟡 amarillo: >`dias_aviso` días sin abrir la materia · o la última tarea sin entregar ·
+       o nunca la abrió pero todavía no venció nada (puede haberse matriculado recién: NO lo
+       presentes como abandono confirmado).
+    ⚪ sin_datos: no se pudo leer su acceso a la materia. **No es verde**, es "no sabemos".
     (Los verdes no se devuelven: la lista es para actuar, no para leer 30 nombres.)
 
     Sin `course_id` toma el primero de "Mis datos"; con `group_id=0` recorre TODAS tus
@@ -724,7 +735,14 @@ async def alumnos_en_riesgo(course_id: int | None = None, group_id: int = 0,
 
     La racha se cuenta desde la ÚLTIMA tarea, no sobre el total: quien no entregó el TP1
     hace tres meses pero viene entregando los últimos cinco no está abandonando; quien
-    dejó de entregar los dos últimos, sí."""
+    dejó de entregar los dos últimos, sí.
+
+    OJO con la racha en cursos SIN fecha de entrega: si las actividades no tienen `duedate`
+    (medido en Prog I: las 10 de cierre no la tienen), "sin entrega" no se puede distinguir
+    de "todavía no vencía", y la racha marca a TODO el padrón — 94 de 94 alumnos en rojo. En
+    ese caso la señal que sirve es el reloj de la materia, y conviene mirar
+    `sin_entrar_al_aula`. Si ves el padrón entero en rojo por racha, decíselo al tutor en vez
+    de presentarlo como que todos están abandonando."""
     await almacen.init_db()
     datos = await almacen.get_mis_datos()
     if not datos:
@@ -765,12 +783,14 @@ async def alumnos_en_riesgo(course_id: int | None = None, group_id: int = 0,
 
     total_rojo = sum(c["rojo"] for c in por_comision)
     total_amarillo = sum(c["amarillo"] for c in por_comision)
+    total_sin_datos = sum(c.get("sin_datos", 0) for c in por_comision)
     salida = {
         "ok": True,
         "curso": curso.get("nombre"),
         "course_id": curso["course_id"],
         "rojo": total_rojo,
         "amarillo": total_amarillo,
+        "sin_datos": total_sin_datos,
         "comisiones": por_comision,
         "_meta": {
             "fuente": "vivo",
@@ -791,13 +811,161 @@ async def alumnos_en_riesgo(course_id: int | None = None, group_id: int = 0,
         salida["resumen"] = (f"Ninguna de tus comisiones ({vacias}) tiene alumnos "
                              "matriculados todavía. Eso NO es 'están todos al día': no hay "
                              "a quién evaluar. Volvé a correrlo cuando arranque la cursada.")
-    elif not total_rojo and not total_amarillo:
+    elif not total_rojo and not total_amarillo and not total_sin_datos:
         n = sum(c["alumnos_totales"] for c in con_alumnos)
-        salida["resumen"] = (f"Nadie en riesgo: los {n} alumnos vienen entrando y "
+        salida["resumen"] = (f"Nadie en riesgo: los {n} alumnos vienen abriendo la materia y "
                              "entregando.")
     else:
+        n = sum(c["alumnos_totales"] for c in con_alumnos)
         salida["resumen"] = (f"{total_rojo} en rojo y {total_amarillo} en amarillo. "
                              "Los rojos son los que hay que contactar esta semana.")
+        if total_sin_datos:
+            # Un `sin_datos` que no se nombra es un alumno que desaparece de la lista.
+            salida["resumen"] += (f" Y {total_sin_datos} sin datos: de ésos no se pudo leer el "
+                                  "acceso a la materia, no es que estén al día.")
+        if total_rojo >= n:
+            # El padrón entero en rojo no es información: es una alarma saturada. Suele pasar
+            # cuando las actividades no tienen fecha de entrega y la racha cuenta como
+            # abandono lo que todavía no vencía (medido en Prog I: 94 de 94).
+            salida["alarma_saturada"] = True
+            salida["resumen"] += (f" OJO: están los {n} alumnos en rojo, o sea TODOS. Eso no "
+                                  "distingue a nadie. Revisá si las actividades tienen fecha "
+                                  "de entrega: sin `duedate`, la racha cuenta como abandono lo "
+                                  "que todavía no vencía. Para este caso mirá "
+                                  "`sin_entrar_al_aula`, que no depende de vencimientos.")
+    return salida
+
+
+@mcp.tool()
+async def sin_entrar_al_aula(course_id: int | None = None, group_id: int = 0,
+                             dias_desenganche: int = 7) -> dict:
+    """Quién dejó de abrir ESTA materia, ordenado por hace cuánto. Desenganche por materia.
+
+    OJO con la diferencia, que es todo el punto de esta tool: `dias_sin_entrar` (de
+    `buscar_alumno` y `alumnos_en_riesgo`) son días sin entrar al CAMPUS. Acá son días sin
+    abrir ESTA materia. Son dos relojes distintos y el campus no avisa cuál estás mirando:
+    el que entra todos los días para otra materia y nunca abre la tuya figura con
+    `dias_sin_entrar: 0` — o sea, al día — estando desaparecido.
+
+    Cada fila trae los DOS relojes y una frase (`detalle`). Leé el `detalle`, no el número
+    pelado. El campo que decide a quién escribir es
+    `entra_al_campus_sin_abrir_la_materia`: entró al campus en los últimos
+    `dias_desenganche` días y hace `dias_desenganche`+ que no abre esta materia. Ése no
+    perdió la contraseña, eligió no entrar. Presentá ésos primero.
+
+    `estado_aula` tiene TRES valores y no se pueden confundir:
+    - `abrio` → hay dato: `dias_sin_abrir_la_materia`.
+    - `nunca_abrio` → nunca la abrió. NO lo presentes como abandono confirmado: puede
+      haberse matriculado esta semana, y esto no ve la fecha de matriculación.
+    - `sin_dato` → no se pudo leer. NO es "nunca abrió". Si aparece, el relevamiento está
+      incompleto y hay que decirlo.
+
+    El que hace 40 días que no abre la materia Y tampoco pisa el campus sale en la lista
+    (arriba, por días) pero NO marcado para contactar: ése no eligió otra materia, no está
+    en ninguna parte. Es otro problema y no se mezcla.
+
+    Sin `course_id` toma el primero de "Mis datos"; con `group_id=0` recorre TODAS tus
+    comisiones de ese curso. Va en vivo, una request por comisión.
+
+    Por qué existe además de `alumnos_en_riesgo`: aquélla cuenta rachas de actividades sin
+    entregar, y al principio del cuatrimestre —cuando no venció nada— marca al padrón entero.
+    El reloj del curso sirve desde el día uno."""
+    await almacen.init_db()
+    datos = await almacen.get_mis_datos()
+    if not datos:
+        return {"error": "No tengo tus cursos mapeados.",
+                "siguiente_paso": "Corré mi_comision(tu nombre) y guardá con guardar_mis_datos."}
+
+    cursos = datos.get("cursos", [])
+    curso = (next((c for c in cursos if c.get("course_id") == course_id), None)
+             if course_id else (cursos[0] if cursos else None))
+    if curso is None:
+        return {"error": f"No encontré el curso {course_id} en tus datos.",
+                "cursos_disponibles": [c.get("course_id") for c in cursos]}
+
+    grupos = ([{"comision": "(pedida)", "group_id": group_id}] if group_id
+              else curso.get("comisiones_del_tutor", []))
+    if not grupos:
+        return {"error": f"No tenés comisiones mapeadas en {curso.get('nombre')}."}
+
+    por_comision, avisos = [], []
+    for g in grupos:
+        r = await ws_api.sin_entrar_al_aula(_cli(), curso["course_id"], g["group_id"],
+                                            dias_desenganche)
+        if r.get("error"):
+            avisos.append(f"{g['comision']}: {r['error']}")
+            continue
+        avisos.extend(r.get("_meta", {}).get("avisos", []))
+        por_comision.append({"comision": g["comision"], **r})
+
+    if not por_comision:
+        # Todas las comisiones fallaron: no hay nada que mostrar y hay que decirlo así,
+        # nunca devolver una lista vacía que se lea como "no hay desenganchados".
+        return {"error": "No pude relevar ninguna de tus comisiones, así que no sé quién "
+                         "dejó de abrir la materia.",
+                "curso": curso.get("nombre"), "course_id": curso["course_id"],
+                "_meta": {"fuente": "vivo", "degradado": True, "avisos": avisos}}
+
+    activos = sum(c["entran_al_campus_sin_abrir_la_materia"] for c in por_comision)
+    desenganchados = sum(c["desenganchados"] for c in por_comision)
+    nunca = sum(c["nunca_abrieron"] for c in por_comision)
+    sin_dato = sum(c["sin_dato"] for c in por_comision)
+    relevados = sum(c["alumnos_totales"] for c in por_comision)
+
+    salida = {
+        "ok": True,
+        "curso": curso.get("nombre"),
+        "course_id": curso["course_id"],
+        "alumnos_relevados": relevados,
+        "entran_al_campus_sin_abrir_la_materia": activos,
+        "desenganchados": desenganchados,
+        "nunca_abrieron": nunca,
+        "sin_dato": sin_dato,
+        "comisiones": por_comision,
+        "_meta": {
+            "fuente": "vivo",
+            "dias_desenganche": dias_desenganche,
+            "comisiones_relevadas": len(por_comision),
+            "comisiones_pedidas": len(grupos),
+            "nota_reloj": ("`dias_sin_abrir_la_materia` sale de `lastcourseaccess` (reloj "
+                           "del curso). `dias_sin_entrar_al_campus` sale de `lastaccess` "
+                           "(reloj del sitio). Moodle actualiza los dos con bandas muertas "
+                           "de 60 s, así que diferencias de segundos son normales: la brecha "
+                           "se cuenta en días enteros."),
+            "degradado": bool(avisos) or len(por_comision) < len(grupos),
+            "avisos": avisos,
+        },
+    }
+    con_alumnos = [c for c in por_comision if c.get("alumnos_totales")]
+    if not con_alumnos:
+        vacias = ", ".join(c["comision"] for c in por_comision) or "(ninguna)"
+        salida["sin_alumnos"] = True
+        salida["resumen"] = (f"Ninguna de tus comisiones ({vacias}) tiene alumnos "
+                             "matriculados todavía. Eso NO es 'están todos entrando': no hay "
+                             "a quién medir.")
+    elif activos:
+        salida["resumen"] = (f"{activos} de {relevados} alumnos entran al campus pero hace "
+                             f"{dias_desenganche}+ días que NO abren esta materia. Son los "
+                             "que hay que contactar, y son los que `dias_sin_entrar` mostraba "
+                             "como si estuvieran al día.")
+    elif desenganchados:
+        salida["resumen"] = (f"Nadie está entrando al campus sin abrir la materia. Quedan "
+                             f"{desenganchados} desenganchados ({nunca} nunca la abrieron), "
+                             "pero tampoco pisan el campus: es otro problema — o se les "
+                             "cayó el acceso, o recién se matricularon.")
+    else:
+        # `relevados - sin_dato`: el que vino sin el dato no se relevó, y contarlo acá diría
+        # "está todo al día" sobre alguien de quien no sabemos nada.
+        salida["resumen"] = (f"Los {relevados - sin_dato} alumnos relevados abrieron la "
+                             f"materia hace menos de {dias_desenganche} días. Nadie "
+                             "desenganchado.")
+        if sin_dato:
+            salida["resumen"] += (f" OJO: {sin_dato} de {relevados} quedaron sin relevar: "
+                                  "esto no cubre a todo el padrón.")
+    if sin_dato:
+        salida["aviso"] = (f"{sin_dato} alumno(s) vinieron sin el dato de último acceso a la "
+                           "materia: quedaron como `sin_dato`, NO como 'nunca abrió'. El "
+                           "relevamiento está incompleto.")
     return salida
 
 
@@ -914,6 +1082,79 @@ async def demora_correccion(course_id: int, cmids: list[str] | None = None) -> d
     al día. Sin `cmids` mira todas las tareas del curso. READ-ONLY."""
     return await panorama.demora_correccion(
         _cli(), course_id, await _cmids_del_curso(course_id, cmids))
+
+
+@mcp.tool()
+async def informe_profesor(course_id: int, cmids: list[str] | None = None,
+                           dias_desenganche: int = 7, incluir_foros: bool = True,
+                           pdf: bool = True, emails: bool = True) -> dict:
+    """EL informe del curso para el profesor/coordinador, en una sola pasada: el trabajo de
+    corrección por comisión **+ los alumnos que dejaron de abrir la materia**. Con `pdf=True`
+    (por defecto) escribe además el **PDF de 3 páginas** listo para mandar a coordinación, y
+    devuelve la ruta en `pdf.archivo`. Con `pdf=False` sólo los datos.
+
+    Reemplaza los scripts sueltos con los que la coordinación venía armando estos informes.
+    Eso importa más de lo que parece: cada script ad-hoc vuelve a aprender de cero las trampas
+    del campus, y este campus tiene varias que ya costaron bugs reales — que las entregas vienen
+    infladas con las que el alumno abrió y nunca envió, que Moodle guarda un `-1` en la nota de
+    lo que TODAVÍA no se corrigió, que el `groupid` de una entrega viene 0 y no significa "grupo
+    0", que existe el estado "calificado sin nota". Acá eso ya está resuelto y verificado contra
+    el conteo oficial de Moodle.
+
+    Junta las dos mitades que ninguna vista del campus cruza. `panorama_comisiones` y
+    `demora_correccion` miden lo que deben los TUTORES; esto agrega lo que decide si un alumno
+    abandona: quién dejó de aparecer por la materia. El padrón se baja una sola vez, así que la
+    mitad nueva no cuesta requests extra.
+
+    **Cómo presentarlo (importante).** La tool NO emite veredicto y vos tampoco: no escribas
+    "estado general: sano" ni equivalentes. Un informe real de coordinación abría con "sano" y
+    "el único foco son 7 alumnos" sobre 238, porque cortaba el desenganche por el reloj del
+    CAMPUS — criterio que sobre datos medidos pierde el ~90% de los casos. Presentá los hechos,
+    leé `_meta.sin_dato` ANTES de los números y decí los huecos. La conclusión es del profesor.
+
+    Dos reglas duras que no se negocian al mostrarlo:
+    - **Se audita el TRABAJO, nunca se califica a la PERSONA.** Nombrar al tutor de una comisión
+      es ruteo (a quién llamar) y va; un ranking o un puntaje de tutores NO va, ni en la tabla
+      ni en cómo lo contás.
+    - **El desenganche es sobre ALUMNOS y se mide con el reloj de la MATERIA.** Cada fila trae
+      `dias_sin_abrir_la_materia` y `dias_sin_entrar_al_campus`: son distintos y no se
+      intercambian. Mirá `detalle`, que ya dice cuál es el caso de cada uno.
+
+    En `desenganche.alumnos` van primero los que **entran al campus y no abren la materia**:
+    ésos no perdieron el acceso, eligieron no entrar — es el grupo más accionable y el más
+    recuperable. Después los que no aparecen por ningún lado, que son otro problema.
+
+    `estado_aula`: `abrio` · `nunca_abrio` (NO es abandono confirmado: puede haberse matriculado
+    esta semana) · `sin_dato` (no se pudo leer, **no** digas que no la abrió).
+
+    El PDF trae la Regional de cada alumno (sale de sus grupos `R-*`, no del perfil) y un corte
+    por regional, para ver si el desenganche se concentra en una sede.
+
+    `emails=True` (por defecto) incluye el mail de cada alumno de la lista de riesgo, que es lo
+    que hace el documento accionable — se le puede escribir sin volver a buscar a nadie. Son
+    mails **personales**, así que **cuando le pases la ruta al tutor decile que ese PDF no va a
+    un repo ni a una nota compartida**; el propio documento lo avisa en el pie. `emails=False`
+    genera la versión sin datos de contacto, para cuando el informe circula más lejos.
+
+    Sin `cmids` mira todas las tareas del curso. READ-ONLY sobre el campus: lo único que escribe
+    es el PDF, local, en `salidas/`."""
+    from datetime import date
+
+    datos = await panorama.informe_profesor(
+        _cli(), course_id, await _cmids_del_curso(course_id, cmids),
+        dias_desenganche, incluir_foros)
+    if datos.get("error") or not pdf:
+        return datos
+    try:
+        datos["pdf"] = informes.informe_profesor_pdf(
+            datos, str(Path(almacen.SALIDAS_DIR) / "informes"),
+            materia=datos.get("curso") or "", fecha=date.today().isoformat(),
+            emails=emails)
+    except Exception as e:
+        # Que falle el render NO puede tirar los datos: se relevó el curso entero y eso vale.
+        datos["pdf"] = {"error": f"No pude escribir el PDF: {type(e).__name__}: {e}"}
+        datos["_meta"]["degradado"] = True
+    return datos
 
 
 # ---------- INFORME (PDF) ----------

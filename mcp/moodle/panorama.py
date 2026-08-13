@@ -43,10 +43,15 @@ import time
 
 from .cliente import MoodleWSError
 from .ws_api import (
+    _AULA_DESENGANCHE_DIAS,
+    _AULA_NUNCA,
+    _AULA_SIN_DATO,
     _RE_CONSULTAS,
     _RE_NO_DOCENTE,
     _es_estudiante,
+    _fila_aula,
     _instanceid,
+    _orden_aula,
     leer_foro,
     listar_foros,
 )
@@ -126,6 +131,31 @@ def _etiqueta_comision(nombre: str) -> str | None:
 # Padrón: quién es alumno y quién es docente en cada comisión.
 # ---------------------------------------------------------------------------
 
+# Lo que se guarda de cada alumno para poder medir desenganche sin pedir nada de nuevo.
+_CAMPOS_ACCESO = ("id", "fullname", "email", "lastaccess", "lastcourseaccess", "groups")
+
+# La REGIONAL del alumno sale de sus grupos, no de su perfil. Cada alumno está en dos grupos:
+# su comisión ("M25 C4-03") y su sede ("R-San Nicolás"), y los dos vienen en el `groups` de
+# `core_enrol_get_enrolled_users`. Hay 17 regionales por curso.
+#
+# El camino tentador era `city` (la ciudad del perfil): NO sirve. Viene en el 71% de los
+# alumnos, es texto libre y trae "Córdoba" y "Cordoba" como valores distintos. Sería una
+# regional inventada en tres de cada diez filas.
+#
+# Los grupos `R-*` son justamente los que `_RE_COMISION` descarta como comisión y devuelve en
+# `grupos_ignorados`: lo que para una mitad del módulo es ruido, para ésta es el dato.
+_RE_REGIONAL = re.compile(r"^\s*R\s*-\s*(.+?)\s*$")
+
+
+def _regional_de(u: dict) -> str | None:
+    """Regional (sede) del alumno, de sus grupos. `None` si no está en ninguna `R-*`."""
+    for g in u.get("groups") or []:
+        m = _RE_REGIONAL.match(g.get("name") or "")
+        if m:
+            return m.group(1)
+    return None
+
+
 async def _padron_comision(client, course_id: int, group_id: int) -> dict:
     """Matriculados de UNA comisión, separados en alumnos y docentes.
 
@@ -154,19 +184,28 @@ async def _padron_comision(client, course_id: int, group_id: int) -> dict:
 
     alumnos: dict[int, str] = {}
     docentes: list[dict] = []
+    accesos: dict[int, dict] = {}
     for u in us:
         uid = u.get("id")
         if uid is None:
             continue
         if _es_estudiante(u):
             alumnos[int(uid)] = u.get("fullname") or ""
+            # Los dos relojes de acceso vienen en ESTA misma respuesta y se estaban tirando.
+            # Guardarlos no cuesta ninguna request extra, y es lo que le faltaba a la vista
+            # del profesor: hasta ahora medía el trabajo de corrección de los tutores y no
+            # tenía una sola columna sobre alumnos que se están yendo.
+            # Se copian sólo los campos que hacen falta y se PRESERVA LA AUSENCIA: si
+            # `lastcourseaccess` no vino, acá tampoco está, y `_lectura_aula` lo va a leer
+            # como `sin_dato` en vez de como "nunca abrió".
+            accesos[int(uid)] = {k: u[k] for k in _CAMPOS_ACCESO if k in u}
         else:
             docentes.append({
                 "nombre": u.get("fullname") or "",
                 "userid": int(uid),
                 "rol": "/".join(r.get("shortname", "?") for r in u.get("roles", [])),
             })
-    return {"alumnos": alumnos, "docentes": docentes}
+    return {"alumnos": alumnos, "docentes": docentes, "accesos": accesos}
 
 
 async def _padrones(client, course_id: int, comisiones: list[dict]) -> tuple[dict, list[str]]:
@@ -189,6 +228,40 @@ async def _padrones(client, course_id: int, comisiones: list[dict]) -> tuple[dic
     return out, avisos
 
 
+async def _padron_del_curso(client, course_id: int) -> dict:
+    """Padrón COMPLETO del curso, en una sola consulta, para poder cuadrarlo.
+
+    Existe por un pedido concreto de coordinación: el informe decía "555 alumnos en comisiones"
+    y nadie podía saber si ése era el total del curso. Ahora se contrasta — y en la primera
+    corrida aparecieron **11 alumnos de Prog I matriculados en el curso y en su regional pero
+    en NINGUNA comisión**. A ésos no los ve ningún tutor, porque toda la skill (y todas las
+    vistas del campus que usa un tutor) trabajan por comisión. Eran invisibles por construcción.
+
+    Cuesta una consulta más y no es gratis (11 s en un curso de 604 matriculados), así que si
+    falla se devuelve el error y el informe declara el hueco en vez de romperse.
+    """
+    try:
+        us = await client.ws("core_enrol_get_enrolled_users",
+                             {"courseid": course_id,
+                              "options": [{"name": "onlyactive", "value": 1}]})
+    except MoodleWSError as e:
+        return {"error": f"no pude leer el padrón completo del curso: {e.errorcode}"}
+    if not isinstance(us, list):
+        return {"error": "el padrón del curso no vino como lista"}
+
+    alumnos, sueltos = {}, []
+    for u in us:
+        if not _es_estudiante(u):
+            continue
+        uid = u.get("id")
+        if uid is None:
+            continue
+        alumnos[int(uid)] = u
+        if not any(_etiqueta_comision(g.get("name") or "") for g in (u.get("groups") or [])):
+            sueltos.append(u)
+    return {"total_alumnos": len(alumnos), "sueltos": sueltos}
+
+
 async def _comisiones_del_curso(client, course_id: int) -> tuple[list[dict], list[str], str | None]:
     """Comisiones de tutoría del curso. -> (comisiones, grupos_ignorados, error)."""
     try:
@@ -205,6 +278,159 @@ async def _comisiones_del_curso(client, course_id: int) -> tuple[list[dict], lis
         comisiones.append({"comision": etiqueta, "group_id": g.get("id"), "nombre": nombre})
     comisiones.sort(key=lambda c: int(c["comision"][3:]))
     return comisiones, ignorados, None
+
+
+# ---------------------------------------------------------------------------
+# Desenganche del CURSO entero (una fila por alumno, no por comisión).
+# ---------------------------------------------------------------------------
+
+_SIN_COMISION = "(sin comisión)"
+
+
+def desenganche_del_curso(padrones: dict, comisiones: list[dict],
+                          dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
+                          sueltos: list[dict] | None = None) -> dict:
+    """PURA: quién dejó de abrir ESTA materia en todo el curso. Sin red — trabaja sobre los
+    padrones que ya se bajaron para el panorama, así que no cuesta ninguna request.
+
+    Es la única parte de la vista del profesor que habla de ALUMNOS. Todo el resto del módulo
+    mide trabajo de corrección, o sea lo que deben los tutores; el profesor no tenía forma de
+    ver "esta comisión tiene 12 pibes que nunca abrieron la materia".
+
+    **Se mide con el reloj de la materia, no con el del campus, y la diferencia es enorme.**
+    Un informe de coordinación real (Prog III, 13/08) listaba "7 alumnos inactivos" cortando
+    por 21+ días sin pisar el CAMPUS. Aplicado ese mismo criterio a los 119 alumnos de las
+    comisiones de Juani encontraba 3 de los 30 que están desenganchados de la materia: se
+    perdía el 90%, y siempre para el lado que tranquiliza — porque al que entra todos los días
+    para otra materia y no abre ésta, el reloj del campus lo muestra impecable.
+
+    Devuelve SÓLO a los desenganchados y a los `sin_dato`, no al padrón entero: la lista es
+    para actuar. Cuántos quedaron afuera y por qué se declara en `relevados` y `al_dia`, para
+    que el recorte no se lea como cobertura total.
+
+    `sueltos` son los alumnos del curso que **no están en ninguna comisión** (de
+    `_padron_del_curso`). Se miden igual, con la etiqueta `(sin comisión)`: son los que ninguna
+    vista por comisión alcanza, así que si además dejaron de entrar no había nadie que lo notara.
+    """
+    filas: list[dict] = []
+    por_comision: dict[str, dict] = {}
+    # Por REGIONAL, y esto el informe original no lo tenía: si el desenganche se concentra en
+    # una sede, el problema puede no ser de los alumnos ni del tutor (una cohorte que arrancó
+    # tarde, una sede con un problema de matriculación). Es ruteo —a qué sede preguntarle—,
+    # no un puntaje de sedes: por eso va con el total al lado, porque 3 de 4 y 3 de 60 no son
+    # lo mismo y un ranking crudo los mostraría igual.
+    por_regional: dict[str, dict] = {}
+    relevados = al_dia = 0
+    avisos: list[str] = []
+
+    grupos = [(c["comision"], padrones.get(c["group_id"]) or {}) for c in comisiones]
+    if sueltos:
+        # Los que no están en ninguna comisión entran como un grupo más, para que se los mida
+        # con la misma vara en vez de quedar afuera del relevamiento por no tener dónde caer.
+        grupos.append((_SIN_COMISION, {"accesos": {u.get("id"): u for u in sueltos}}))
+
+    for etiqueta, padron in grupos:
+        if padron.get("error"):
+            avisos.append(f"{etiqueta}: no se pudo leer el padrón, quedó SIN MEDIR "
+                          f"({padron['error']}).")
+            por_comision[etiqueta] = {"sin_medir": True}
+            continue
+        accesos = padron.get("accesos")
+        if accesos is None:
+            avisos.append(f"{etiqueta}: el padrón vino sin datos de acceso, quedó SIN MEDIR.")
+            por_comision[etiqueta] = {"sin_medir": True}
+            continue
+
+        cuenta = {"alumnos": len(accesos), "desenganchados": 0, "nunca_abrieron": 0,
+                  "entran_al_campus_sin_abrir_la_materia": 0, "sin_dato": 0}
+        for u in accesos.values():
+            relevados += 1
+            f = _fila_aula(u, dias_desenganche)
+            f["comision"] = etiqueta
+            f["regional"] = _regional_de(u)
+            reg = por_regional.setdefault(f["regional"] or "(sin regional)",
+                                          {"alumnos": 0, "desenganchados": 0})
+            reg["alumnos"] += 1
+            if f["estado_aula"] == _AULA_SIN_DATO:
+                cuenta["sin_dato"] += 1
+            elif f["desenganchado_de_la_materia"]:
+                cuenta["desenganchados"] += 1
+                reg["desenganchados"] += 1
+                if f["estado_aula"] == _AULA_NUNCA:
+                    cuenta["nunca_abrieron"] += 1
+                if f["entra_al_campus_sin_abrir_la_materia"]:
+                    cuenta["entran_al_campus_sin_abrir_la_materia"] += 1
+            else:
+                al_dia += 1
+                continue
+            filas.append(f)
+        por_comision[etiqueta] = cuenta
+
+    # Orden: primero los que ELIGEN no entrar (aparecen por el campus y no abren la materia).
+    # Es el grupo más accionable y el más recuperable: no perdieron el acceso, no abrieron.
+    # El que hace 200 días que no aparece por Moodle es más extremo pero también más perdido,
+    # y sobre todo es OTRO problema — va después, con sus días a la vista.
+    filas.sort(key=lambda f: (0 if f["entra_al_campus_sin_abrir_la_materia"] else 1,
+                              _orden_aula(f)))
+
+    # AGRUPADO POR REGIONAL, pedido de coordinación (13/08): el seguimiento lo hacen los tutores
+    # nexos, que trabajan por sede, así que una lista global les obliga a filtrar 150 filas a
+    # ojo. Las regionales que más concentran van primero.
+    #
+    # Adentro de cada regional se mantiene el orden de arriba (primero los que entran al campus
+    # y no abren la materia), así el nexo abre SU bloque y los más accionables ya están arriba:
+    # el agrupado cambia dónde busca cada uno, no qué es urgente.
+    bloques: dict[str, list] = {}
+    for f in filas:
+        bloques.setdefault(f.get("regional") or "(sin regional)", []).append(f)
+    por_regional_bloques = [
+        {"regional": reg,
+         "alumnos": (por_regional.get(reg) or {}).get("alumnos"),
+         "desenganchados": len(lista),
+         "lista": lista}
+        for reg, lista in sorted(bloques.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    ]
+
+    tot = {
+        "desenganchados": sum(1 for f in filas
+                              if f["estado_aula"] != _AULA_SIN_DATO
+                              and f["desenganchado_de_la_materia"]),
+        "entran_al_campus_sin_abrir_la_materia":
+            sum(1 for f in filas if f["entra_al_campus_sin_abrir_la_materia"]),
+        "nunca_abrieron": sum(1 for f in filas if f["estado_aula"] == _AULA_NUNCA),
+        "nunca_entraron_ni_al_campus":
+            sum(1 for f in filas if f["estado_aula"] == _AULA_NUNCA
+                and f["dias_sin_entrar_al_campus"] is None),
+        "sin_dato": sum(1 for f in filas if f["estado_aula"] == _AULA_SIN_DATO),
+    }
+    if tot["sin_dato"]:
+        avisos.append(f"{tot['sin_dato']} alumno(s) vinieron sin el último acceso a la materia: "
+                      "van como `sin_dato`, NO como 'nunca abrió'. El relevamiento no cubre a "
+                      "todo el padrón.")
+    return {
+        "dias_desenganche": dias_desenganche,
+        "relevados": relevados,
+        "al_dia": al_dia,
+        "totales": tot,
+        "por_comision": por_comision,
+        "por_regional": dict(sorted(
+            por_regional.items(),
+            key=lambda kv: (-kv[1]["desenganchados"], -kv[1]["alumnos"]))),
+        "por_regional_bloques": por_regional_bloques,
+        "alumnos": filas,
+        "criterio": {
+            "desenganchado": f"{dias_desenganche}+ días sin abrir la materia, o nunca abierta.",
+            "reloj": "días sin abrir ESTA materia (lastcourseaccess). El acceso al campus va "
+                     "aparte y NO se usa para el corte: cortar por el campus pierde a los que "
+                     "entran todos los días para otra materia (medido: el 90%).",
+            "orden": "primero los que entran al campus y no abren la materia (eligieron no "
+                     "entrar, es lo más accionable), después por días sin abrirla.",
+            "recorte": f"la lista trae {len(filas)} de {relevados} alumnos: los desenganchados "
+                       f"y los `sin_dato`. Los otros {al_dia} abrieron la materia hace menos de "
+                       f"{dias_desenganche} días.",
+        },
+        "sin_dato": avisos,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -376,13 +602,19 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
 # ---------------------------------------------------------------------------
 
 async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = None,
-                              incluir_foros: bool = True) -> dict:
+                              incluir_foros: bool = True,
+                              padrones: dict | None = None,
+                              avisos_padron: list[str] | None = None) -> dict:
     """Una fila por comisión del curso: tutor a cargo, entregas, correcciones pendientes,
     cuánto hace que espera la más vieja y consultas de foro sin responder.
 
     `cmids` acota a un subconjunto de tareas (por defecto, todas las del curso que estén
     mapeadas en el llamador). `incluir_foros=False` saltea la parte de foros, que es la más
     cara en requests.
+
+    `padrones`/`avisos_padron` permiten inyectar los padrones ya bajados. Existe para que
+    `informe_profesor` no pida dos veces la misma cosa: el padrón cuesta una request por
+    comisión y son 16.
     """
     t0 = time.time()
     comisiones, ignorados, err = await _comisiones_del_curso(client, course_id)
@@ -394,7 +626,10 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
             "grupos_ignorados": ignorados,
         }
 
-    padrones, avisos = await _padrones(client, course_id, comisiones)
+    if padrones is None:
+        padrones, avisos = await _padrones(client, course_id, comisiones)
+    else:
+        avisos = list(avisos_padron or [])
 
     # userid -> comision. Un alumno puede figurar en dos grupos; se queda con el primero y
     # se avisa, porque en ese caso su trabajo se le contaría a una comisión sola.
@@ -631,4 +866,169 @@ async def demora_correccion(client, course_id: int, cmids: list[str]) -> dict:
         "segundos": round(time.time() - t0, 1),
         "lectura": ("`demora_*` es historia (entregas ya corregidas); `espera_*` es lo que un "
                     "alumno está esperando AHORA. Para actuar mirá `espera_max_dias`."),
+    }
+
+
+# ---------------------------------------------------------------------------
+# TOOL 3 — informe del profesor: el curso entero, hechos y huecos, sin veredicto
+# ---------------------------------------------------------------------------
+
+async def _nombre_del_curso(client, course_id: int) -> str | None:
+    """Nombre real del curso, del campus. `None` si no se pudo leer — nunca se inventa."""
+    try:
+        r = await client.ws("core_course_get_courses_by_field",
+                            {"field": "id", "value": course_id})
+    except MoodleWSError:
+        return None
+    cs = (r or {}).get("courses") or []
+    return (cs[0].get("fullname") or None) if cs else None
+
+
+async def informe_profesor(client, course_id: int, cmids: list[str] | None = None,
+                           dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
+                           incluir_foros: bool = True) -> dict:
+    """Todo lo que el profesor necesita de un curso, en una sola pasada: el trabajo de
+    corrección por comisión + los alumnos que dejaron de abrir la materia.
+
+    Junta las dos mitades que hasta ahora estaban separadas y que ninguna vista del campus
+    cruza. La primera ya existía (`panorama_comisiones`, `demora_correccion`): mide **lo que
+    deben los tutores**. La segunda es nueva y mide **quién se está yendo**, que es la que
+    decide si un alumno abandona.
+
+    **Por qué no devuelve un veredicto.** Un informe de coordinación real (Prog III, 13/08)
+    abría con "Estado general: sano" y "el único foco son 7 alumnos", sobre 238 — y ese
+    diagnóstico salía de cortar el desenganche por el reloj del campus, que pierde ~90% de los
+    casos. Un adjetivo calculado sobre una señal incompleta es peor que no ponerlo, porque
+    nadie audita una palabra tranquilizadora. Acá van los números y los huecos (`sin_dato`);
+    la conclusión la saca el profesor. Misma doctrina que prohíbe el ranking de tutores.
+
+    Todo read-only. El padrón se baja UNA vez y lo comparten las dos mitades, así que sumar el
+    desenganche no costó ninguna request extra.
+    """
+    t0 = time.time()
+    comisiones, ignorados, err = await _comisiones_del_curso(client, course_id)
+    if err:
+        return {"error": err}
+    if not comisiones:
+        return {"error": f"El curso {course_id} no tiene grupos con formato de comisión.",
+                "grupos_ignorados": ignorados}
+
+    padrones, avisos_padron = await _padrones(client, course_id, comisiones)
+    curso_entero = await _padron_del_curso(client, course_id)
+
+    pano = await panorama_comisiones(client, course_id, cmids, incluir_foros,
+                                     padrones=padrones, avisos_padron=avisos_padron)
+    if pano.get("error"):
+        return {"error": f"No pude armar el panorama del curso: {pano['error']}"}
+
+    deseng = desenganche_del_curso(padrones, comisiones, dias_desenganche,
+                                   sueltos=curso_entero.get("sueltos"))
+
+    # Una fila por comisión con las DOS mitades juntas: trabajo de corrección + desenganche.
+    filas = []
+    for f in pano["filas"]:
+        cuenta = deseng["por_comision"].get(f["comision"], {})
+        filas.append({**f,
+                      "desenganchados": cuenta.get("desenganchados"),
+                      "nunca_abrieron": cuenta.get("nunca_abrieron"),
+                      "entran_al_campus_sin_abrir_la_materia":
+                          cuenta.get("entran_al_campus_sin_abrir_la_materia"),
+                      "alumnos_sin_dato_de_aula": cuenta.get("sin_dato")})
+
+    def _suma(clave):
+        vals = [f[clave] for f in pano["filas"] if f.get(clave) is not None]
+        return sum(vals) if vals else None
+
+    entregadas, corregidas = _suma("entregados"), _suma("corregidos")
+    sin_corregir = _suma("sin_corregir")
+    esperas = [f["espera_max_dias"] for f in pano["filas"] if f.get("espera_max_dias") is not None]
+    con_tutor = sum(1 for f in pano["filas"] if f.get("tutor"))
+    consultas = _suma("consultas_sin_responder")
+
+    # Los huecos, juntos y en un solo lugar. Si esto no está vacío, el informe está incompleto
+    # y hay que decirlo antes de cualquier número.
+    huecos = list(deseng["sin_dato"])
+    huecos += [a for a in pano.get("avisos", [])]
+    if con_tutor < len(filas):
+        huecos.append(f"{len(filas) - con_tutor} comisión(es) sin tutor identificado: revisá "
+                      "si están sin asignar o si el rol no se pudo leer.")
+    if not pano.get("tareas_miradas"):
+        huecos.append("No se miró ninguna tarea: las columnas de entregas y corrección quedan "
+                      "sin medir. No son ceros de 'está al día'.")
+
+    # El padrón, cuadrado contra el total del curso. Pedido de coordinación: sin esto, "555
+    # alumnos en comisiones" no permitía saber si faltaba gente.
+    en_comisiones = sum(f.get("alumnos") or 0 for f in filas)
+    sueltos = curso_entero.get("sueltos") or []
+    if curso_entero.get("error"):
+        padron = {"en_comisiones": en_comisiones, "total_del_curso": None, "cuadra": None,
+                  "sin_comision": None}
+        huecos.append(f"No se pudo cuadrar el padrón contra el total del curso "
+                      f"({curso_entero['error']}): puede haber alumnos sin comisión que este "
+                      "informe no ve.")
+    else:
+        total = curso_entero["total_alumnos"]
+        padron = {
+            "en_comisiones": en_comisiones,
+            "total_del_curso": total,
+            "sin_comision": len(sueltos),
+            "cuadra": (en_comisiones + len(sueltos)) == total,
+            "alumnos_sin_comision": [
+                {"nombre": u.get("fullname"), "userid": u.get("id"),
+                 "email": (u.get("email") or "").lower(), "regional": _regional_de(u)}
+                for u in sueltos],
+        }
+        if sueltos:
+            huecos.append(f"{len(sueltos)} alumno(s) están matriculados en el curso pero en "
+                          "NINGUNA comisión: no los ve ningún tutor. Van medidos aparte, con la "
+                          "etiqueta (sin comisión).")
+        if not padron["cuadra"]:
+            huecos.append(f"El padrón NO cuadra: {en_comisiones} en comisiones + "
+                          f"{len(sueltos)} sin comisión ≠ {total} del curso. Puede haber alguien "
+                          "matriculado en dos comisiones (se contaría dos veces).")
+
+    return {
+        "ok": True,
+        "course_id": course_id,
+        "curso": await _nombre_del_curso(client, course_id),
+        "comisiones": len(filas),
+        "padron": padron,
+        "hechos": {
+            "comisiones_con_tutor": f"{con_tutor}/{len(filas)}",
+            "alumnos_en_comisiones": (f"{padron['en_comisiones']}/{padron['total_del_curso']}"
+                                      if padron.get("total_del_curso")
+                                      else padron["en_comisiones"]),
+            "alumnos_sin_comision": padron.get("sin_comision"),
+            "entregadas": entregadas,
+            "corregidas": corregidas,
+            "sin_corregir": sin_corregir,
+            "calificado_sin_nota": _suma("calificado_sin_nota"),
+            "pct_corregidas": (round(100 * corregidas / entregadas)
+                               if entregadas else None),
+            "espera_max_dias_del_curso": max(esperas) if esperas else None,
+            "consultas_de_foro_sin_responder": consultas,
+            "desenganchados_de_la_materia": deseng["totales"]["desenganchados"],
+            "entran_al_campus_sin_abrir_la_materia":
+                deseng["totales"]["entran_al_campus_sin_abrir_la_materia"],
+            "nunca_abrieron_la_materia": deseng["totales"]["nunca_abrieron"],
+        },
+        "por_comision": filas,
+        "desenganche": deseng,
+        "tareas_miradas": pano.get("tareas_miradas"),
+        "tareas_pedidas": pano.get("tareas_pedidas"),
+        "grupos_ignorados": ignorados,
+        "_meta": {
+            "fuente": "vivo",
+            "segundos": round(time.time() - t0, 1),
+            "degradado": bool(deseng["sin_dato"]) or bool(pano.get("avisos")),
+            "sin_dato": huecos,
+        },
+        "lectura": (
+            "NO hay veredicto acá a propósito: son hechos y huecos, la conclusión es del "
+            "profesor. Tres cosas antes de leer los números: (1) los días de desenganche son "
+            "SIN ABRIR ESTA MATERIA, no sin entrar al campus — cortar por el campus pierde a "
+            "los que entran todos los días para otra materia, que son la mayoría; (2) las "
+            "filas son hechos POR COMISIÓN y nombrar al tutor es ruteo, nunca un puntaje de "
+            "personas; (3) un 0 con motivo en `sin_dato` no es un 0 de 'está al día'."
+        ),
     }

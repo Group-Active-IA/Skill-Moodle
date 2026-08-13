@@ -24,13 +24,25 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
 - **Detecta quién está abandonando**: cruza días sin entrar con tareas seguidas sin
   entregar. Ninguna vista del campus junta esas dos señales, y la deserción avisa antes
   de pasar.
+- **Desenganche por materia**: quién dejó de abrir **esta** materia, que no es lo mismo que
+  quién dejó de entrar al campus. Moodle lleva los dos relojes y no avisa cuál estás
+  mirando: el alumno que entra todos los días para otra materia y nunca abre la tuya figura
+  con "0 días sin entrar", o sea al día, estando desaparecido. Medido en Prog I: 9 de 69
+  entraban al campus sin haber abierto **nunca** la materia. Y al revés, el "Nunca" de la
+  página de participantes no distingue al que abandonó del que cursa activo sin pasar por
+  ahí: acá "nunca la abrió" y "no se pudo leer" son estados separados, nunca un número.
 - **Vista del profesor**: el curso entero en una tabla, una fila por comisión, con el tutor
   a cargo, lo que falta corregir, hace cuántos días espera la entrega más vieja y las
   consultas de foro que no contestó nadie. Lo que hoy son 176 pantallas de Moodle (16
   comisiones × 11 actividades) sale en quince segundos. Son **hechos por comisión, no un
   puntaje del tutor**: nombra a quién llamar y explica cada blanco, para que un 0 de
   "comisión vacía" nunca se lea como un 0 de "trabajo al día".
-- **Informes en PDF** de pendientes por comisión.
+- **Informes en PDF**: pendientes por comisión (para el tutor) y el **informe de curso para
+  coordinación** (`informe_profesor`), que junta el trabajo de corrección de todas las
+  comisiones con los alumnos que dejaron de abrir la materia, con su regional y su mail para
+  poder contactarlos. Sin veredictos: hechos y huecos declarados, porque la conclusión la saca
+  quien coordina. Ese PDF lleva datos de contacto de alumnos: queda en `salidas/`, fuera del
+  repo, y no se comparte fuera del equipo docente (`emails=False` lo genera sin ellos).
 - **Ver la entrega antes de calificar**: baja el trabajo del alumno, descomprime el `.zip`
   y te muestra el código. Calificar sin haber visto lo entregado deja de ser posible.
 - **Corrección en lote**: resolvés una tarea entera alumno por alumno sin tocar Moodle, y

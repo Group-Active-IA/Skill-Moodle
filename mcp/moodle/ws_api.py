@@ -436,6 +436,7 @@ async def buscar_alumnos(client, texto: str, cursos: list[dict], limite: int = 8
             if uid in coincidencias:  # el mismo alumno en dos comisiones del tutor
                 coincidencias[uid]["comisiones"].append(comision)
                 continue
+            estado_aula, dias_aula = _lectura_aula(u)
             coincidencias[uid] = {
                 "nombre": nombre,
                 "email": email,
@@ -444,7 +445,12 @@ async def buscar_alumnos(client, texto: str, cursos: list[dict], limite: int = 8
                 "course_id": course_id,
                 "comisiones": [comision],
                 "group_id": group_id,
-                "dias_sin_entrar": _dias_desde(u.get("lastaccess")),
+                # Los DOS relojes con nombre propio. Antes acá había un `dias_sin_entrar` que
+                # era del SITIO y se leía como de la materia: un alumno que entra todos los
+                # días para otra cosa y nunca abrió ésta figuraba con 0, o sea al día.
+                "estado_aula": estado_aula,
+                "dias_sin_abrir_la_materia": dias_aula,
+                "dias_sin_entrar_al_campus": _dias_desde(u.get("lastaccess")),
             }
 
     hallados = sorted(coincidencias.values(), key=lambda a: _norm(a["nombre"]))
@@ -473,6 +479,75 @@ async def buscar_alumnos(client, texto: str, cursos: list[dict], limite: int = 8
             f"Hay {len(hallados)} coincidencias, muestro las primeras {limite}."
         )
     return salida
+
+
+# ---------- LOS DOS RELOJES DE ACCESO (vocabulario compartido) ----------
+
+# `core_enrol_get_enrolled_users` devuelve DOS relojes por alumno y no son el mismo:
+# `lastaccess` es la última vez que pisó el CAMPUS y `lastcourseaccess` la última vez que
+# abrió ESTA materia. La skill leía sólo el primero y lo llamaba `dias_sin_entrar`, así que
+# mentía justo en el caso que más importa: el que entra todos los días para otra materia y
+# nunca abre la propia figuraba con `0` — perfecto para la herramienta, desaparecido en la
+# realidad. Al revés falla igual: el "Nunca" de la página de participantes es el reloj del
+# curso, y ahí el que abandonó y el que cursa activo sin abrir esta materia se ven idénticos.
+#
+# **Lo que hacía el bug no era devolver un número impreciso: era borrar gente de la lista.**
+# `alumnos_en_riesgo` no devuelve los verdes, y con el reloj del sitio en 0 el clasificador
+# daba verde. Corrido contra el código de HEAD con los datos que relevó un tutor de Prog III
+# y Prog IV: de 6 alumnos que había que contactar, **5 daban verde** —o sea, invisibles— y el
+# sexto salía como "9 días sin entrar", ocultando que NUNCA había abierto la materia.
+#
+# Verificado en vivo el 2026-08-13 sobre los 119 alumnos de las cuatro comisiones de Juani
+# (Prog I com6/com12, Prog IV com7/com8): el campo llega en el 100% de los alumnos, 10 entran
+# al campus sin haber abierto NUNCA la materia y en 22 los dos relojes difieren un día o más.
+# El dato ya lo estábamos recibiendo y lo tirábamos: no hace falta navegador.
+#
+# Sobre permisos: los dos campos comparten el MISMO gate en Moodle (`user/lib.php`, líneas
+# 505 y 514 en MOODLE_405_STABLE — a los dos los tapa `$CFG->hiddenuserfields` conteniendo
+# 'lastaccess', NO una capability distinta por rol). Entonces a cualquier tutor al que hoy le
+# funcione el reloj del sitio le va a llegar también el del curso, sea `editingteacher` o
+# `teacher`. No se pudo probar con un token `teacher` (no tenemos sus credenciales; en Prog I
+# hay 20 con ese rol), pero si algún día no llega, se trata como `sin_dato` y se grita: nunca
+# se lo hace pasar por "nunca abrió".
+
+_AULA_ABRIO, _AULA_NUNCA, _AULA_SIN_DATO = "abrio", "nunca_abrio", "sin_dato"
+
+# Moodle actualiza los dos relojes con bandas muertas de 60 s independientes
+# (`LASTACCESS_UPDATE_SECS`, `lib/datalib.php`), así que el del curso puede quedar hasta un
+# minuto ADELANTADO respecto al del sitio. Se vio: 10 alumnos con desfasaje, máximo 46 s.
+# Es normal, no dato roto — pero por eso la brecha se mide en días enteros y no en segundos.
+_BRECHA_MINIMA_DIAS = 1
+
+# Cuántos días sin abrir la materia empiezan a significar algo. El umbral no es decoración:
+# la primera versión de `sin_entrar_al_aula` marcaba "para contactar" con sólo mirar la
+# brecha entre los dos relojes, y en com6 daba 18 de 36 alumnos — la mitad del padrón. Una
+# lista con media comisión adentro no la mira nadie, que es exactamente lo que ya le pasa a
+# `alumnos_en_riesgo` cuando devuelve 69/69 en rojo. Que alguien abra la materia dos veces
+# por semana y entre al campus todos los días NO es desenganche.
+_AULA_DESENGANCHE_DIAS = 7
+
+
+def _lectura_aula(u: dict) -> tuple[str, int | None]:
+    """(estado, días sin abrir ESTA materia) de un alumno crudo del web service.
+
+    Devuelve un estado y no sólo un número porque el número solo miente en los dos
+    extremos: un `0` se lee como "entró hoy" y un `99999` como "hace 273 años". Son tres
+    situaciones distintas y hay que poder distinguirlas:
+
+    - `abrio`     → hay timestamp: días enteros desde que abrió la materia.
+    - `nunca_abrio` → el campo vino en 0. Nunca la abrió. No es lo mismo que abandono:
+      puede haberse matriculado ayer.
+    - `sin_dato`  → el campo NO vino (permisos, respuesta incompleta). Acá no se sabe, y
+      decir "nunca abrió" sería inventar."""
+    if "lastcourseaccess" not in u:
+        return _AULA_SIN_DATO, None
+    try:
+        ts = int(u.get("lastcourseaccess") or 0)
+    except (TypeError, ValueError):
+        return _AULA_SIN_DATO, None
+    if ts <= 0:
+        return _AULA_NUNCA, None
+    return _AULA_ABRIO, _dias_desde(ts)
 
 
 # ---------- ALUMNOS EN RIESGO (cruce de señales, lógica pura + consulta) ----------
@@ -512,37 +587,90 @@ def _racha_final_sin_entregar(estados: list[str]) -> int:
     return racha
 
 
-def _clasificar_riesgo(dias_sin_entrar: int | None, racha: int,
+def _motivos_racha(racha: int) -> list[str]:
+    if racha >= 2:
+        return [f"{racha} tareas seguidas sin entregar"]
+    if racha == 1:
+        return ["la última tarea sin entregar"]
+    return []
+
+
+def _clasificar_riesgo(estado_aula: str, dias_aula: int | None, racha: int,
+                       dias_campus: int | None = None,
                        dias_alerta: int = _RIESGO_DIAS_ALERTA,
                        dias_aviso: int = _RIESGO_DIAS_AVISO) -> tuple[str, list[str]]:
     """(nivel, motivos). nivel: 'rojo' | 'amarillo' | 'verde' | 'sin_datos'.
 
-    `dias_sin_entrar=None` significa que nunca entró al campus o no se pudo leer: eso es
-    rojo, no verde — es el caso más extremo de desconexión, y tratarlo como "sin datos
-    silencioso" sería perder justo al que más lo necesita."""
-    motivos: list[str] = []
-    if dias_sin_entrar is None:
-        motivos.append("nunca entró al campus (o no se pudo leer su último acceso)")
-        if racha:
-            motivos.append(f"{racha} tarea(s) seguidas sin entregar")
-        return "rojo", motivos
+    **El reloj que manda es el de la MATERIA** (`dias_aula`), no el del campus. Antes esto
+    recibía un solo número y era el del sitio, y por eso borraba gente: alguien que entra a
+    Moodle todos los días para otra materia daba 0 días → verde → y los verdes no se
+    devuelven. Corrido contra el código viejo con datos reales de un tutor, 5 de 6 alumnos
+    que había que contactar salían verdes. El campus sigue entrando en la cuenta, pero en el
+    rol que de verdad tiene: distinguir al que ELIGE no abrir la materia (aparece por el
+    campus) del que no está en ninguna parte.
 
-    if dias_sin_entrar > dias_alerta:
-        motivos.append(f"{dias_sin_entrar} días sin entrar")
-    elif dias_sin_entrar > dias_aviso:
-        motivos.append(f"{dias_sin_entrar} días sin entrar")
-    if racha >= 2:
-        motivos.append(f"{racha} tareas seguidas sin entregar")
-    elif racha == 1:
-        motivos.append("la última tarea sin entregar")
+    `estado_aula` viene de `_lectura_aula` y decide la rama:
+
+    - `sin_dato` → no se midió. **Nunca cae en verde**: si la racha sola no alcanza para
+      marcarlo, devuelve `sin_datos`, porque un verde acá es "no pude leerlo" disfrazado de
+      "está al día", el error que este proyecto ya pagó varias veces.
+    - `nunca_abrio` → no abrió la materia ni una vez. Rojo si además dejó de entregar algo
+      vencido o si hace mucho que tampoco pisa el campus; si no venció nada todavía queda
+      amarillo **a propósito**: puede haberse matriculado esta semana y acá no se ve la
+      fecha de matriculación, así que marcarlo rojo sería el padrón entero en rojo de nuevo.
+    - `abrio` → los umbrales corren sobre los días sin abrir la materia."""
+    motivos: list[str] = []
+
+    if estado_aula == _AULA_SIN_DATO:
+        motivos.append("no se pudo leer su último acceso a la materia (no es que no la haya "
+                       "abierto: no se sabe)")
+        motivos += _motivos_racha(racha)
+        if racha >= 2:
+            return "rojo", motivos
+        return ("amarillo" if racha == 1 else "sin_datos"), motivos
+
+    # "Aparece por el campus" es lo que separa al que eligió no entrar del que no está.
+    activo_en_campus = dias_campus is not None and dias_campus <= dias_aviso
+
+    if estado_aula == _AULA_NUNCA:
+        if dias_campus is None:
+            # Nunca abrió la materia y nunca entró al campus: el caso más extremo, y el
+            # único donde "nunca entró al campus" es una frase verdadera.
+            motivos.append("nunca abrió la materia, y nunca entró al campus tampoco")
+            motivos += _motivos_racha(racha)
+            return "rojo", motivos
+        if activo_en_campus:
+            motivos.append(f"nunca abrió la materia, pero entró al campus hace "
+                           f"{dias_campus} día(s): está cursando otra cosa")
+        else:
+            motivos.append(f"nunca abrió la materia, y hace {dias_campus} día(s) que tampoco "
+                           "entra al campus")
+        motivos += _motivos_racha(racha)
+        if racha >= 1 or dias_campus > dias_alerta:
+            return "rojo", motivos
+        return "amarillo", motivos
+
+    if dias_aula > dias_aviso:
+        motivos.append(f"{dias_aula} días sin abrir la materia")
+    # La brecha entre los dos relojes: no perdió el acceso, eligió no entrar. Es una señal
+    # más fuerte que los días solos —el que no entra a Moodle en diez días puede estar
+    # enfermo o de viaje; el que entra todos los días y saltea TU materia, no.
+    eligio_no_entrar = (activo_en_campus and dias_aula > dias_aviso
+                        and dias_aula - dias_campus >= _BRECHA_MINIMA_DIAS)
+    if eligio_no_entrar:
+        motivos.append(f"y entró al campus hace {dias_campus} día(s): está activo en otra "
+                       "materia, no perdió el acceso")
+    motivos += _motivos_racha(racha)
 
     # Dos tareas seguidas en cero pesan más que los días: alguien puede no entrar una
     # semana por trabajo y estar al día, pero dejar de entregar es abandono empezando.
     if racha >= 2:
         return "rojo", motivos
-    if dias_sin_entrar > dias_alerta and racha >= 1:
+    if eligio_no_entrar:
         return "rojo", motivos
-    if dias_sin_entrar > dias_alerta or racha == 1 or dias_sin_entrar > dias_aviso:
+    if dias_aula > dias_alerta and racha >= 1:
+        return "rojo", motivos
+    if dias_aula > dias_alerta or racha == 1 or dias_aula > dias_aviso:
         return "amarillo", motivos
     return "verde", motivos
 
@@ -611,13 +739,18 @@ async def alumnos_en_riesgo(client, course_id: int, group_id: int, tareas: list[
     orden = [str(t.get("assign_id")) for t in tareas if str(t.get("assign_id")) in orden_ok]
 
     filas = []
+    sin_dato_aula = 0
     for u in alumnos:
         email = (u.get("email") or "").lower()
         estados = [por_alumno.get(email, {}).get(aid) for aid in orden]
         estados = [e for e in estados if e is not None]
         racha = _racha_final_sin_entregar(estados)
-        dias = _dias_desde(u.get("lastaccess"))
-        nivel, motivos = _clasificar_riesgo(dias, racha, dias_alerta, dias_aviso)
+        estado_aula, dias_aula = _lectura_aula(u)
+        dias_campus = _dias_desde(u.get("lastaccess"))
+        if estado_aula == _AULA_SIN_DATO:
+            sin_dato_aula += 1
+        nivel, motivos = _clasificar_riesgo(estado_aula, dias_aula, racha, dias_campus,
+                                            dias_alerta, dias_aviso)
         if nivel == "verde":
             continue
         filas.append({
@@ -625,14 +758,26 @@ async def alumnos_en_riesgo(client, course_id: int, group_id: int, tareas: list[
             "email": email,
             "userid": u.get("id"),
             "nivel": nivel,
-            "dias_sin_entrar": dias,
+            # Los DOS relojes, con nombre propio. El campo ambiguo `dias_sin_entrar` se
+            # eliminó a propósito: era del sitio y todo el mundo lo leía como de la materia.
+            "estado_aula": estado_aula,
+            "dias_sin_abrir_la_materia": dias_aula,
+            "dias_sin_entrar_al_campus": dias_campus,
             "tareas_seguidas_sin_entregar": racha,
             "sin_entregar_total": sum(1 for e in estados if e == "Sin entrega"),
             "motivos": motivos,
         })
 
-    _peso = {"rojo": 0, "amarillo": 1}
-    filas.sort(key=lambda f: (_peso.get(f["nivel"], 2), -(f["dias_sin_entrar"] or 9999)))
+    # Orden: primero por nivel, y dentro del nivel por días sin abrir LA MATERIA. Los que
+    # nunca la abrieron van arriba de su nivel (no tienen número, y no se les inventa uno).
+    _peso = {"rojo": 0, "amarillo": 1, "sin_datos": 2}
+
+    def _clave(f):
+        if f["estado_aula"] == _AULA_NUNCA:
+            return (_peso.get(f["nivel"], 3), 0, 0)
+        return (_peso.get(f["nivel"], 3), 1, -(f["dias_sin_abrir_la_materia"] or 0))
+
+    filas.sort(key=_clave)
     rojos = sum(1 for f in filas if f["nivel"] == "rojo")
 
     return {
@@ -642,21 +787,226 @@ async def alumnos_en_riesgo(client, course_id: int, group_id: int, tareas: list[
         "alumnos_totales": len(alumnos),
         "en_riesgo": len(filas),
         "rojo": rojos,
-        "amarillo": len(filas) - rojos,
+        "amarillo": sum(1 for f in filas if f["nivel"] == "amarillo"),
+        "sin_datos": sum(1 for f in filas if f["nivel"] == "sin_datos"),
         "alumnos": filas,
         "criterio": {
-            "rojo": f"2+ tareas seguidas sin entregar, o >{dias_alerta} días sin entrar con "
-                    "al menos 1 sin entregar, o nunca entró",
-            "amarillo": f">{dias_aviso} días sin entrar, o la última tarea sin entregar",
+            "reloj": "los días son SIN ABRIR ESTA MATERIA (lastcourseaccess). El acceso al "
+                     "campus va aparte, en `dias_sin_entrar_al_campus`, y sirve para saber si "
+                     "el alumno eligió no entrar o si no aparece por ningún lado.",
+            "rojo": f"2+ tareas seguidas sin entregar · o >{dias_aviso} días sin abrir la "
+                    "materia entrando al campus igual (eligió no entrar) · o "
+                    f">{dias_alerta} días sin abrirla con al menos 1 sin entregar · o nunca la "
+                    "abrió y además dejó de entregar o tampoco pisa el campus",
+            "amarillo": f">{dias_aviso} días sin abrir la materia · o la última tarea sin "
+                        "entregar · o nunca la abrió pero todavía no venció nada (puede "
+                        "haberse matriculado recién)",
+            "sin_datos": "no se pudo leer su acceso a la materia. NO es verde: es no sabemos.",
         },
         "_meta": {
             "fuente": "vivo",
             "tareas_revisadas": len(orden),
             "tareas_pedidas": len(tareas),
-            "degradado": bool(avisos),
-            "avisos": avisos,
+            "alumnos_sin_dato_de_aula": sin_dato_aula,
+            "degradado": bool(avisos) or bool(sin_dato_aula),
+            "avisos": avisos + ([f"{sin_dato_aula} alumno(s) vinieron sin el último acceso a "
+                                 "la materia: van como `sin_datos`, no como verdes."]
+                                if sin_dato_aula else []),
         },
     }
+
+
+# ---------- DESENGANCHE POR MATERIA: lo que arma la lista y la ordena ----------
+
+
+def _fila_aula(u: dict, dias_desenganche: int = _AULA_DESENGANCHE_DIAS) -> dict:
+    """Una fila de `sin_entrar_al_aula`: los DOS relojes, nombrados sin ambigüedad.
+
+    Van los dos a propósito, porque el del curso solo no alcanza para decidir a quién
+    escribir: "hace 10 días que no abre Prog 1" es una cosa si además no aparece por el
+    campus, y otra muy distinta si entró ayer para otra materia — ahí no se le perdió la
+    contraseña, eligió no entrar. Ese cruce es la señal y ninguna vista del campus la muestra
+    junta.
+
+    `entra_al_campus_sin_abrir_la_materia` pide las TRES condiciones, no una:
+    1. que esté apareciendo por el campus (entró en los últimos `dias_desenganche` días),
+    2. que hace `dias_desenganche` días o más que no abre ESTA materia (o que nunca la abrió),
+    3. que haya brecha real entre los dos relojes.
+
+    Sin la (1), el que no aparece por ningún lado —41 días sin pisar el campus, la materia
+    nunca abierta— salía etiquetado "está cursando otra cosa", que es falso: ése no está en
+    ninguna parte, y es un problema distinto. Sin la (2) se marcaba media comisión."""
+    estado, dias_aula = _lectura_aula(u)
+    dias_sitio = _dias_desde(u.get("lastaccess"))
+
+    activo_en_campus = dias_sitio is not None and dias_sitio <= dias_desenganche
+    desenganchado = estado == _AULA_NUNCA or (
+        estado == _AULA_ABRIO and dias_aula >= dias_desenganche)
+    hay_brecha = estado == _AULA_NUNCA or (
+        estado == _AULA_ABRIO and dias_sitio is not None
+        and dias_aula - dias_sitio >= _BRECHA_MINIMA_DIAS)
+    elige_no_entrar = activo_en_campus and desenganchado and hay_brecha
+
+    return {
+        "nombre": u.get("fullname"),
+        "email": (u.get("email") or "").lower(),
+        "userid": u.get("id"),
+        "estado_aula": estado,
+        "dias_sin_abrir_la_materia": dias_aula,
+        "dias_sin_entrar_al_campus": dias_sitio,
+        "desenganchado_de_la_materia": desenganchado,
+        "entra_al_campus_sin_abrir_la_materia": elige_no_entrar,
+        "detalle": _detalle_aula(estado, dias_aula, dias_sitio, elige_no_entrar),
+    }
+
+
+def _detalle_aula(estado: str, dias_aula: int | None, dias_sitio: int | None,
+                  elige_no_entrar: bool) -> str:
+    """La fila en una frase, para que el tutor no tenga que interpretar dos números."""
+    if estado == _AULA_SIN_DATO:
+        return ("El campus no devolvió su último acceso a la materia: no se pudo relevar. "
+                "NO quiere decir que no la haya abierto.")
+    if estado == _AULA_NUNCA:
+        if dias_sitio is None:
+            return "Nunca abrió la materia y nunca entró al campus tampoco."
+        if elige_no_entrar:
+            return (f"Nunca abrió la materia, y entró al campus hace {dias_sitio} día(s): "
+                    "está cursando otra cosa, no perdió el acceso.")
+        return (f"Nunca abrió la materia, y hace {dias_sitio} día(s) que tampoco entra al "
+                "campus: no aparece por ningún lado.")
+    if elige_no_entrar:
+        return (f"Hace {dias_aula} día(s) que no abre la materia, pero entró al campus hace "
+                f"{dias_sitio}: está activo en otra materia.")
+    return f"Hace {dias_aula} día(s) que no abre la materia."
+
+
+_ORDEN_AULA = {_AULA_NUNCA: 0, _AULA_ABRIO: 1, _AULA_SIN_DATO: 2}
+
+
+def _orden_aula(f: dict) -> tuple:
+    """Los que nunca la abrieron arriba, después por días sin abrirla, y los `sin_dato` al
+    final — separados a propósito, porque no son un caso peor ni mejor: son un no-dato, y
+    mezclarlos entre los medidos los haría pasar por medidos.
+
+    Entre los que nunca abrieron va primero el que MÁS reciente entró al campus: ése es el
+    caso que esta tool existe para encontrar. El que nunca entró ni al campus queda al final
+    del grupo, pero se cuenta aparte en la salida para que no se pierda de vista."""
+    estado = f["estado_aula"]
+    if estado == _AULA_NUNCA:
+        dias = f.get("dias_sin_entrar_al_campus")
+        return (_ORDEN_AULA[estado], dias if dias is not None else 10 ** 9)
+    if estado == _AULA_ABRIO:
+        return (_ORDEN_AULA[estado], -(f.get("dias_sin_abrir_la_materia") or 0))
+    return (_ORDEN_AULA[estado], 0)
+
+
+async def sin_entrar_al_aula(client, course_id: int, group_id: int,
+                             dias_desenganche: int = _AULA_DESENGANCHE_DIAS) -> dict:
+    """Quién dejó de abrir ESTA materia, ordenado por hace cuánto.
+
+    Es la única señal de desenganche POR MATERIA que tiene la skill. `alumnos_en_riesgo` no
+    la cubre: cuenta rachas de actividades sin entregar, y al principio del cuatrimestre —
+    cuando todavía no venció nada — devuelve el padrón entero en rojo (visto 35/35 y 69/69).
+    El reloj del curso, en cambio, sirve desde el día uno y no depende de que haya fechas
+    de entrega vencidas."""
+    alumnos = await _alumnos_de_comision(client, course_id, group_id)
+    if isinstance(alumnos, dict):  # error de la comisión: se devuelve, no se traga
+        return alumnos
+    if not alumnos:
+        # Mismo criterio que `alumnos_en_riesgo`: "0 desenganchados" acá NO es "están todos
+        # entrando", es que no hay a quién medir.
+        return {
+            "ok": True, "course_id": course_id, "group_id": group_id,
+            "alumnos_totales": 0, "nunca_abrieron": 0, "sin_dato": 0, "alumnos": [],
+            "desenganchados": 0, "entran_al_campus_sin_abrir_la_materia": 0,
+            "nunca_entraron_ni_al_campus": 0,
+            "sin_alumnos": True,
+            "aviso": "Esta comisión todavía no tiene alumnos matriculados: no hay a quién "
+                     "medir. No es que estén entrando todos.",
+            "_meta": {"fuente": "vivo", "campo_disponible": None, "degradado": False},
+        }
+
+    filas = sorted((_fila_aula(u, dias_desenganche) for u in alumnos), key=_orden_aula)
+    sin_dato = [f for f in filas if f["estado_aula"] == _AULA_SIN_DATO]
+    nunca = [f for f in filas if f["estado_aula"] == _AULA_NUNCA]
+    abrieron = [f for f in filas if f["estado_aula"] == _AULA_ABRIO]
+
+    if len(sin_dato) == len(filas):
+        # El escenario de permisos. Devolver una lista de ceros acá sería lo peor que puede
+        # hacer esta tool: se leería como "todos abrieron la materia hoy".
+        return {
+            "error": (f"El campus no devolvió el último acceso a la materia para NINGUNO de "
+                      f"los {len(filas)} alumnos, así que no pude relevar nada. Ojo: eso NO "
+                      "significa que no la hayan abierto."),
+            "causa_probable": ("El sitio tiene 'lastaccess' en hiddenuserfields y tu rol no "
+                               "puede ver campos ocultos (moodle/course:viewhiddenuserfields). "
+                               "Es el mismo permiso que tapa `dias_sin_entrar`."),
+            "course_id": course_id, "group_id": group_id,
+            "_meta": {"fuente": "vivo", "campo_disponible": False, "degradado": True},
+        }
+
+    mas_atrasado = abrieron[0] if abrieron else None
+    desenganchados = [f for f in filas if f["desenganchado_de_la_materia"]]
+    activos_sin_abrir = [f for f in filas if f["entra_al_campus_sin_abrir_la_materia"]]
+    nunca_ni_campus = [f for f in nunca if f["dias_sin_entrar_al_campus"] is None]
+
+    if activos_sin_abrir:
+        resumen = (f"{len(activos_sin_abrir)} de {len(filas)} alumnos entran al campus pero "
+                   f"hace {dias_desenganche}+ días que no abren esta materia: son los que hay "
+                   "que contactar, y son justo los que `dias_sin_entrar` mostraba como si "
+                   "estuvieran al día.")
+    elif desenganchados:
+        resumen = (f"{len(desenganchados)} de {len(filas)} hace {dias_desenganche}+ días que "
+                   "no abren la materia (o nunca la abrieron), pero ninguno de ellos está "
+                   "entrando al campus: no es que elijan no entrar, no aparecen por ningún "
+                   "lado.")
+    else:
+        # Nunca un cero mudo: si están todos entrando, se dice con el número del peor. Y se
+        # cuenta sólo a los MEDIDOS — decir "los 4 abrieron la materia" cuando 2 vinieron sin
+        # el dato es el mismo cero mudo con otra cara: se lee como "está todo al día".
+        resumen = (f"Los {len(abrieron)} alumnos relevados abrieron la materia y ninguno hace "
+                   f"{dias_desenganche}+ días que no la abre; el más atrasado hace "
+                   f"{mas_atrasado['dias_sin_abrir_la_materia']} día(s).")
+        if sin_dato:
+            resumen += (f" OJO: {len(sin_dato)} de {len(filas)} quedaron sin relevar, así que "
+                        "esto NO cubre a toda la comisión.")
+
+    salida = {
+        "ok": True,
+        "course_id": course_id,
+        "group_id": group_id,
+        "alumnos_totales": len(filas),
+        "desenganchados": len(desenganchados),
+        "nunca_abrieron": len(nunca),
+        "nunca_entraron_ni_al_campus": len(nunca_ni_campus),
+        "entran_al_campus_sin_abrir_la_materia": len(activos_sin_abrir),
+        "sin_dato": len(sin_dato),
+        "alumnos": filas,
+        "resumen": resumen,
+        "criterio": {
+            "orden": "Primero los que nunca la abrieron, después por días sin abrirla "
+                     "(el más viejo arriba). Los `sin_dato` van al final, aparte.",
+            "reloj": "días sin abrir ESTA materia (lastcourseaccess), NO días sin entrar al "
+                     "campus (lastaccess). Los dos vienen en cada fila.",
+            "desenganchado": f"{dias_desenganche}+ días sin abrir la materia, o nunca abierta.",
+            "a_quien_contactar": (f"`entra_al_campus_sin_abrir_la_materia`: entró al campus en "
+                                  f"los últimos {dias_desenganche} días Y hace "
+                                  f"{dias_desenganche}+ que no abre esta materia. Ése eligió "
+                                  "no entrar. El que no pisa el campus tampoco es otro "
+                                  "problema y no se mezcla."),
+        },
+        "_meta": {
+            "fuente": "vivo",
+            "campo_disponible": True,
+            "degradado": bool(sin_dato),
+            "avisos": ([f"{len(sin_dato)} de {len(filas)} alumnos vinieron sin el último "
+                        "acceso a la materia: quedaron como `sin_dato`, no como 'nunca "
+                        "abrió'. El relevamiento está incompleto."] if sin_dato else []),
+        },
+    }
+    if sin_dato:
+        salida["aviso"] = salida["_meta"]["avisos"][0]
+    return salida
 
 
 async def traza_alumno(client, alumno: dict, tareas: list[dict]) -> dict:

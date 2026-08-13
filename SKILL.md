@@ -77,11 +77,36 @@ Decime el número, o contame con tus palabras qué necesitás.
 
 **Qué hace cada opción** (mapeo a tools; el tutor puede pedir por número o por palabras):
 
-1. **Quiénes están abandonando** → `alumnos_en_riesgo`. Es lo primero del menú porque es lo
-   que más impacto tiene: la deserción avisa antes de pasar y ninguna otra vista cruza las
-   dos señales. Presentá los 🔴 primero con su motivo; ofrecé escribirles (va por
-   `responder_mensaje`, con OK). Si devuelve `sin_alumnos`, decilo tal cual: la comisión
-   todavía no tiene matriculados, NO es que estén todos al día.
+1. **Quiénes están abandonando** → `alumnos_en_riesgo` **+ `sin_entrar_al_aula`**. Es lo
+   primero del menú porque es lo que más impacto tiene: la deserción avisa antes de pasar y
+   ninguna otra vista cruza las señales. Presentá los 🔴 primero con su motivo; ofrecé
+   escribirles (va por `responder_mensaje`, con OK). Si devuelve `sin_alumnos`, decilo tal
+   cual: la comisión todavía no tiene matriculados, NO es que estén todos al día.
+
+   **Cuál de las dos.** `alumnos_en_riesgo` cruza dos señales (días sin abrir la materia +
+   racha de entregas); `sin_entrar_al_aula` mira sólo el reloj de la materia, pero ordena la
+   comisión entera por él y **no depende de que haya vencimientos**.
+
+   Usá `sin_entrar_al_aula` cuando **la racha no sirve**, que pasa más de lo que parece:
+   - a principio de cuatrimestre, cuando todavía no venció nada;
+   - y sobre todo si las actividades **no tienen fecha de entrega**. Medido en Prog I: las 10
+     de cierre no tienen `duedate`, así que "sin entrega" no se distingue de "no vencía" y la
+     racha marca a **94 de 94 alumnos en rojo**. Si `alumnos_en_riesgo` devuelve
+     `alarma_saturada`, no lo presentes como "todos están abandonando": explicá que la alarma
+     está saturada y pasá al reloj de la materia.
+
+   **Los días son SIN ABRIR ESTA MATERIA en las dos tools** (`dias_sin_abrir_la_materia`), y
+   el acceso al campus va aparte (`dias_sin_entrar_al_campus`). Son dos relojes distintos y
+   hasta la v1.13.0 esto leía el equivocado: el que entra todos los días para otra materia y
+   nunca abrió la tuya daba `0` → verde → y los verdes no se devuelven, así que **era
+   invisible**. Corrido contra el código viejo con datos reales de un tutor: de 6 alumnos que
+   había que contactar, **5 salían verdes**. Si el tutor pregunta "quién no entra",
+   preguntale si es al campus o a la materia — y nunca presentes uno como si fuera el otro.
+
+   El campo `estado_aula` decide cómo hablarle a cada uno: `nunca_abrio` + activo en el campus
+   = **eligió no entrar** (es el llamado más urgente y el más recuperable); `nunca_abrio` sin
+   pasar por el campus = capaz dejó de cursar o se quedó sin acceso (otra conversación);
+   `sin_dato` = no se pudo leer, **no digas que no la abrió**.
 2. **Corregir TPs** → preguntá si es **uno puntual** o **una tarea entera**:
    - Uno puntual: `ver_entrega` (LEELA, no califiques a ciegas) → proponé nota y devolución
      con el porqué → `cargar_nota` con preview → OK → confirmado.
@@ -199,10 +224,12 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | **Quiénes entregaron y quiénes deben, con nombre** | `entregas_tarea` |
 | Quién entregó y falta corregir | `pendientes_por_corregir` |
 | Buscar un alumno (en vivo, sin depender del snapshot) | `buscar_alumno` |
+| **Quién dejó de abrir ESTA materia** (reloj del curso, no del sitio) | `sin_entrar_al_aula` |
 | PDF de pendientes | `armar_informe` |
 | **Auditar cómo está armada un aula** (read-only) | `auditar_aula` |
 | **Vista del PROFESOR: todas las comisiones del curso a la vez** | `panorama_comisiones` |
 | **Cuánto espera un alumno para que le corrijan, por comisión** | `demora_correccion` |
+| **EL informe del profesor (+ PDF): trabajo por comisión + alumnos que se están yendo** | `informe_profesor` |
 | Cargar una nota (con devolución, y `adjunto` si va un PDF) | `cargar_nota` |
 | **Mensajes privados que te faltan contestar** | `mensajes_pendientes` |
 | Bandeja de conversaciones · hilo completo | `leer_mensajes` · `leer_conversacion` |
@@ -315,8 +342,57 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 
 ## Vista del profesor — el curso entero, por comisión (read-only)
 
-Todo el resto de la skill mira **una** comisión: la del tutor logueado. Estas dos miran las
+Todo el resto de la skill mira **una** comisión: la del tutor logueado. Éstas miran las
 **16 a la vez**, y son para quien coordina la materia.
+
+**Si el profesor pide "el informe del curso", es `informe_profesor`** — las otras dos son sus
+mitades y siguen sirviendo suelta cada una.
+
+`informe_profesor(course_id, cmids?, dias_desenganche?, incluir_foros?, pdf=True)` — el curso
+entero en una pasada: la tabla de comisiones (trabajo de corrección) **más los alumnos que
+dejaron de abrir la materia**, que es la mitad que faltaba. El padrón se baja una sola vez, así
+que la parte de desenganche no cuesta requests extra. Con `pdf=True` (por defecto) además
+escribe el **PDF listo para coordinación** en `salidas/informes/` y devuelve la ruta en
+`pdf.archivo` — decísela al tutor. Trae el **email** de cada alumno de la lista de riesgo, para
+poder escribirle sin volver a buscar a nadie, y la lista va **agrupada por regional** con las
+sedes que más concentran primero: el seguimiento lo hacen los tutores nexos, que trabajan por
+sede (pedido de coordinación, 13/08). Dentro de cada regional los accionables siguen arriba.
+
+**El padrón se cuadra contra el total del curso** (`padron.en_comisiones` /
+`padron.total_del_curso`, y el KPI sale "555/566"). Eso destapó algo que ninguna vista mostraba:
+en Prog I hay **11 alumnos matriculados en el curso y en su regional pero en NINGUNA comisión**,
+así que no los ve ningún tutor — toda vista por comisión los saltea por construcción. Van
+medidos igual, con la etiqueta `(sin comisión)`, y listados aparte en el PDF. Si aparecen recién
+matriculados ahí, es normal: entran sin comisión hasta que alguien los asigna.
+
+**Son mails personales**, así que cuando le pases la ruta avisale en una línea que ese PDF **no
+va a un repo ni a una nota compartida** — el documento lo dice en el pie, pero un archivo se
+reenvía solo y sin contexto. Si el informe tiene que circular más lejos, `emails=False` genera
+la versión sin datos de contacto.
+
+**Reemplaza los scripts sueltos** con los que la coordinación venía armando estos informes por
+afuera del MCP. Eso importa: cada script ad-hoc vuelve a aprender de cero las trampas de este
+campus —entregas infladas con las que el alumno abrió y nunca envió, el `-1` de lo que todavía
+no se corrigió, el `groupid` que viene 0, el estado "calificado sin nota"— y acá ya están
+resueltas y contrastadas contra el conteo oficial de Moodle.
+
+Comparación en el MISMO curso y el mismo día (Prog III, course 82, 238 alumnos): el informe
+hecho a mano reportó **7 alumnos inactivos** cortando por 21+ días sin pisar el campus; esta
+tool encuentra **48 desenganchados de la materia**, de los cuales 27 entran al campus y no la
+abren. No es que aquél estuviera mal sumado: medía el reloj equivocado.
+
+Medido en Prog IV (course 57, 15 comisiones, 371 alumnos): por el lado del trabajo el curso da
+impecable —casi nada sin corregir, espera máxima 0,9 días, 0 consultas de foro sin responder—
+y al mismo tiempo hay **60 alumnos desenganchados de la materia, 50 de ellos entrando al campus
+sin abrirla**. Las dos cosas son verdad a la vez: por eso el informe trae las dos mitades y
+**no** emite veredicto.
+
+**Nunca abras la presentación con un "estado general: sano"** ni equivalente, ni lo inventes
+vos. Un informe real de coordinación arrancaba así y con "el único foco son 7 alumnos" sobre
+238, porque cortaba la inactividad por el reloj del **campus** — criterio que sobre datos
+medidos pierde el ~90% de los desenganchados. Un adjetivo tranquilizador no lo audita nadie.
+Contá los hechos, leé `_meta.sin_dato` **antes** de los números, y dejá la conclusión al
+profesor.
 
 `panorama_comisiones(course_id, cmids?, incluir_foros?)` — una fila por comisión: tutor a
 cargo, alumnos, entregas, cuántas siguen sin corregir, hace cuántos días espera la más vieja
@@ -342,6 +418,10 @@ deja la hoja EQUIPO vacía: un agente verifica trabajo, nunca califica personas.
   de parcial. Ofrecé el dato, no el veredicto.
 - Requiere ver comisiones ajenas. Si el rol del usuario no lo permite, las filas vuelven con
   `sin_dato` explicando el motivo — nunca con un 0.
+- **El desenganche de `informe_profesor` es sobre ALUMNOS, no sobre tutores.** "com4 tiene 6
+  desenganchados" es un hecho del aula y sirve para ruteo; "el tutor de com4 no engancha a su
+  gente" es un juicio sobre una persona y no va. Misma línea que el resto: la comisión es la
+  unidad de medida, no el docente.
 
 ## Auditoría de aula virtual (read-only)
 
