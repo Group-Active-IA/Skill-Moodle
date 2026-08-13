@@ -291,7 +291,7 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
         # en el renglón donde el informe promete ser exacto. Cada hueco se explica solo abajo.
         E.append(Paragraph("<b>Atención:</b> leé estos huecos antes que los números:", alerta))
         for s in meta.get("sin_dato", [])[:6]:
-            E.append(Paragraph(f"· {s}", small))
+            E.append(Paragraph(f"· {sin_emoji(s)}", small))
         E.append(Spacer(1, 8))
 
     E.append(Paragraph("Qué mide este informe", h2))
@@ -822,7 +822,9 @@ def reporte_coordinacion_pdf(datos: dict, dest_dir: str, materia: str = "", fech
         E.append(Paragraph("<b>Atención:</b> este relevamiento tiene huecos. Leelos antes de los números:",
                            alerta))
         for a in avisos[:6]:
-            E.append(Paragraph(f"· {a}", small))
+            # Los avisos llevan títulos de actividades del campus, y esos vienen con emoji:
+            # reportlab los pinta como cuadraditos negros y en un aviso parecen un dato.
+            E.append(Paragraph(f"· {sin_emoji(a)}", small))
         E.append(Spacer(1, 8))
 
     peor = max((f for f in filas if f.get("sin_corregir")),
