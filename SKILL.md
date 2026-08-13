@@ -229,7 +229,7 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | **Auditar cómo está armada un aula** (read-only) | `auditar_aula` |
 | **Vista del PROFESOR: todas las comisiones del curso a la vez** | `panorama_comisiones` |
 | **Cuánto espera un alumno para que le corrijan, por comisión** | `demora_correccion` |
-| **EL informe del profesor (+ PDF): trabajo por comisión + alumnos que se están yendo** | `informe_profesor` |
+| **Informe para los TUTORES NEXO (+ PDF): alumnos que no abren la materia, por regional** | `informes_nexos` |
 | Cargar una nota (con devolución, y `adjunto` si va un PDF) | `cargar_nota` |
 | **Mensajes privados que te faltan contestar** | `mensajes_pendientes` |
 | Bandeja de conversaciones · hilo completo | `leer_mensajes` · `leer_conversacion` |
@@ -345,59 +345,58 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 Todo el resto de la skill mira **una** comisión: la del tutor logueado. Éstas miran las
 **16 a la vez**, y son para quien coordina la materia.
 
-**Si el profesor pide "el informe del curso", es `informe_profesor`** — las otras dos son sus
-mitades y siguen sirviendo suelta cada una.
+**Hay DOS informes de curso y no son intercambiables**, porque tienen destinatarios distintos:
 
-`informe_profesor(course_id, cmids?, dias_desenganche?, incluir_foros?, pdf=True)` — el curso
-entero en una pasada: la tabla de comisiones (trabajo de corrección) **más los alumnos que
-dejaron de abrir la materia**, que es la mitad que faltaba. El padrón se baja una sola vez, así
-que la parte de desenganche no cuesta requests extra. Con `pdf=True` (por defecto) además
-escribe el **PDF listo para coordinación** en `salidas/informes/` y devuelve la ruta en
-`pdf.archivo` — decísela al tutor. Trae el **email** de cada alumno de la lista de riesgo, para
-poder escribirle sin volver a buscar a nadie, y la lista va **agrupada por regional** con las
-sedes que más concentran primero: el seguimiento lo hacen los tutores nexos, que trabajan por
-sede (pedido de coordinación, 13/08). Dentro de cada regional los accionables siguen arriba.
+- **`informes_nexos(course_id)`** → los **ALUMNOS** que dejaron de abrir la materia, agrupados
+  por regional, con el Tutor Nexo de cada sede. Va a los nexos.
+- **`panorama_comisiones(course_id)`** → el **TRABAJO DE CORRECCIÓN**, por comisión, por tutor y
+  por actividad. Va a coordinación.
 
-**El padrón se cuadra contra el total del curso** (`padron.en_comisiones` /
-`padron.total_del_curso`, y el KPI sale "555/566"). Eso destapó algo que ninguna vista mostraba:
-en Prog I hay **11 alumnos matriculados en el curso y en su regional pero en NINGUNA comisión**,
-así que no los ve ningún tutor — toda vista por comisión los saltea por construcción. Van
-medidos igual, con la etiqueta `(sin comisión)`, y listados aparte en el PDF. Si aparecen recién
-matriculados ahí, es normal: entran sin comisión hasta que alguien los asigna.
+Estaban juntos en un mismo PDF y el costo no era de formato: un tutor que abre un documento
+donde su comisión aparece medida al lado de una lista de alumnos lo lee como una evaluación
+suya. Si te piden "quién no entra a la materia" es la primera; si te piden "cómo viene la
+corrección" o "el rendimiento de los tutores", la segunda. **No las mezcles en una sola
+presentación.**
 
-**Son mails personales**, así que cuando le pases la ruta avisale en una línea que ese PDF **no
-va a un repo ni a una nota compartida** — el documento lo dice en el pie, pero un archivo se
-reenvía solo y sin contexto. Si el informe tiene que circular más lejos, `emails=False` genera
-la versión sin datos de contacto.
+`informes_nexos(course_id, dias_desenganche?, pdf=True, emails=True)` — uno por materia. Los
+alumnos que no abren esa materia, por regional (las que más concentran primero), cada bloque
+encabezado por su nexo con nombre y mail — sale de `mcp/nexos.json`, que viaja con la skill. Si
+una regional no está en el catálogo, el bloque sale SIN contacto y se declara: nunca se le
+adjudica a alguien una sede ajena.
 
-**Reemplaza los scripts sueltos** con los que la coordinación venía armando estos informes por
-afuera del MCP. Eso importa: cada script ad-hoc vuelve a aprender de cero las trampas de este
-campus —entregas infladas con las que el alumno abrió y nunca envió, el `-1` de lo que todavía
-no se corrigió, el `groupid` que viene 0, el estado "calificado sin nota"— y acá ya están
-resueltas y contrastadas contra el conteo oficial de Moodle.
+También cuadra el padrón contra el total del curso y lista a los que están matriculados **en
+ninguna comisión** — a ésos no los ve ningún tutor, porque todas las vistas del campus trabajan
+por comisión. En Prog I aparecieron 11.
 
-Comparación en el MISMO curso y el mismo día (Prog III, course 82, 238 alumnos): el informe
-hecho a mano reportó **7 alumnos inactivos** cortando por 21+ días sin pisar el campus; esta
-tool encuentra **48 desenganchados de la materia**, de los cuales 27 entran al campus y no la
-abren. No es que aquél estuviera mal sumado: medía el reloj equivocado.
+Sin la mitad de correcciones no consulta ninguna tarea, así que tarda 9-18 s en vez de 20-25.
 
-Medido en Prog IV (course 57, 15 comisiones, 371 alumnos): por el lado del trabajo el curso da
-impecable —casi nada sin corregir, espera máxima 0,9 días, 0 consultas de foro sin responder—
-y al mismo tiempo hay **60 alumnos desenganchados de la materia, 50 de ellos entrando al campus
-sin abrirla**. Las dos cosas son verdad a la vez: por eso el informe trae las dos mitades y
-**no** emite veredicto.
+**El email de cada alumno va en el PDF** (es lo que lo hace accionable). Son mails personales:
+cuando pases la ruta, avisá que ese PDF no va a un repo ni a una nota compartida. El documento
+lo dice en el pie, pero un archivo se reenvía solo y sin contexto. `emails=False` lo genera sin
+datos de contacto.
 
-**Nunca abras la presentación con un "estado general: sano"** ni equivalente, ni lo inventes
-vos. Un informe real de coordinación arrancaba así y con "el único foco son 7 alumnos" sobre
-238, porque cortaba la inactividad por el reloj del **campus** — criterio que sobre datos
-medidos pierde el ~90% de los desenganchados. Un adjetivo tranquilizador no lo audita nadie.
-Contá los hechos, leé `_meta.sin_dato` **antes** de los números, y dejá la conclusión al
-profesor.
+**Nunca abras la presentación con un "estado general: sano"** ni lo inventes vos. Un informe
+real de coordinación arrancaba así y con "el único foco son 7 alumnos" sobre 238, porque cortaba
+la inactividad por el reloj del **campus** — criterio que sobre datos medidos pierde el ~90% de
+los desenganchados. Contá los hechos, leé `_meta.sin_dato` **antes** de los números, y dejá la
+conclusión a quien lee.
 
-`panorama_comisiones(course_id, cmids?, incluir_foros?)` — una fila por comisión: tutor a
-cargo, alumnos, entregas, cuántas siguen sin corregir, hace cuántos días espera la más vieja
-y cuántas consultas de foro no contestó nadie. Sin `cmids` mira todas las tareas del curso
-(~15 s en Prog I). Contrastada contra el conteo oficial de Moodle: da exacto.
+`panorama_comisiones(course_id, cmids?, incluir_foros?, pdf=True)` — el trabajo de corrección
+del curso, cortado de **tres** maneras, con PDF:
+
+- **por comisión**: tutor, alumnos, entregadas, corregidas, sin corregir, calificado sin nota,
+  espera máxima, demora mediana, consultas de foro sin responder.
+- **por tutor**: la carga sumando SUS comisiones — varios llevan dos y su cola real no está en
+  ninguna fila. Ordenado por la espera más antigua.
+- **por actividad**: la misma cola al revés. Cuando una actividad se atrasa en varias comisiones
+  a la vez el problema suele ser de la consigna o del calendario, y por comisión no se ve.
+  Medido en Prog I: la actividad de la unidad 4 tenía 12 sin corregir repartidas en 7
+  comisiones — una o dos por tutor, invisible de a una.
+
+Trae también `actividades_sin_fecha_de_entrega`, y eso importa: sin `duedate` no se puede
+distinguir "no entregó" de "todavía no vencía". En Prog I no la tiene **ninguna** de las 10
+actividades de cierre, y es lo que hace que la lista de riesgo marque al padrón entero.
+Contrastada contra el conteo oficial de Moodle: da exacto. ~16 s en Prog I.
 
 `demora_correccion(course_id, cmids?)` — días entre la entrega y la nota, por comisión.
 Devuelve dos bloques que **no** son lo mismo: `demora_*` es historia (ya corregidas) y
@@ -418,7 +417,7 @@ deja la hoja EQUIPO vacía: un agente verifica trabajo, nunca califica personas.
   de parcial. Ofrecé el dato, no el veredicto.
 - Requiere ver comisiones ajenas. Si el rol del usuario no lo permite, las filas vuelven con
   `sin_dato` explicando el motivo — nunca con un 0.
-- **El desenganche de `informe_profesor` es sobre ALUMNOS, no sobre tutores.** "com4 tiene 6
+- **El desenganche de `informes_nexos` es sobre ALUMNOS, no sobre tutores.** "com4 tiene 6
   desenganchados" es un hecho del aula y sirve para ruteo; "el tutor de com4 no engancha a su
   gente" es un juicio sobre una persona y no va. Misma línea que el resto: la comisión es la
   unidad de medida, no el docente.

@@ -37,12 +37,18 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
   comisiones × 11 actividades) sale en quince segundos. Son **hechos por comisión, no un
   puntaje del tutor**: nombra a quién llamar y explica cada blanco, para que un 0 de
   "comisión vacía" nunca se lea como un 0 de "trabajo al día".
-- **Informes en PDF**: pendientes por comisión (para el tutor) y el **informe de curso para
-  coordinación** (`informe_profesor`), que junta el trabajo de corrección de todas las
-  comisiones con los alumnos que dejaron de abrir la materia, con su regional y su mail para
-  poder contactarlos. Sin veredictos: hechos y huecos declarados, porque la conclusión la saca
-  quien coordina. Ese PDF lleva datos de contacto de alumnos: queda en `salidas/`, fuera del
-  repo, y no se comparte fuera del equipo docente (`emails=False` lo genera sin ellos).
+- **Informes en PDF**, tres, con destinatarios distintos:
+  - **`informe_pendientes`** — para el tutor: qué le falta corregir en su comisión.
+  - **`informes_nexos`** — para los **Tutores Nexo**: los alumnos que dejaron de abrir esa
+    materia, agrupados por regional y con el nexo de cada sede (nombre y mail, del catálogo que
+    viaja con la skill). Habla de alumnos y de nadie más. Lleva el mail de cada alumno para
+    poder escribirle: queda en `salidas/`, fuera del repo, y no se comparte fuera del equipo
+    docente (`emails=False` lo genera sin datos de contacto).
+  - **`panorama_comisiones`** — para coordinación: el trabajo de corrección del curso cortado
+    por comisión, por tutor y por actividad. Nombra a los tutores para saber a quién llamar y
+    **no los puntúa**.
+
+  Ninguno emite veredicto: hechos y huecos declarados, porque la conclusión la saca quien lee.
 - **Ver la entrega antes de calificar**: baja el trabajo del alumno, descomprime el `.zip`
   y te muestra el código. Calificar sin haber visto lo entregado deja de ser posible.
 - **Corrección en lote**: resolvés una tarea entera alumno por alumno sin tocar Moodle, y

@@ -1042,29 +1042,57 @@ async def _cmids_del_curso(course_id: int, cmids: list[str] | None) -> list[str]
 
 @mcp.tool()
 async def panorama_comisiones(course_id: int, cmids: list[str] | None = None,
-                              incluir_foros: bool = True) -> dict:
-    """LA VISTA DEL PROFESOR: una fila por comisión del curso — tutor a cargo, alumnos,
-    entregas, cuántas siguen sin corregir, hace cuántos días espera la más vieja y cuántas
-    consultas de foro no contestó nadie. Responde "¿dónde hay trabajo parado, y a quién
-    llamo?" sin abrir las 16 comisiones a mano.
+                              incluir_foros: bool = True, pdf: bool = True) -> dict:
+    """La vista del PROFESOR sobre el TRABAJO DE CORRECCIÓN del curso entero, cortada de tres
+    maneras: por comisión, por tutor y por actividad. Con `pdf=True` (por defecto) escribe el
+    PDF de coordinación y devuelve la ruta en `pdf.archivo`.
 
-    Es distinto de todo el resto de la skill, que mira UNA comisión (la del tutor logueado).
-    Requiere ver comisiones ajenas: si tu rol en el campus no lo permite, las filas vuelven
-    con `sin_dato` explicando el motivo — nunca con un 0.
+    Es el complemento de `informes_nexos`, que habla sólo de ALUMNOS. Están separados a
+    propósito: juntos en un mismo documento, un tutor leía la lista de alumnos desenganchados
+    como parte de su evaluación. Si te piden "quién no entra a la materia", NO es esta tool.
 
-    CÓMO SE LEE, y esto no es opcional: **las filas son HECHOS, no una evaluación del
-    tutor.** Nombrar al docente de una comisión es un dato de ruteo (a quién llamar), no un
-    juicio. Un número alto puede ser una comisión más grande, una consigna más difícil o una
-    semana de parcial. Antes de cualquier conclusión, mirá `sin_dato` de esa fila: distingue
-    "0 porque está al día" de "0 porque la comisión está vacía", "porque nadie entregó
-    todavía" o "porque no pude leer". Un 0 con motivo NO es trabajo terminado.
-    NO ordenes las filas como ranking ni las presentes como puntaje de nadie.
+    Tres cortes de la misma información:
+    - **por comisión** (`filas`): tutor, alumnos, entregadas, corregidas, sin corregir,
+      calificado sin nota, espera máxima, demora mediana, consultas de foro sin responder.
+    - **por tutor** (`por_tutor`): la carga sumando SUS comisiones, porque varios llevan dos y
+      su cola real no está en ninguna fila. Ordenado por la espera más antigua.
+    - **por actividad** (`por_actividad`): la misma cola cortada al revés. Cuando una actividad
+      se atrasa en varias comisiones a la vez el problema suele ser de la consigna o del
+      calendario, y por comisión eso no se ve.
 
-    `cmids` acota a ciertas tareas; sin pasarlo mira TODAS las del curso (más lento).
-    `incluir_foros=False` saltea los foros, que son la parte más cara.
-    Es READ-ONLY: no escribe nada en el campus."""
-    return await panorama.panorama_comisiones(
+    **Espera máx es lo accionable; volumen NO es atraso.** Una cola de 15 entregas de ayer está
+    al día; una sola entrega esperando tres semanas no. Al presentarlo, ordená por espera.
+
+    **Se audita el TRABAJO, nunca se califica a la PERSONA.** Nombrar al tutor es ruteo —a quién
+    llamar— y va. Un ranking, un podio o un puntaje de tutores NO va, ni en la tabla ni en cómo
+    lo contás: las comisiones no son comparables entre sí (distinto tamaño, consigna y cohorte),
+    así que comparar personas convierte un hecho en un juicio. Lo mismo con los veredictos: no
+    escribas "estado general: sano" ni equivalentes.
+
+    **Leé `sin_dato` de cada fila antes de concluir.** Distingue "0 porque está al día" de "0
+    porque la comisión está vacía", "porque nadie entregó todavía" o "porque no pude leer".
+
+    `actividades_sin_fecha_de_entrega` importa: sin `duedate` no se puede distinguir "no
+    entregó" de "todavía no vencía" (en Prog I no la tiene ninguna). Si eso está, cuidado con
+    leer los faltantes como abandono.
+
+    Sin `cmids` mira todas las tareas del curso. READ-ONLY sobre el campus: lo único que escribe
+    es el PDF, local, en `salidas/`."""
+    from datetime import date
+
+    datos = await panorama.panorama_comisiones(
         _cli(), course_id, await _cmids_del_curso(course_id, cmids), incluir_foros)
+    if datos.get("error") or not pdf:
+        return datos
+    try:
+        nombre = await panorama._nombre_del_curso(_cli(), course_id)
+        datos["pdf"] = informes.panorama_pdf(
+            datos, str(Path(almacen.SALIDAS_DIR) / "informes"),
+            materia=nombre or "", fecha=date.today().isoformat())
+    except Exception as e:  # noqa: BLE001
+        # Que falle el render no puede tirar el relevamiento del curso entero.
+        datos["pdf"] = {"error": f"No pude escribir el PDF: {type(e).__name__}: {e}"}
+    return datos
 
 
 @mcp.tool()
@@ -1085,72 +1113,57 @@ async def demora_correccion(course_id: int, cmids: list[str] | None = None) -> d
 
 
 @mcp.tool()
-async def informe_profesor(course_id: int, cmids: list[str] | None = None,
-                           dias_desenganche: int = 7, incluir_foros: bool = True,
-                           pdf: bool = True, emails: bool = True) -> dict:
-    """EL informe del curso para el profesor/coordinador, en una sola pasada: el trabajo de
-    corrección por comisión **+ los alumnos que dejaron de abrir la materia**. Con `pdf=True`
-    (por defecto) escribe además el **PDF de 3 páginas** listo para mandar a coordinación, y
-    devuelve la ruta en `pdf.archivo`. Con `pdf=False` sólo los datos.
+async def informes_nexos(course_id: int, dias_desenganche: int = 7,
+                         pdf: bool = True, emails: bool = True) -> dict:
+    """EL informe para los TUTORES NEXO: los alumnos que dejaron de abrir la materia,
+    agrupados por REGIONAL, con el nexo de cada sede y su mail. Con `pdf=True` (por defecto)
+    escribe además el PDF listo para mandar y devuelve la ruta en `pdf.archivo`.
 
-    Reemplaza los scripts sueltos con los que la coordinación venía armando estos informes.
-    Eso importa más de lo que parece: cada script ad-hoc vuelve a aprender de cero las trampas
-    del campus, y este campus tiene varias que ya costaron bugs reales — que las entregas vienen
-    infladas con las que el alumno abrió y nunca envió, que Moodle guarda un `-1` en la nota de
-    lo que TODAVÍA no se corrigió, que el `groupid` de una entrega viene 0 y no significa "grupo
-    0", que existe el estado "calificado sin nota". Acá eso ya está resuelto y verificado contra
-    el conteo oficial de Moodle.
+    Uno por materia: pasás el `course_id` y sale el de ese curso.
 
-    Junta las dos mitades que ninguna vista del campus cruza. `panorama_comisiones` y
-    `demora_correccion` miden lo que deben los TUTORES; esto agrega lo que decide si un alumno
-    abandona: quién dejó de aparecer por la materia. El padrón se baja una sola vez, así que la
-    mitad nueva no cuesta requests extra.
+    **Habla de ALUMNOS y de nadie más.** No trae ni una columna del trabajo de corrección de
+    los tutores — eso es `panorama_comisiones`, y va a coordinación. Estaban juntos en un mismo
+    PDF y el costo no era de formato: un tutor que abre un documento donde su comisión aparece
+    medida al lado de una lista de alumnos lo lee como una evaluación suya. Si te piden "el
+    rendimiento de los tutores", NO es esta tool.
 
-    **Cómo presentarlo (importante).** La tool NO emite veredicto y vos tampoco: no escribas
-    "estado general: sano" ni equivalentes. Un informe real de coordinación abría con "sano" y
-    "el único foco son 7 alumnos" sobre 238, porque cortaba el desenganche por el reloj del
-    CAMPUS — criterio que sobre datos medidos pierde el ~90% de los casos. Presentá los hechos,
-    leé `_meta.sin_dato` ANTES de los números y decí los huecos. La conclusión es del profesor.
+    Los días son **sin abrir ESTA materia**, no sin entrar al campus. Cada fila trae los dos
+    relojes y el `caso`, que es lo que decide cómo hablarle a cada uno:
+    - **está en el campus** → entra a Moodle y no abre la materia. Eligió no entrar: es el más
+      recuperable y el que un corte por "días sin entrar al campus" no encuentra. Va primero.
+    - **no aparece** → tampoco pisa el campus. Otra conversación: acceso perdido, o dejó.
+    - **sin dato** → no se pudo leer. NO digas que no la abrió.
 
-    Dos reglas duras que no se negocian al mostrarlo:
-    - **Se audita el TRABAJO, nunca se califica a la PERSONA.** Nombrar al tutor de una comisión
-      es ruteo (a quién llamar) y va; un ranking o un puntaje de tutores NO va, ni en la tabla
-      ni en cómo lo contás.
-    - **El desenganche es sobre ALUMNOS y se mide con el reloj de la MATERIA.** Cada fila trae
-      `dias_sin_abrir_la_materia` y `dias_sin_entrar_al_campus`: son distintos y no se
-      intercambian. Mirá `detalle`, que ya dice cuál es el caso de cada uno.
+    `estado_aula = nunca_abrio` **no es abandono confirmado**: puede haberse matriculado esta
+    semana, y esto no ve la fecha de matriculación. Presentalo así.
 
-    En `desenganche.alumnos` van primero los que **entran al campus y no abren la materia**:
-    ésos no perdieron el acceso, eligieron no entrar — es el grupo más accionable y el más
-    recuperable. Después los que no aparecen por ningún lado, que son otro problema.
+    El nexo de cada regional sale de `mcp/nexos.json`, que viaja con la skill. Si una regional
+    no está en el catálogo, el bloque sale SIN contacto y se declara en `_meta.sin_dato` — nunca
+    se le adjudica a alguien una sede que no es suya.
 
-    `estado_aula`: `abrio` · `nunca_abrio` (NO es abandono confirmado: puede haberse matriculado
-    esta semana) · `sin_dato` (no se pudo leer, **no** digas que no la abrió).
+    También cuadra el padrón contra el total del curso y lista a los alumnos que están
+    matriculados pero **en ninguna comisión**: a ésos no los ve ningún tutor, porque todas las
+    vistas del campus trabajan por comisión.
 
-    El PDF trae la Regional de cada alumno (sale de sus grupos `R-*`, no del perfil) y un corte
-    por regional, para ver si el desenganche se concentra en una sede.
+    **No emite veredicto y vos tampoco**: nada de "estado general: sano". El informe que se
+    venía armando a mano abría así sobre un curso con 60 alumnos que no abrían la materia,
+    porque cortaba por el reloj del campus. Contá los hechos, leé `_meta.sin_dato` ANTES de los
+    números, y dejá la conclusión a quien lee.
 
-    `emails=True` (por defecto) incluye el mail de cada alumno de la lista de riesgo, que es lo
-    que hace el documento accionable — se le puede escribir sin volver a buscar a nadie. Son
-    mails **personales**, así que **cuando le pases la ruta al tutor decile que ese PDF no va a
-    un repo ni a una nota compartida**; el propio documento lo avisa en el pie. `emails=False`
-    genera la versión sin datos de contacto, para cuando el informe circula más lejos.
-
-    Sin `cmids` mira todas las tareas del curso. READ-ONLY sobre el campus: lo único que escribe
-    es el PDF, local, en `salidas/`."""
+    `emails=True` incluye el mail de cada alumno (es lo que lo hace accionable). Son mails
+    personales: cuando pases la ruta, avisá que el PDF no va a un repo ni a una nota compartida.
+    READ-ONLY sobre el campus; lo único que escribe es el PDF, local, en `salidas/`."""
     from datetime import date
 
-    datos = await panorama.informe_profesor(
-        _cli(), course_id, await _cmids_del_curso(course_id, cmids),
-        dias_desenganche, incluir_foros)
+    datos = await panorama.informe_nexos(_cli(), course_id, dias_desenganche)
     if datos.get("error") or not pdf:
         return datos
     try:
-        datos["pdf"] = informes.informe_profesor_pdf(
+        datos["pdf"] = informes.informe_nexos_pdf(
             datos, str(Path(almacen.SALIDAS_DIR) / "informes"),
             materia=datos.get("curso") or "", fecha=date.today().isoformat(),
             emails=emails)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         # Que falle el render NO puede tirar los datos: se relevó el curso entero y eso vale.
         datos["pdf"] = {"error": f"No pude escribir el PDF: {type(e).__name__}: {e}"}
         datos["_meta"]["degradado"] = True

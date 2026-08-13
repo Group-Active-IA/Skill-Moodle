@@ -1,0 +1,163 @@
+{
+  "_leeme": "Tutores Nexo por regional. LA CLAVE ES EL NOMBRE DEL GRUPO DEL CAMPUS sin el prefijo 'R-': el campus tiene 'R-San Nicolás' y acá la clave es 'San Nicolás'. Si cambia un nombre en el campus, la clave deja de matchear y el informe muestra la regional SIN nexo — nunca inventa uno. Verificado el 2026-08-13: las 17 regionales son idénticas en los cursos 74, 81, 82 y 57.",
+  "_fuente": "Comunicado de coordinación TUP — contacto de Tutores Nexo (2026-08-13).",
+  "actualizado": "2026-08-13",
+  "regionales": {
+    "Avellaneda": {
+      "facultad": "Facultad Regional Avellaneda",
+      "nexos": [
+        "Paula Garaventa"
+      ],
+      "mails": [
+        "webmaster@fra.utn.edu.ar",
+        "tutoriatup@fra.utn.edu.ar"
+      ]
+    },
+    "Concepción del Uruguay": {
+      "facultad": "Facultad Regional Concepción del Uruguay",
+      "nexos": [
+        "Luciana Gabriela Valiente"
+      ],
+      "mails": [
+        "lucianagvalienteutn@gmail.com"
+      ]
+    },
+    "Concordia": {
+      "facultad": "Facultad Regional Concordia",
+      "nexos": [
+        "Alejandra Verónica Alzogaray"
+      ],
+      "mails": [
+        "carrerasadistancia@frcon.utn.edu.ar"
+      ]
+    },
+    "Córdoba": {
+      "facultad": "Facultad Regional Córdoba",
+      "nexos": [
+        "Erika Cuello"
+      ],
+      "mails": [
+        "ecuello@frc.utn.edu.ar"
+      ]
+    },
+    "Chubut": {
+      "facultad": "Facultad Regional Chubut",
+      "nexos": [
+        "Adriana Soria",
+        "Marcela Manqueo"
+      ],
+      "mails": [
+        "consorcios@frch.utn.edu.ar"
+      ]
+    },
+    "General Pacheco": {
+      "facultad": "Facultad Regional General Pacheco",
+      "nexos": [
+        "Felipe Leandro Sacomandi"
+      ],
+      "mails": [
+        "fsacomandi@red.frgp.utn.edu.ar"
+      ]
+    },
+    "La Plata": {
+      "facultad": "Facultad Regional La Plata",
+      "nexos": [
+        "Sergio Maldonado"
+      ],
+      "mails": [
+        "smaldonado@frlp.utn.edu.ar"
+      ]
+    },
+    "Mar del Plata": {
+      "facultad": "Facultad Regional Mar del Plata",
+      "nexos": [
+        "Ludmila Ippoliti"
+      ],
+      "mails": [
+        "ludmila.ippoliti@tupad.utn.edu.ar"
+      ]
+    },
+    "Mendoza": {
+      "facultad": "Facultad Regional Mendoza",
+      "nexos": [
+        "Cristian Mut"
+      ],
+      "mails": [
+        "mutcristian@gmail.com"
+      ]
+    },
+    "Paraná": {
+      "facultad": "Facultad Regional Paraná",
+      "nexos": [
+        "Carolina Maidana Morelli"
+      ],
+      "mails": [
+        "maria.maidana@tupad.utn.edu.ar"
+      ]
+    },
+    "Reconquista": {
+      "facultad": "Facultad Regional Reconquista",
+      "nexos": [
+        "Leidi Zanel"
+      ],
+      "mails": [
+        "lzanel2195@comunidad.frrq.utn.edu.ar",
+        "tupeadfrrq@gmail.com"
+      ]
+    },
+    "Resistencia": {
+      "facultad": "Facultad Regional Resistencia",
+      "nexos": [
+        "Patricia Cáceres"
+      ],
+      "mails": [
+        "patriciac@gfe.frre.utn.edu.ar"
+      ]
+    },
+    "Rosario": {
+      "facultad": "Facultad Regional Rosario",
+      "nexos": [
+        "Selene Danyluk"
+      ],
+      "mails": [
+        "selenedanyluk@gmail.com"
+      ]
+    },
+    "San Francisco": {
+      "facultad": "Facultad Regional San Francisco",
+      "nexos": [
+        "Kevin Arce"
+      ],
+      "mails": [
+        "kevinarcekessler.kak@gmail.com"
+      ]
+    },
+    "San Nicolás": {
+      "facultad": "Facultad Regional San Nicolás",
+      "nexos": [
+        "Aldana Bassaga"
+      ],
+      "mails": [
+        "nexo.sannicolas@frsn.utn.edu.ar"
+      ]
+    },
+    "Venado Tuerto": {
+      "facultad": "Facultad Regional Venado Tuerto",
+      "nexos": [
+        "Renata Centini"
+      ],
+      "mails": [
+        "bedelia@frvt.utn.edu.ar"
+      ]
+    },
+    "Villa María": {
+      "facultad": "Facultad Regional Villa María",
+      "nexos": [
+        "Fernando Serassio"
+      ],
+      "mails": [
+        "fernandoserassio@gmail.com"
+      ]
+    }
+  }
+}

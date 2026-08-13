@@ -5,6 +5,9 @@
 !mcp/aulas.json
 !mcp/comisiones.json
 !mcp/config.example.json
+# Catálogo de Tutores Nexo por regional. Va al repo A PROPÓSITO: si queda ignorado, la skill
+# anda en la máquina del que lo escribió y ningún otro tutor lo recibe — un fallo que no avisa.
+!mcp/nexos.json
 
 # Credenciales / secretos
 .env

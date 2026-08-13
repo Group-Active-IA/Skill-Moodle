@@ -1050,72 +1050,209 @@ class TestDesengancheDelCurso(unittest.TestCase):
             len(panorama.desenganche_del_curso(padrones, self.COMS, 3)["alumnos"]), 1)
 
 
-class TestPuntosDeAtencion(unittest.TestCase):
-    """Los focos del informe del profesor: calculados de los datos, sin adjetivos.
+class TestFocosDeAlumnos(unittest.TestCase):
+    """Los focos del informe de nexos: calculados de los datos, sin adjetivos.
 
-    En el informe original este bloque lo escribía un modelo a partir de los números y salía
-    "Estado general: sano" sobre un curso con 60 alumnos que no abrían la materia. Acá se
-    calcula, y estos tests fijan que siga siendo hechos con su cuenta al lado.
+    En el informe que se venía armando a mano este bloque lo escribía un modelo y salía
+    "Estado general: sano" sobre un curso con 60 alumnos que no abrían la materia. Estos tests
+    fijan que siga siendo hechos con su cuenta al lado.
     """
 
     @staticmethod
     def _datos(**kw):
         base = {
-            "hechos": {"entregadas": 170, "corregidas": 162, "sin_corregir": 8,
-                       "espera_max_dias_del_curso": 0.9, "calificado_sin_nota": 0},
             "desenganche": {
-                "totales": {"desenganchados": 60, "entran_al_campus_sin_abrir_la_materia": 50,
-                            "nunca_abrieron": 14, "nunca_entraron_ni_al_campus": 0},
-                "por_comision": {"com4": {"entran_al_campus_sin_abrir_la_materia": 6},
-                                 "com1": {"entran_al_campus_sin_abrir_la_materia": 5}},
+                "relevados": 371,
+                "dias_desenganche": 7,
+                "totales": {"desenganchados": 60,
+                            "entran_al_campus_sin_abrir_la_materia": 50,
+                            "nunca_abrieron": 14, "nunca_entraron_ni_al_campus": 0,
+                            "sin_dato": 0},
+                "por_regional_bloques": [
+                    {"regional": "Avellaneda", "alumnos": 23, "desenganchados": 6,
+                     "lista": [{"entra_al_campus_sin_abrir_la_materia": True}] * 6},
+                    {"regional": "Chubut", "alumnos": 21, "desenganchados": 4,
+                     "lista": [{"entra_al_campus_sin_abrir_la_materia": True}] * 3
+                              + [{"entra_al_campus_sin_abrir_la_materia": False}]},
+                ],
             },
-            "por_comision": [{"comision": "com12", "tutor": {"nombre": "T Uno"},
-                              "espera_max_dias": 0.9, "sin_corregir": 3}],
+            "padron": {"sin_comision": 0},
         }
         for k, v in kw.items():
             base[k] = {**base[k], **v} if isinstance(v, dict) and k in base else v
         return base
 
     def test_lo_primero_es_el_grupo_recuperable(self):
-        p = informes.puntos_de_atencion(self._datos())
-        self.assertIn("50 alumnos entran al campus", p[0][0])
-        self.assertIn("com4 (6)", p[0][1])
+        f = informes.focos_de_alumnos(self._datos())
+        self.assertIn("50 alumnos entran al campus", f[0][0])
+        self.assertIn("Avellaneda (6)", f[0][1])
 
     def test_separa_a_los_que_no_aparecen_por_ningun_lado(self):
-        p = informes.puntos_de_atencion(self._datos())
-        self.assertTrue(any("no aparecen ni por el campus" in t for t, _ in p))
+        f = informes.focos_de_alumnos(self._datos())
         # 60 desenganchados - 50 que entran al campus = 10 fríos.
-        self.assertTrue(any("10 alumnos" in t for t, _ in p))
+        self.assertTrue(any("10 alumnos no aparecen" in t for t, _ in f))
 
-    def test_sin_cola_de_correccion_lo_dice_acotado_a_lo_relevado(self):
-        d = self._datos(hechos={"sin_corregir": 0})
-        p = informes.puntos_de_atencion(d)
-        texto = " ".join(t + " " + x for t, x in p)
-        self.assertIn("No hay entregas esperando", texto)
-        self.assertIn("actividades relevadas", texto)
+    def test_los_alumnos_sin_comision_son_su_propio_foco(self):
+        f = informes.focos_de_alumnos(self._datos(padron={"sin_comision": 11}))
+        self.assertTrue(any("11 alumnos sin comisión" in t for t, _ in f))
+        self.assertTrue(any("ningún tutor" in d for _, d in f))
 
-    def test_el_cuarto_estado_del_campus_aparece(self):
-        d = self._datos(hechos={"calificado_sin_nota": 3})
-        p = informes.puntos_de_atencion(d, tope=9)
-        self.assertTrue(any("SIN nota" in t for t, _ in p))
+    def test_sin_dato_aparece_y_aclara_que_no_es_no_la_abrio(self):
+        f = informes.focos_de_alumnos(
+            self._datos(desenganche={"totales": {
+                "desenganchados": 60, "entran_al_campus_sin_abrir_la_materia": 50,
+                "nunca_abrieron": 14, "nunca_entraron_ni_al_campus": 0, "sin_dato": 3}}),
+            tope=9)
+        texto = " ".join(t + " " + d for t, d in f)
+        self.assertIn("3 alumnos no se pudieron medir", texto)
+        self.assertIn("no se sabe", texto)
 
     def test_NUNCA_emite_un_veredicto(self):
         # El test que fija la doctrina: ninguna palabra que cierre el diagnóstico por el lector.
-        # Un "sano" no lo audita nadie; un número raro sí.
         prohibidas = ("sano", "saludable", "excelente", "crisis", "grave", "todo al día",
                       "estado general", "impecable", "preocupante")
-        for datos in (self._datos(), self._datos(hechos={"sin_corregir": 0}),
-                      self._datos(desenganche={"totales": {
-                          "desenganchados": 0, "entran_al_campus_sin_abrir_la_materia": 0,
-                          "nunca_abrieron": 0, "nunca_entraron_ni_al_campus": 0}})):
-            texto = " ".join(t + " " + x for t, x in informes.puntos_de_atencion(datos)).lower()
-            for p in prohibidas:
-                self.assertNotIn(p, texto, f"apareció un veredicto: {p!r}")
+        casos = [self._datos(),
+                 self._datos(padron={"sin_comision": 11}),
+                 self._datos(desenganche={"totales": {
+                     "desenganchados": 0, "entran_al_campus_sin_abrir_la_materia": 0,
+                     "nunca_abrieron": 0, "nunca_entraron_ni_al_campus": 0, "sin_dato": 0}})]
+        for datos in casos:
+            texto = " ".join(t + " " + d
+                             for t, d in informes.focos_de_alumnos(datos)).lower()
+            for pal in prohibidas:
+                self.assertNotIn(pal, texto, f"apareció un veredicto: {pal!r}")
 
     def test_curso_sin_nada_para_reportar_no_inventa_focos(self):
         d = self._datos(
-            hechos={"sin_corregir": 0, "entregadas": 0, "corregidas": 0},
             desenganche={"totales": {"desenganchados": 0,
                                      "entran_al_campus_sin_abrir_la_materia": 0,
-                                     "nunca_abrieron": 0, "nunca_entraron_ni_al_campus": 0}})
-        self.assertEqual(informes.puntos_de_atencion(d), [])
+                                     "nunca_abrieron": 0, "nunca_entraron_ni_al_campus": 0,
+                                     "sin_dato": 0}},
+            padron={"sin_comision": 0})
+        self.assertEqual(informes.focos_de_alumnos(d), [])
+
+
+
+
+class TestCatalogoDeNexos(unittest.TestCase):
+    """El catálogo de Tutores Nexo que viaja con la skill.
+
+    La clave es el nombre del grupo del campus sin el `R-`. Si no matchea, el bloque de esa
+    regional sale SIN contacto — nunca con un nexo inventado, que sería adjudicarle a alguien
+    una sede que no es suya.
+    """
+
+    def test_el_catalogo_carga_y_tiene_las_17_regionales(self):
+        regs, aviso = panorama.nexos_por_regional()
+        self.assertIsNone(aviso)
+        self.assertEqual(len(regs), 17)
+
+    def test_cada_regional_tiene_nexo_y_al_menos_un_mail(self):
+        regs, _ = panorama.nexos_por_regional()
+        for nombre, d in regs.items():
+            self.assertTrue(d.get("nexos"), f"{nombre} sin nexo")
+            self.assertTrue(d.get("mails"), f"{nombre} sin mail")
+            for m in d["mails"]:
+                self.assertIn("@", m, f"{nombre}: mail raro {m!r}")
+
+    def test_las_claves_son_los_nombres_del_campus_sin_el_prefijo(self):
+        # Verificado en vivo el 2026-08-13 contra los 4 cursos: éstas son las 17 tal cual.
+        regs, _ = panorama.nexos_por_regional()
+        for esperada in ("San Nicolás", "Mar del Plata", "Villa María",
+                         "Concepción del Uruguay", "General Pacheco", "Córdoba", "Paraná"):
+            self.assertIn(esperada, regs, f"falta {esperada!r} o cambió de nombre")
+        # y ninguna clave arrastra el prefijo del grupo
+        for k in regs:
+            self.assertFalse(k.startswith("R-"), f"la clave {k!r} tiene el prefijo pegado")
+
+    def test_una_regional_que_no_esta_en_el_catalogo_no_inventa_nexo(self):
+        regs, _ = panorama.nexos_por_regional()
+        self.assertIsNone(regs.get("Regional Inexistente"))
+
+
+class TestCortesDelTrabajo(unittest.TestCase):
+    """Los dos cortes nuevos del panorama: por actividad y por tutor. Ambos puros."""
+
+    @staticmethod
+    def _tarea(entregas, calificadas=(), sin_nota=(), pendientes=()):
+        return {"entregas": entregas, "calificadas": dict(calificadas),
+                "sin_nota": set(sin_nota), "pendientes": set(pendientes)}
+
+    def test_por_actividad_suma_las_comisiones_y_dice_en_cuantas_hay_cola(self):
+        # Lo que la vista por comisión NO muestra: 1 pendiente en cada una de 3 comisiones es
+        # una actividad con 3 de cola, y eso es un problema de la consigna, no de nadie.
+        uid_a_com = {1: "com1", 2: "com2", 3: "com3"}
+        datos = {"100": self._tarea({1: 1000, 2: 1000, 3: 1000}, pendientes=(1, 2, 3))}
+        meta = {"100": {"titulo": "TP Unidad 4", "duedate": 0}}
+        r = panorama.resumen_por_actividad(datos, uid_a_com, meta, ahora=1000 + 3 * 86400)
+        self.assertEqual(r[0]["sin_corregir"], 3)
+        self.assertEqual(r[0]["comisiones_con_cola"], 3)
+        self.assertEqual(r[0]["espera_max_dias"], 3.0)
+        self.assertEqual(r[0]["vencimiento"], "sin fecha")
+
+    def test_por_actividad_no_cuenta_alumnos_fuera_de_comision(self):
+        # Así los totales cierran con las filas por comisión, que tampoco los cuentan.
+        datos = {"100": self._tarea({1: 1000, 99: 1000}, pendientes=(1, 99))}
+        r = panorama.resumen_por_actividad(datos, {1: "com1"}, {}, ahora=2000)
+        self.assertEqual(r[0]["entregadas"], 1)
+
+    def test_por_actividad_distingue_vencida_de_a_futuro_y_de_sin_fecha(self):
+        ahora = 1_000_000
+        datos = {str(i): self._tarea({}) for i in (1, 2, 3)}
+        meta = {"1": {"titulo": "vieja", "duedate": ahora - 86400},
+                "2": {"titulo": "proxima", "duedate": ahora + 86400},
+                "3": {"titulo": "sin", "duedate": 0}}
+        r = {a["titulo"]: a["vencimiento"]
+             for a in panorama.resumen_por_actividad(datos, {}, meta, ahora)}
+        self.assertEqual(r, {"vieja": "vencida", "proxima": "a futuro", "sin": "sin fecha"})
+
+    def test_carga_por_tutor_suma_sus_comisiones(self):
+        # Seis tutores llevan dos: su cola real no está en ninguna fila.
+        filas = [
+            {"comision": "com1", "tutor": {"nombre": "Ana"}, "alumnos": 30,
+             "sin_corregir": 2, "espera_max_dias": 1.0, "consultas_sin_responder": 0},
+            {"comision": "com9", "tutor": {"nombre": "Ana"}, "alumnos": 34,
+             "sin_corregir": 3, "espera_max_dias": 4.0, "consultas_sin_responder": 2},
+            {"comision": "com5", "tutor": {"nombre": "Beto"}, "alumnos": 20,
+             "sin_corregir": 9, "espera_max_dias": 0.5, "consultas_sin_responder": 0},
+        ]
+        r = panorama.carga_por_tutor(filas)
+        ana = next(t for t in r if t["tutor"] == "Ana")
+        self.assertEqual(ana["alumnos"], 64)
+        self.assertEqual(ana["sin_corregir"], 5)
+        self.assertEqual(ana["espera_max_dias"], 4.0)  # el máximo, no la suma
+        self.assertEqual(sorted(ana["comisiones"]), ["com1", "com9"])
+        # Ordena por espera, no por volumen: Beto tiene más cola pero más fresca.
+        self.assertEqual(r[0]["tutor"], "Ana")
+
+    def test_carga_por_tutor_no_esconde_a_la_comision_sin_tutor(self):
+        r = panorama.carga_por_tutor([{"comision": "com3", "tutor": None, "alumnos": 40,
+                                       "sin_corregir": 1, "espera_max_dias": None}])
+        self.assertEqual(r[0]["tutor"], "— sin identificar —")
+
+    def test_saca_los_emoji_pero_deja_los_acentos(self):
+        # Reportlab pinta los emoji como cuadraditos negros y en la tabla parecían un dato.
+        self.assertEqual(informes.sin_emoji("Actividad de cierre unidad 5 🎯🏁"),
+                         "Actividad de cierre unidad 5")
+        self.assertEqual(informes.sin_emoji("Programación ñandú"), "Programación ñandú")
+        self.assertEqual(informes.sin_emoji(None), "")
+
+    def test_los_focos_de_correccion_NO_emiten_veredicto(self):
+        prohibidas = ("sano", "excelente", "crisis", "grave", "estado general", "impecable")
+        datos = {
+            "tareas_miradas": 11, "actividades_sin_fecha_de_entrega": 10,
+            "filas": [{"comision": "com15", "tutor": {"nombre": "T"}, "sin_corregir": 2,
+                       "espera_max_dias": 3.0, "calificado_sin_nota": 1}],
+            "por_actividad": [{"titulo": "TP4", "sin_corregir": 12, "comisiones_con_cola": 7,
+                               "espera_max_dias": 3.0}],
+        }
+        texto = " ".join(t + " " + d
+                         for t, d in informes.focos_de_correccion(datos, tope=9)).lower()
+        for p in prohibidas:
+            self.assertNotIn(p, texto, f"apareció un veredicto: {p!r}")
+        self.assertIn("volumen no es atraso", texto)
+
+    def test_sin_cola_lo_dice_acotado_a_lo_relevado(self):
+        f = informes.focos_de_correccion({"tareas_miradas": 5, "filas": [], "por_actividad": []})
+        self.assertIn("No hay entregas esperando", f[0][0])
+        self.assertIn("5 actividades miradas", f[0][1])

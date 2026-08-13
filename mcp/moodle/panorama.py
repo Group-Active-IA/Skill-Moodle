@@ -37,9 +37,11 @@ Todo acá es READ-ONLY sobre Moodle: ninguna función de este módulo escribe en
 """
 
 import asyncio
+import json
 import re
 import statistics
 import time
+from pathlib import Path
 
 from .cliente import MoodleWSError
 from .ws_api import (
@@ -285,6 +287,7 @@ async def _comisiones_del_curso(client, course_id: int) -> tuple[list[dict], lis
 # ---------------------------------------------------------------------------
 
 _SIN_COMISION = "(sin comisión)"
+_SIN_REGIONAL = "(sin regional)"
 
 
 def desenganche_del_curso(padrones: dict, comisiones: list[dict],
@@ -348,7 +351,7 @@ def desenganche_del_curso(padrones: dict, comisiones: list[dict],
             f = _fila_aula(u, dias_desenganche)
             f["comision"] = etiqueta
             f["regional"] = _regional_de(u)
-            reg = por_regional.setdefault(f["regional"] or "(sin regional)",
+            reg = por_regional.setdefault(f["regional"] or _SIN_REGIONAL,
                                           {"alumnos": 0, "desenganchados": 0})
             reg["alumnos"] += 1
             if f["estado_aula"] == _AULA_SIN_DATO:
@@ -382,7 +385,7 @@ def desenganche_del_curso(padrones: dict, comisiones: list[dict],
     # el agrupado cambia dónde busca cada uno, no qué es urgente.
     bloques: dict[str, list] = {}
     for f in filas:
-        bloques.setdefault(f.get("regional") or "(sin regional)", []).append(f)
+        bloques.setdefault(f.get("regional") or _SIN_REGIONAL, []).append(f)
     por_regional_bloques = [
         {"regional": reg,
          "alumnos": (por_regional.get(reg) or {}).get("alumnos"),
@@ -601,6 +604,119 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
 # TOOL 1 — panorama por comisión
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Cortes del trabajo de corrección: por ACTIVIDAD y por TUTOR.
+# ---------------------------------------------------------------------------
+
+async def _meta_tareas(client, course_id: int) -> tuple[dict, str | None]:
+    """{cmid: {titulo, duedate}} de las tareas del curso, en UNA consulta.
+
+    La clave es el **cmid**, no el id de instancia: en esta skill `assign_id` es el cmid, y
+    `mod_assign_get_assignments` devuelve los dos campos. Confundirlos hace que no matchee
+    ninguna tarea y el informe salga sin títulos — pasó al escribir esto.
+
+    El `duedate` importa más de lo que parece: si vale 0 la actividad NO tiene fecha de
+    entrega, y entonces "sin entrega" no se puede distinguir de "todavía no vencía". Medido en
+    Prog I: **ninguna** de las 10 actividades de cierre tiene fecha. Por eso el informe lo
+    declara en vez de dejarlo implícito.
+    """
+    try:
+        r = await client.ws("mod_assign_get_assignments", {"courseids": [course_id]})
+    except MoodleWSError as e:
+        return {}, f"no pude leer las fechas de las tareas: {e.errorcode}"
+    out = {}
+    for c in (r or {}).get("courses", []):
+        for a in c.get("assignments", []):
+            cmid = a.get("cmid")
+            if cmid is None:
+                continue
+            out[str(cmid)] = {"titulo": a.get("name") or f"cmid {cmid}",
+                              "duedate": _ts(a.get("duedate"))}
+    return out, None
+
+
+def resumen_por_actividad(datos_tareas: dict, uid_a_comision: dict, meta: dict,
+                          ahora: int) -> list[dict]:
+    """PURA: una fila por ACTIVIDAD del curso, sumando las comisiones.
+
+    Es la vista que no existía en ningún lado. Por comisión se veía "com15 tiene 3 sin
+    corregir"; lo que no se veía es "la actividad de la unidad 4 tiene 40 sin corregir
+    repartidas en 9 comisiones", que es un problema de la consigna o del calendario y no de
+    nadie en particular. Sale gratis: los datos ya se bajaron para las filas por comisión.
+
+    Sólo cuenta alumnos que están en alguna comisión, igual que las filas: así los totales
+    de las dos vistas cierran entre sí.
+    """
+    filas = []
+    for cmid, d in datos_tareas.items():
+        m = meta.get(str(cmid)) or {}
+        entregadas = corregidas = sin_nota = pendientes = 0
+        esperas, comisiones_con_cola = [], set()
+        for uid, t_ent in d["entregas"].items():
+            com = uid_a_comision.get(uid)
+            if com is None:
+                continue
+            entregadas += 1
+            if uid in d["calificadas"]:
+                corregidas += 1
+            elif uid in d["sin_nota"]:
+                sin_nota += 1
+            elif uid in d["pendientes"]:
+                pendientes += 1
+                comisiones_con_cola.add(com)
+                esp = _dias(t_ent, ahora)
+                if esp is not None:
+                    esperas.append(esp)
+        due = m.get("duedate") or 0
+        filas.append({
+            "cmid": str(cmid),
+            "titulo": m.get("titulo") or f"cmid {cmid}",
+            "vencimiento": ("sin fecha" if not due
+                            else ("vencida" if due < ahora else "a futuro")),
+            "vence_en_dias": (None if not due else round((due - ahora) / 86400, 1)),
+            "entregadas": entregadas,
+            "corregidas": corregidas,
+            "sin_corregir": pendientes,
+            "calificado_sin_nota": sin_nota,
+            "comisiones_con_cola": len(comisiones_con_cola),
+            "espera_max_dias": max(esperas) if esperas else None,
+        })
+    # Primero lo que más espera: es lo accionable. Sin cola, por volumen entregado.
+    filas.sort(key=lambda f: (-(f["espera_max_dias"] or 0), -f["sin_corregir"]))
+    return filas
+
+
+def carga_por_tutor(filas: list[dict]) -> list[dict]:
+    """PURA: la carga de cada tutor sumando SUS comisiones.
+
+    Seis tutores llevan dos comisiones cada uno, así que la cola real de una persona no está
+    en ninguna fila: hay que sumarla. Esto la suma.
+
+    **Son hechos de carga y de cola, no un puntaje.** No hay nota, ni podio, ni etiqueta sobre
+    la persona: las comisiones no son comparables entre sí —distinto tamaño, distinta consigna,
+    distinta cohorte— así que un ranking convertiría un hecho en un juicio que ninguna
+    herramienta puede firmar. Se ordena por la espera más antigua porque eso dice por dónde
+    empezar, que es para lo que sirve.
+    """
+    por: dict[str, dict] = {}
+    for f in filas:
+        nombre = (f.get("tutor") or {}).get("nombre") or "— sin identificar —"
+        d = por.setdefault(nombre, {"tutor": nombre, "comisiones": [], "alumnos": 0,
+                                    "sin_corregir": 0, "calificado_sin_nota": 0,
+                                    "espera_max_dias": None, "consultas_sin_responder": 0})
+        d["comisiones"].append(f.get("comision"))
+        d["alumnos"] += f.get("alumnos") or 0
+        for k in ("sin_corregir", "calificado_sin_nota", "consultas_sin_responder"):
+            if f.get(k):
+                d[k] += f[k]
+        e = f.get("espera_max_dias")
+        if e is not None and (d["espera_max_dias"] is None or e > d["espera_max_dias"]):
+            d["espera_max_dias"] = e
+    salida = list(por.values())
+    salida.sort(key=lambda d: (-(d["espera_max_dias"] or 0), -d["sin_corregir"], d["tutor"]))
+    return salida
+
+
 async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = None,
                               incluir_foros: bool = True,
                               padrones: dict | None = None,
@@ -663,6 +779,10 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
                 avisos.append(f"cmid {cmid}: {d['error']}")
                 continue
             datos_tareas[cmid] = d
+
+    meta_tareas, err_meta = await _meta_tareas(client, course_id)
+    if err_meta:
+        avisos.append(err_meta + ": las actividades salen sin título ni fecha de entrega.")
 
     foros_por_comision: dict[str, int] = {}
     foros_ok = False
@@ -758,6 +878,18 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
             "sin_dato": sin_dato,
         })
 
+    por_actividad = resumen_por_actividad(datos_tareas, uid_a_comision, meta_tareas, ahora)
+    sin_fecha = [a for a in por_actividad if a["vencimiento"] == "sin fecha"]
+    if sin_fecha and len(sin_fecha) == len(por_actividad) and por_actividad:
+        # No es un detalle: sin `duedate` no hay forma de distinguir "no entregó" de "todavía
+        # no vencía", y eso es lo que hace que `alumnos_en_riesgo` marque al padrón entero.
+        avisos.append(f"NINGUNA de las {len(por_actividad)} actividades miradas tiene fecha de "
+                      "entrega. Con eso, 'sin entrega' no se puede distinguir de 'todavía no "
+                      "vencía': cuidado al leer cualquier conteo de faltantes como abandono.")
+    elif sin_fecha:
+        avisos.append(f"{len(sin_fecha)} de {len(por_actividad)} actividades no tienen fecha de "
+                      "entrega.")
+
     return {
         "ok": True,
         "course_id": course_id,
@@ -765,6 +897,9 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
         "tareas_miradas": len(datos_tareas),
         "tareas_pedidas": len(tareas),
         "filas": filas,
+        "por_actividad": por_actividad,
+        "por_tutor": carga_por_tutor(filas),
+        "actividades_sin_fecha_de_entrega": len(sin_fecha),
         "grupos_ignorados": ignorados,
         "avisos": avisos,
         "segundos": round(time.time() - t0, 1),
@@ -869,9 +1004,14 @@ async def demora_correccion(client, course_id: int, cmids: list[str]) -> dict:
     }
 
 
+
+
 # ---------------------------------------------------------------------------
-# TOOL 3 — informe del profesor: el curso entero, hechos y huecos, sin veredicto
+# TOOL 3 — informe de NEXOS: sólo alumnos, por regional, con su tutor nexo
 # ---------------------------------------------------------------------------
+
+_NEXOS_PATH = Path(__file__).resolve().parent.parent / "nexos.json"
+
 
 async def _nombre_del_curso(client, course_id: int) -> str | None:
     """Nombre real del curso, del campus. `None` si no se pudo leer — nunca se inventa."""
@@ -884,26 +1024,43 @@ async def _nombre_del_curso(client, course_id: int) -> str | None:
     return (cs[0].get("fullname") or None) if cs else None
 
 
-async def informe_profesor(client, course_id: int, cmids: list[str] | None = None,
-                           dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
-                           incluir_foros: bool = True) -> dict:
-    """Todo lo que el profesor necesita de un curso, en una sola pasada: el trabajo de
-    corrección por comisión + los alumnos que dejaron de abrir la materia.
+def nexos_por_regional() -> tuple[dict, str | None]:
+    """Catálogo de Tutores Nexo por regional. -> (regionales, aviso).
 
-    Junta las dos mitades que hasta ahora estaban separadas y que ninguna vista del campus
-    cruza. La primera ya existía (`panorama_comisiones`, `demora_correccion`): mide **lo que
-    deben los tutores**. La segunda es nueva y mide **quién se está yendo**, que es la que
-    decide si un alumno abandona.
+    La clave es el nombre del grupo del campus SIN el prefijo `R-`: el campus tiene
+    "R-San Nicolás" y el catálogo "San Nicolás". Verificado el 2026-08-13: las 17 regionales
+    son idénticas en los cuatro cursos y las 17 tienen nexo, sin sobrantes de ningún lado.
 
-    **Por qué no devuelve un veredicto.** Un informe de coordinación real (Prog III, 13/08)
-    abría con "Estado general: sano" y "el único foco son 7 alumnos", sobre 238 — y ese
-    diagnóstico salía de cortar el desenganche por el reloj del campus, que pierde ~90% de los
-    casos. Un adjetivo calculado sobre una señal incompleta es peor que no ponerlo, porque
-    nadie audita una palabra tranquilizadora. Acá van los números y los huecos (`sin_dato`);
-    la conclusión la saca el profesor. Misma doctrina que prohíbe el ranking de tutores.
+    Si el archivo no está o no se puede leer, devuelve `{}` y un aviso: el informe sale igual
+    pero **sin** nexos y diciéndolo. Un catálogo que falla no puede inventar un responsable —
+    es la misma regla que resuelve el par comisión→tutor en vivo en vez de leerlo de un JSON.
+    """
+    try:
+        doc = json.loads(_NEXOS_PATH.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return {}, (f"No pude leer el catálogo de nexos ({type(e).__name__}): el informe sale "
+                    "sin los datos de contacto. Revisá mcp/nexos.json.")
+    regs = doc.get("regionales") or {}
+    if not regs:
+        return {}, "El catálogo de nexos está vacío: el informe sale sin datos de contacto."
+    return regs, None
 
-    Todo read-only. El padrón se baja UNA vez y lo comparten las dos mitades, así que sumar el
-    desenganche no costó ninguna request extra.
+
+async def informe_nexos(client, course_id: int,
+                        dias_desenganche: int = _AULA_DESENGANCHE_DIAS) -> dict:
+    """Los alumnos que dejaron de abrir la materia, por REGIONAL, con su Tutor Nexo.
+
+    Es el informe para los **nexos**, y a propósito no trae una sola columna del trabajo de
+    corrección de los tutores. Antes estaban los dos en el mismo PDF y eso tenía un costo que
+    no era de formato: un tutor que abre un documento donde su comisión aparece medida al lado
+    de una lista de alumnos lo lee como que lo están evaluando a él. Son dos informes con dos
+    destinatarios — los alumnos van al nexo de su sede, el trabajo docente va a coordinación
+    (`panorama_comisiones`) — y separarlos es lo que deja hablar de cada cosa sin ruido.
+
+    De paso sale más barato: sin la mitad de correcciones no hace falta consultar NINGUNA
+    tarea. Son las comisiones, un padrón por comisión y el padrón del curso, y nada más.
+
+    Todo read-only.
     """
     t0 = time.time()
     comisiones, ignorados, err = await _comisiones_del_curso(client, course_id)
@@ -915,50 +1072,40 @@ async def informe_profesor(client, course_id: int, cmids: list[str] | None = Non
 
     padrones, avisos_padron = await _padrones(client, course_id, comisiones)
     curso_entero = await _padron_del_curso(client, course_id)
-
-    pano = await panorama_comisiones(client, course_id, cmids, incluir_foros,
-                                     padrones=padrones, avisos_padron=avisos_padron)
-    if pano.get("error"):
-        return {"error": f"No pude armar el panorama del curso: {pano['error']}"}
-
     deseng = desenganche_del_curso(padrones, comisiones, dias_desenganche,
                                    sueltos=curso_entero.get("sueltos"))
 
-    # Una fila por comisión con las DOS mitades juntas: trabajo de corrección + desenganche.
-    filas = []
-    for f in pano["filas"]:
-        cuenta = deseng["por_comision"].get(f["comision"], {})
-        filas.append({**f,
-                      "desenganchados": cuenta.get("desenganchados"),
-                      "nunca_abrieron": cuenta.get("nunca_abrieron"),
-                      "entran_al_campus_sin_abrir_la_materia":
-                          cuenta.get("entran_al_campus_sin_abrir_la_materia"),
-                      "alumnos_sin_dato_de_aula": cuenta.get("sin_dato")})
+    # El nexo de cada bloque. Si una regional no está en el catálogo, el bloque sale SIN nexo
+    # y se declara: nunca se le adjudica a alguien una sede que no es suya.
+    catalogo, aviso_cat = nexos_por_regional()
+    sin_nexo, sin_regional = [], 0
+    for b in deseng.get("por_regional_bloques", []):
+        if b["regional"] == _SIN_REGIONAL:
+            # No es una regional: es el balde de los que no están en ningún grupo `R-*`.
+            # Contarlo como "regional sin nexo en el catálogo" sería mandar a revisar un
+            # renombre que no existe — y marcaba el informe como degradado por nada.
+            b["nexo"] = None
+            sin_regional = b["desenganchados"]
+            continue
+        datos_nexo = catalogo.get(b["regional"])
+        b["nexo"] = datos_nexo or None
+        if not datos_nexo:
+            sin_nexo.append(b["regional"])
 
-    def _suma(clave):
-        vals = [f[clave] for f in pano["filas"] if f.get(clave) is not None]
-        return sum(vals) if vals else None
+    huecos = list(deseng["sin_dato"]) + list(avisos_padron)
+    if aviso_cat:
+        huecos.append(aviso_cat)
+    if sin_nexo:
+        huecos.append("Sin Tutor Nexo en el catálogo: " + ", ".join(sin_nexo)
+                      + ". Esos bloques salen sin contacto — revisá si la regional se "
+                        "renombró en el campus o si falta cargarla en mcp/nexos.json.")
+    if sin_regional:
+        huecos.append(f"{sin_regional} alumno(s) de la lista no están en ningún grupo de "
+                      "regional (`R-*`), así que no tienen nexo a quién derivarlos. Van en el "
+                      "bloque «(sin regional)».")
 
-    entregadas, corregidas = _suma("entregados"), _suma("corregidos")
-    sin_corregir = _suma("sin_corregir")
-    esperas = [f["espera_max_dias"] for f in pano["filas"] if f.get("espera_max_dias") is not None]
-    con_tutor = sum(1 for f in pano["filas"] if f.get("tutor"))
-    consultas = _suma("consultas_sin_responder")
-
-    # Los huecos, juntos y en un solo lugar. Si esto no está vacío, el informe está incompleto
-    # y hay que decirlo antes de cualquier número.
-    huecos = list(deseng["sin_dato"])
-    huecos += [a for a in pano.get("avisos", [])]
-    if con_tutor < len(filas):
-        huecos.append(f"{len(filas) - con_tutor} comisión(es) sin tutor identificado: revisá "
-                      "si están sin asignar o si el rol no se pudo leer.")
-    if not pano.get("tareas_miradas"):
-        huecos.append("No se miró ninguna tarea: las columnas de entregas y corrección quedan "
-                      "sin medir. No son ceros de 'está al día'.")
-
-    # El padrón, cuadrado contra el total del curso. Pedido de coordinación: sin esto, "555
-    # alumnos en comisiones" no permitía saber si faltaba gente.
-    en_comisiones = sum(f.get("alumnos") or 0 for f in filas)
+    en_comisiones = sum(len((padrones.get(c["group_id"]) or {}).get("alumnos") or {})
+                        for c in comisiones)
     sueltos = curso_entero.get("sueltos") or []
     if curso_entero.get("error"):
         padron = {"en_comisiones": en_comisiones, "total_del_curso": None, "cuadra": None,
@@ -980,55 +1127,48 @@ async def informe_profesor(client, course_id: int, cmids: list[str] | None = Non
         }
         if sueltos:
             huecos.append(f"{len(sueltos)} alumno(s) están matriculados en el curso pero en "
-                          "NINGUNA comisión: no los ve ningún tutor. Van medidos aparte, con la "
+                          "NINGUNA comisión: no los ve ningún tutor. Van medidos con la "
                           "etiqueta (sin comisión).")
         if not padron["cuadra"]:
             huecos.append(f"El padrón NO cuadra: {en_comisiones} en comisiones + "
-                          f"{len(sueltos)} sin comisión ≠ {total} del curso. Puede haber alguien "
-                          "matriculado en dos comisiones (se contaría dos veces).")
+                          f"{len(sueltos)} sin comisión ≠ {total} del curso. Puede haber "
+                          "alguien matriculado en dos comisiones (contado dos veces).")
 
     return {
         "ok": True,
         "course_id": course_id,
         "curso": await _nombre_del_curso(client, course_id),
-        "comisiones": len(filas),
+        "comisiones": len(comisiones),
+        "regionales": len(deseng.get("por_regional_bloques") or []),
         "padron": padron,
         "hechos": {
-            "comisiones_con_tutor": f"{con_tutor}/{len(filas)}",
-            "alumnos_en_comisiones": (f"{padron['en_comisiones']}/{padron['total_del_curso']}"
-                                      if padron.get("total_del_curso")
-                                      else padron["en_comisiones"]),
+            "alumnos_relevados": f"{padron['en_comisiones']}/{padron['total_del_curso']}"
+                                 if padron.get("total_del_curso") else deseng["relevados"],
             "alumnos_sin_comision": padron.get("sin_comision"),
-            "entregadas": entregadas,
-            "corregidas": corregidas,
-            "sin_corregir": sin_corregir,
-            "calificado_sin_nota": _suma("calificado_sin_nota"),
-            "pct_corregidas": (round(100 * corregidas / entregadas)
-                               if entregadas else None),
-            "espera_max_dias_del_curso": max(esperas) if esperas else None,
-            "consultas_de_foro_sin_responder": consultas,
-            "desenganchados_de_la_materia": deseng["totales"]["desenganchados"],
+            "no_abren_la_materia": deseng["totales"]["desenganchados"],
             "entran_al_campus_sin_abrir_la_materia":
                 deseng["totales"]["entran_al_campus_sin_abrir_la_materia"],
             "nunca_abrieron_la_materia": deseng["totales"]["nunca_abrieron"],
+            "sin_dato": deseng["totales"]["sin_dato"],
         },
-        "por_comision": filas,
         "desenganche": deseng,
-        "tareas_miradas": pano.get("tareas_miradas"),
-        "tareas_pedidas": pano.get("tareas_pedidas"),
         "grupos_ignorados": ignorados,
         "_meta": {
             "fuente": "vivo",
             "segundos": round(time.time() - t0, 1),
-            "degradado": bool(deseng["sin_dato"]) or bool(pano.get("avisos")),
+            "nexos_en_catalogo": len(catalogo),
+            "regionales_sin_nexo": sin_nexo,
+            "alumnos_sin_regional": sin_regional,
+            "degradado": bool(deseng["sin_dato"] or sin_nexo or aviso_cat or avisos_padron
+                              or curso_entero.get("error")),
             "sin_dato": huecos,
         },
         "lectura": (
-            "NO hay veredicto acá a propósito: son hechos y huecos, la conclusión es del "
-            "profesor. Tres cosas antes de leer los números: (1) los días de desenganche son "
-            "SIN ABRIR ESTA MATERIA, no sin entrar al campus — cortar por el campus pierde a "
-            "los que entran todos los días para otra materia, que son la mayoría; (2) las "
-            "filas son hechos POR COMISIÓN y nombrar al tutor es ruteo, nunca un puntaje de "
-            "personas; (3) un 0 con motivo en `sin_dato` no es un 0 de 'está al día'."
+            "Este informe habla de ALUMNOS y de nadie más: no trae ni una columna del trabajo "
+            "de corrección de los tutores (eso es `panorama_comisiones`). Los días son SIN "
+            "ABRIR ESTA MATERIA, no sin entrar al campus — medir por el del campus pierde a la "
+            "mayoría, porque el que entra todos los días para otra materia aparece impecable. "
+            "«Nunca abrió la materia» NO es abandono confirmado: puede haberse matriculado "
+            "esta semana y acá no se ve la fecha de matriculación."
         ),
     }
