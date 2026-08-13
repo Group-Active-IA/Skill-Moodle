@@ -90,11 +90,6 @@ _SIN_CALIFICAR = -1.0
 # existe pero el alumno todavía no la tiene, así que el trabajo no está cerrado.
 _ESTADOS_CORREGIDA = {"graded", "released"}
 
-# Cuántos puntos porcentuales tiene que despegarse una comisión del curso para
-# llamarla atrasada. Sin margen sale marcada la mitad de la cohorte por estar a un
-# punto de la media, y una lista con la mitad adentro no la mira nadie.
-_MARGEN_ATRASO_PP = 10
-
 
 def _num(x) -> float | None:
     try:
@@ -153,15 +148,48 @@ _CAMPOS_ACCESO = ("id", "fullname", "email", "lastaccess", "lastcourseaccess", "
 # `grupos_ignorados`: lo que para una mitad del módulo es ruido, para ésta es el dato.
 _RE_REGIONAL = re.compile(r"^\s*R\s*-\s*(.+?)\s*$")
 
-# Número de unidad del título de una actividad ("Actividad de cierre de la unidad 4 - Git" -> 4).
-# Sirve para ordenar las columnas de la matriz por unidad y no por el orden en que el campus
-# devuelve las tareas, que no coincide: la columna "1" salía siendo la unidad 2.
+# Número de unidad del título ("Actividad de cierre de la unidad 4 - Git" -> 4). Es la
+# única forma de saber qué actividad corresponde a qué unidad: el campus no lo expone como
+# campo. Si un aula nombra distinto sus actividades, acá no matchea nada y se declara.
 _RE_UNIDAD = re.compile(r"unidad\s*(\d+)", re.I)
+# Sólo las de CIERRE cuentan para el retraso. Las "Práctica - Actividad N" de Prog III son
+# optativas y sumarlas marcaría retrasado a medio curso por no hacer ejercicios sueltos.
+_RE_CIERRE = re.compile(r"cierre", re.I)
 
 
 def _nro_unidad(titulo: str) -> int | None:
     m = _RE_UNIDAD.search(titulo or "")
     return int(m.group(1)) if m else None
+
+
+def parsear_unidades(txt) -> list[int] | None:
+    """'3' -> [3] · '3-5' -> [3,4,5] · basura o None -> None. PURA.
+
+    Devuelve None y no una lista vacía cuando no se entiende: son cosas distintas y quien
+    llama tiene que poder distinguir "no me dijeron" de "me dijeron un rango vacío".
+    """
+    if txt is None:
+        return None
+    t = str(txt).strip().replace("U", "").replace("u", "")
+    m = re.fullmatch(r"(\d+)\s*[-–a]\s*(\d+)", t)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        return list(range(min(a, b), max(a, b) + 1))
+    if t.isdigit():
+        return [int(t)]
+    return None
+
+
+def cierres_por_unidad(meta: dict) -> dict[int, dict]:
+    """{nro_unidad: {cmid, titulo}} de las actividades de CIERRE. PURA."""
+    out: dict[int, dict] = {}
+    for cmid, m in (meta or {}).items():
+        tit = m.get("titulo") or ""
+        n = _nro_unidad(tit)
+        if n is None or not _RE_CIERRE.search(tit):
+            continue
+        out.setdefault(n, {"cmid": str(cmid), "titulo": tit})
+    return out
 
 
 def _regional_de(u: dict) -> str | None:
@@ -551,8 +579,11 @@ async def _tarea_cruda(client, cmid: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[int, str],
-                                   max_discusiones: int = 200) -> tuple[dict, list[str]]:
-    """{comision: cantidad} de consultas con CERO respuestas. -> (conteo, avisos).
+                                   max_discusiones: int = 200) -> dict:
+    """Consultas de foro con CERO respuestas. -> dict (ver el return).
+
+    Devolvía una tupla de cuatro y hacía falta un quinto dato: a esa altura la tupla es una
+    trampa de orden. Va un dict.
 
     "Sin responder" = 0 réplicas, es decir **no contestó nadie**. Deliberadamente NO se
     intenta decir "el tutor de esa comisión no contestó": el WS de foros no devuelve roles
@@ -564,9 +595,17 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
     de consulta son del curso entero y todas las discusiones vienen con groupid -1. Eso ya
     rompió una vez (ver el comentario largo en `ws_api.foros_pendientes`).
     """
+    vacio = {"por_comision": {}, "avisos": [], "por_uid": {}, "hilos": [],
+             "discusiones_de_avisos": None, "foros_de_consulta": 0}
     fs = await listar_foros(client, course_id)
     if fs.get("error"):
-        return {}, [f"No pude listar los foros: {fs['error']}"], {}, []
+        return {**vacio, "avisos": [f"No pude listar los foros: {fs['error']}"]}
+
+    # Discusiones del foro de avisos: es el otro renglón que mira coordinación, y sale del
+    # mismo listado que ya se bajó. No se cuentan como consultas pendientes — en un foro de
+    # avisos el docente publica y nadie espera respuesta suya.
+    avisos_disc = sum((f.get("discusiones") or 0) for f in fs.get("foros", [])
+                      if f.get("tipo") == "news" or "aviso" in (f.get("nombre") or "").lower())
 
     foros = []
     for f in fs.get("foros", []):
@@ -581,7 +620,7 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
         if (f.get("discusiones") or 0) > 0:
             foros.append(f)
     if not foros:
-        return {}, [], {}, []
+        return {**vacio, "discusiones_de_avisos": avisos_disc}
 
     sem = asyncio.Semaphore(_SEM)
 
@@ -630,7 +669,9 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
             "No se sumaron a nadie."
         )
     hilos.sort(key=lambda h: -(h["dias_esperando"] or 0))
-    return conteo, avisos, sin_respuesta_uid, hilos
+    return {"por_comision": conteo, "avisos": avisos, "por_uid": sin_respuesta_uid,
+            "hilos": hilos, "discusiones_de_avisos": avisos_disc,
+            "foros_de_consulta": len(foros)}
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +709,13 @@ async def _meta_tareas(client, course_id: int) -> tuple[dict, str | None]:
             # eso `nota_display` decodifica sin una sola request extra.
             out[str(cmid)] = {"titulo": a.get("name") or f"cmid {cmid}",
                               "duedate": _ts(a.get("duedate")),
+                              # Cuándo ABRE. Verificado en vivo el 2026-08-13: el campus lo
+                              # completa en los parciales, recuperatorios e integradores, y lo
+                              # deja en 0 en las actividades de cierre (que están abiertas desde
+                              # el arranque). Prog 2 tiene 6 de 16 con apertura futura; contarlas
+                              # le mostraba al profesor seis actividades donde "nadie entregó"
+                              # sobre cosas que todavía no existen para el alumno.
+                              "abre": _ts(a.get("allowsubmissionsfromdate")),
                               "grade_cfg": a.get("grade")}
     return out, None
 
@@ -740,12 +788,16 @@ def carga_por_tutor(filas: list[dict]) -> list[dict]:
         nombre = (f.get("tutor") or {}).get("nombre") or "— sin identificar —"
         d = por.setdefault(nombre, {"tutor": nombre, "comisiones": [], "alumnos": 0,
                                     "sin_corregir": 0, "calificado_sin_nota": 0,
-                                    "espera_max_dias": None, "consultas_sin_responder": 0})
+                                    "espera_max_dias": None, "demora_max_dias": None,
+                                    "consultas_sin_responder": 0})
         d["comisiones"].append(f.get("comision"))
         d["alumnos"] += f.get("alumnos") or 0
         for k in ("sin_corregir", "calificado_sin_nota", "consultas_sin_responder"):
             if f.get(k):
                 d[k] += f[k]
+        dm = f.get("demora_max_dias")
+        if dm is not None and (d["demora_max_dias"] is None or dm > d["demora_max_dias"]):
+            d["demora_max_dias"] = dm
         e = f.get("espera_max_dias")
         if e is not None and (d["espera_max_dias"] is None or e > d["espera_max_dias"]):
             d["espera_max_dias"] = e
@@ -754,10 +806,11 @@ def carga_por_tutor(filas: list[dict]) -> list[dict]:
     return salida
 
 
-async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = None,
+async def reporte_coordinacion(client, course_id: int, cmids: list[str] | None = None,
                               incluir_foros: bool = True,
                               padrones: dict | None = None,
-                              avisos_padron: list[str] | None = None) -> dict:
+                              avisos_padron: list[str] | None = None,
+                              dias_desenganche: int = _AULA_DESENGANCHE_DIAS) -> dict:
     """Una fila por comisión del curso: tutor a cargo, entregas, correcciones pendientes,
     cuánto hace que espera la más vieja y consultas de foro sin responder.
 
@@ -765,9 +818,15 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
     mapeadas en el llamador). `incluir_foros=False` saltea la parte de foros, que es la más
     cara en requests.
 
-    `padrones`/`avisos_padron` permiten inyectar los padrones ya bajados. Existe para que
-    `informe_profesor` no pida dos veces la misma cosa: el padrón cuesta una request por
-    comisión y son 16.
+    `padrones`/`avisos_padron` permiten inyectar los padrones ya bajados: el padrón cuesta una
+    request por comisión y son 16, así que quien ya los tenga no los vuelve a pedir.
+
+    **También devuelve el desenganche**, que sale GRATIS: los dos relojes de cada alumno vienen
+    en la misma respuesta del padrón que ya se bajó para saber quién es alumno y quién docente.
+    Se mide con el reloj de LA MATERIA (`lastcourseaccess`), nunca con el del campus — cortar
+    por el del campus pierde al que entra todos los días para otra materia y no abre ésta, que
+    está medido y es la mayoría. La lista completa con mails vive en `informes_nexos`; acá va
+    para que el informe de coordinación pueda declarar el número sin abrir otro documento.
     """
     t0 = time.time()
     comisiones, ignorados, err = await _comisiones_del_curso(client, course_id)
@@ -784,6 +843,12 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
     else:
         avisos = list(avisos_padron or [])
 
+    # Padrón COMPLETO del curso, para poder poner "566 de 566" y no un número suelto. Cuesta una
+    # consulta más y no es gratis (~11 s en 604 matriculados), pero sin el denominador el KPI de
+    # alumnos no se puede leer: nadie sabe si 566 son todos o son los que se pudieron ver. De
+    # paso salen los que no están en NINGUNA comisión, que no los ve ningún tutor.
+    curso_entero = await _padron_del_curso(client, course_id)
+
     # userid -> comision. Un alumno puede figurar en dos grupos; se queda con el primero y
     # se avisa, porque en ese caso su trabajo se le contaría a una comisión sola.
     uid_a_comision: dict[int, str] = {}
@@ -798,7 +863,30 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
         avisos.append(f"{duplicados} alumno(s) figuran en más de una comisión; se contaron "
                       "en la primera. Sus entregas no se duplican entre filas.")
 
-    tareas = list(cmids or [])
+    # La meta va PRIMERO porque decide qué se consulta: una actividad que todavía no abrió no
+    # tiene entregas que mirar, y preguntarle igual cuesta dos requests para traer ceros que
+    # después ensucian todos los promedios del informe.
+    meta_tareas, err_meta = await _meta_tareas(client, course_id)
+    if err_meta:
+        avisos.append(err_meta + ": las actividades salen sin título ni fecha de entrega, y no "
+                      "se pudo saber cuáles están habilitadas — se miran todas.")
+
+    pedidas = [str(c) for c in (cmids or [])]
+    ahora_apertura = int(time.time())
+    no_habilitadas = [c for c in pedidas
+                      if (meta_tareas.get(c) or {}).get("abre", 0) > ahora_apertura]
+    tareas = [c for c in pedidas if c not in set(no_habilitadas)]
+    if no_habilitadas:
+        # Se declara SIEMPRE, con nombre. Un recorte silencioso acá haría que el informe de
+        # mañana muestre otro denominador que el de hoy sin que nada lo explique.
+        titulos = ", ".join((meta_tareas.get(c) or {}).get("titulo", c)[:34]
+                            for c in no_habilitadas[:4])
+        avisos.append(
+            f"{len(no_habilitadas)} de {len(pedidas)} actividades NO están habilitadas todavía "
+            f"(abren más adelante) y quedaron fuera del relevamiento: {titulos}"
+            + ("…" if len(no_habilitadas) > 4 else "")
+            + ". Contarlas mostraría entregas en cero sobre algo que el alumno ni ve.")
+
     datos_tareas: dict[str, dict] = {}
     if tareas:
         sem = asyncio.Semaphore(_SEM)
@@ -817,18 +905,16 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
                 continue
             datos_tareas[cmid] = d
 
-    meta_tareas, err_meta = await _meta_tareas(client, course_id)
-    if err_meta:
-        avisos.append(err_meta + ": las actividades salen sin título ni fecha de entrega.")
-
     foros_por_comision: dict[str, int] = {}
     hilos_sin_responder: list[dict] = []
+    foros_info: dict = {}
     foros_ok = False
     if incluir_foros:
-        foros_por_comision, av_f, _, hilos_sin_responder = await _consultas_sin_responder(
-            client, course_id, uid_a_comision)
-        avisos.extend(av_f)
-        foros_ok = not any("No pude listar los foros" in a for a in av_f)
+        foros_info = await _consultas_sin_responder(client, course_id, uid_a_comision)
+        foros_por_comision = foros_info["por_comision"]
+        hilos_sin_responder = foros_info["hilos"]
+        avisos.extend(foros_info["avisos"])
+        foros_ok = not any("No pude listar los foros" in a for a in foros_info["avisos"])
 
     ahora = int(time.time())
     filas = []
@@ -842,7 +928,7 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
                 **c, "tutor": None, "alumnos": None, "entregados": None,
                 "corregidos": None, "sin_corregir": None, "calificado_sin_nota": None,
                 "espera_max_dias": None, "demora_mediana_dias": None,
-                "consultas_sin_responder": None,
+                "demora_max_dias": None, "consultas_sin_responder": None,
                 "sin_dato": [f"No se pudo leer el padrón de esta comisión: {padron['error']}"],
             })
             continue
@@ -912,6 +998,11 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
             "calificado_sin_nota": sin_nota_n if tareas else None,
             "espera_max_dias": max(esperas) if esperas else None,
             "demora_mediana_dias": round(statistics.median(demoras), 1) if demoras else None,
+            # La demora MÁXIMA de lo ya corregido. Va al lado de la mediana porque son dos cosas
+            # distintas: la mediana dice el ritmo habitual, el máximo dice cuánto llegó a esperar
+            # alguien. Una comisión con mediana 0,5 y máximo 8 corrige rápido salvo cuando algo
+            # se le traspapela, y eso con la mediana sola no se ve.
+            "demora_max_dias": max(demoras) if demoras else None,
             "consultas_sin_responder": (foros_por_comision.get(c["comision"], 0)
                                         if (incluir_foros and foros_ok) else None),
             "sin_dato": sin_dato,
@@ -958,13 +1049,48 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
         avisos.append(f"{len(sin_fecha)} de {len(por_actividad)} actividades no tienen fecha de "
                       "entrega.")
 
+    # Desenganche: PURO y sin una sola request extra — los dos relojes de cada alumno ya vinieron
+    # en el padrón. Se calcula acá y no en el render porque es la misma cuenta que hace
+    # `informes_nexos`, y dos implementaciones del mismo corte terminan diciendo números
+    # distintos sobre los mismos alumnos el día que una de las dos se toca.
+    deseng = desenganche_del_curso(padrones, comisiones, dias_desenganche,
+                                   sueltos=curso_entero.get("sueltos"))
+
+    en_comisiones = sum(len((padrones.get(c["group_id"]) or {}).get("alumnos") or {})
+                        for c in comisiones)
+    sueltos = curso_entero.get("sueltos") or []
+    if curso_entero.get("error"):
+        padron = {"en_comisiones": en_comisiones, "total_del_curso": None,
+                  "sin_comision": None, "cuadra": None}
+        avisos.append(f"No se pudo cuadrar el padrón contra el total del curso "
+                      f"({curso_entero['error']}): el KPI de alumnos sale sin denominador.")
+    else:
+        total = curso_entero["total_alumnos"]
+        padron = {"en_comisiones": en_comisiones, "total_del_curso": total,
+                  "sin_comision": len(sueltos),
+                  "cuadra": (en_comisiones + len(sueltos)) == total}
+        if sueltos:
+            avisos.append(f"{len(sueltos)} alumno(s) están matriculados en el curso pero en "
+                          "NINGUNA comisión: no los ve ningún tutor. Se los mide igual, con la "
+                          "etiqueta (sin comisión).")
+        if not padron["cuadra"]:
+            avisos.append(f"El padrón NO cuadra: {en_comisiones} en comisiones + {len(sueltos)} "
+                          f"sin comisión ≠ {total} del curso. Puede haber alguien matriculado "
+                          "en dos comisiones, contado dos veces.")
+
     return {
         "ok": True,
         "course_id": course_id,
         "comisiones": len(filas),
         "tareas_miradas": len(datos_tareas),
         "tareas_pedidas": len(tareas),
+        "actividades_no_habilitadas": len(no_habilitadas),
+        "actividades_en_el_curso": len(pedidas),
+        "padron": padron,
+        "foros": {k: foros_info.get(k) for k in
+                  ("discusiones_de_avisos", "foros_de_consulta")} if foros_info else {},
         "filas": filas,
+        "desenganche": deseng,
         "por_actividad": por_actividad,
         "por_tutor": carga_por_tutor(filas),
         "esperando_detalle": esperando_detalle,
@@ -1118,7 +1244,8 @@ def nexos_por_regional() -> tuple[dict, str | None]:
 
 
 async def informe_nexos(client, course_id: int,
-                        dias_desenganche: int = _AULA_DESENGANCHE_DIAS) -> dict:
+                        dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
+                        unidades: str | None = None) -> dict:
     """Los alumnos que dejaron de abrir la materia, por REGIONAL, con su Tutor Nexo.
 
     Es el informe para los **nexos**, y a propósito no trae una sola columna del trabajo de
@@ -1126,7 +1253,7 @@ async def informe_nexos(client, course_id: int,
     no era de formato: un tutor que abre un documento donde su comisión aparece medida al lado
     de una lista de alumnos lo lee como que lo están evaluando a él. Son dos informes con dos
     destinatarios — los alumnos van al nexo de su sede, el trabajo docente va a coordinación
-    (`panorama_comisiones`) — y separarlos es lo que deja hablar de cada cosa sin ruido.
+    (`reporte_coordinacion`) — y separarlos es lo que deja hablar de cada cosa sin ruido.
 
     De paso sale más barato: sin la mitad de correcciones no hace falta consultar NINGUNA
     tarea. Son las comisiones, un padrón por comisión y el padrón del curso, y nada más.
@@ -1146,6 +1273,72 @@ async def informe_nexos(client, course_id: int,
     deseng = desenganche_del_curso(padrones, comisiones, dias_desenganche,
                                    sueltos=curso_entero.get("sueltos"))
 
+    # ---- RETRASO: qué actividades de cierre le faltan a cada alumno ----
+    #
+    # El rango NO se adivina. El campus no dice qué unidad se está cursando: verificado el
+    # 2026-08-13, NINGUNA de las 10 actividades de cierre de Prog I tiene
+    # `allowsubmissionsfromdate` (la única con fecha es el Integrador, que abre el 26/10), y en
+    # Prog III las 22 "Práctica" abren todas el 03/08, o sea el inicio de cursada. Cualquier
+    # heurística de "la que abrió esta semana" no encuentra nada en ningún curso.
+    #
+    # Entonces se pregunta, igual que `auditar_aula` con su unidad. Sin rango el informe sale
+    # completo pero SIN la columna, y devuelve las unidades que encontró para que el tutor
+    # elija. Inventar el rango acá no sería un número flojo: sería escribirle "Retrasado: Sí"
+    # al lado del nombre de un alumno que está al día.
+    meta, err_meta = await _meta_tareas(client, course_id)
+    cierres = cierres_por_unidad(meta)
+    rango = parsear_unidades(unidades)
+    retraso: dict[int, dict] = {}
+    aviso_retraso = None
+
+    if rango is None:
+        aviso_retraso = (
+            "No se calculó el RETRASO porque no se dijo qué unidades exigir, y el campus no lo "
+            "expone: ninguna actividad de cierre tiene fecha de apertura. Preguntale al tutor "
+            "cuál es la última unidad ya cerrada (o el rango, ej. `unidades=\"3-5\"`) y volvé "
+            "a correrlo. Ojo que el rango depende de la materia: en Prog I las unidades 1 y 2 "
+            "son optativas.")
+    elif err_meta or not cierres:
+        aviso_retraso = (f"No se calculó el RETRASO: no encontré actividades de cierre por "
+                         f"unidad en este curso ({err_meta or 'ningún título matchea'}).")
+    else:
+        faltan_unidades = [u for u in rango if u not in cierres]
+        mirar = [u for u in rango if u in cierres]
+        crudas = {}
+        sem = asyncio.Semaphore(_SEM)
+
+        async def _una_u(u):
+            async with sem:
+                return u, await _tarea_cruda(client, cierres[u]["cmid"])
+
+        for res in await asyncio.gather(*(_una_u(u) for u in mirar), return_exceptions=True):
+            if isinstance(res, BaseException) or res[1].get("error"):
+                continue
+            crudas[res[0]] = res[1]
+        no_leidas = [u for u in mirar if u not in crudas]
+
+        for f in deseng.get("alumnos", []):
+            uid = f.get("userid")
+            faltantes = [u for u, d in sorted(crudas.items()) if int(uid) not in d["entregas"]]
+            f["retraso"] = bool(faltantes)
+            f["unidades_faltantes"] = faltantes
+            retraso[int(uid)] = {"retraso": bool(faltantes), "faltantes": faltantes}
+
+        etiqueta = (f"U{rango[0]}" if len(rango) == 1
+                    else f"U{rango[0]}–U{rango[-1]}")
+        deseng["retraso"] = {
+            "rango": rango, "etiqueta": etiqueta,
+            "unidades_medidas": sorted(crudas),
+            "retrasados": sum(1 for v in retraso.values() if v["retraso"]),
+            "medidos": len(retraso),
+        }
+        if faltan_unidades or no_leidas:
+            aviso_retraso = (
+                "El RETRASO no cubre todas las unidades pedidas: "
+                + (f"no hay actividad de cierre para {faltan_unidades}. " if faltan_unidades else "")
+                + (f"No se pudieron leer las entregas de {no_leidas}. " if no_leidas else "")
+                + "Un «No» en esa columna puede estar mirando menos unidades de las que creés.")
+
     # El nexo de cada bloque. Si una regional no está en el catálogo, el bloque sale SIN nexo
     # y se declara: nunca se le adjudica a alguien una sede que no es suya.
     catalogo, aviso_cat = nexos_por_regional()
@@ -1164,6 +1357,8 @@ async def informe_nexos(client, course_id: int,
             sin_nexo.append(b["regional"])
 
     huecos = list(deseng["sin_dato"]) + list(avisos_padron)
+    if aviso_retraso:
+        huecos.append(aviso_retraso)
     if aviso_cat:
         huecos.append(aviso_cat)
     if sin_nexo:
@@ -1223,6 +1418,8 @@ async def informe_nexos(client, course_id: int,
             "sin_dato": deseng["totales"]["sin_dato"],
         },
         "desenganche": deseng,
+        "retraso_calculado": bool(deseng.get("retraso")),
+        "unidades_disponibles": sorted(cierres),
         "grupos_ignorados": ignorados,
         "_meta": {
             "fuente": "vivo",
@@ -1230,374 +1427,20 @@ async def informe_nexos(client, course_id: int,
             "nexos_en_catalogo": len(catalogo),
             "regionales_sin_nexo": sin_nexo,
             "alumnos_sin_regional": sin_regional,
-            "degradado": bool(deseng["sin_dato"] or sin_nexo or aviso_cat or avisos_padron
-                              or curso_entero.get("error")),
+            # Sale de `huecos`, que es la lista COMPLETA, y no de los componentes sueltos: se
+            # calculaba enumerando las fuentes una por una y cada hueco nuevo había que
+            # acordarse de sumarlo acá también. No se sumaron dos (el retraso sin calcular y
+            # los alumnos sin regional), así que el dict los declaraba y el PDF —que es lo que
+            # se comparte, y muchas veces lo único que alguien lee— salía sin el aviso.
+            "degradado": bool(huecos),
             "sin_dato": huecos,
         },
         "lectura": (
             "Este informe habla de ALUMNOS y de nadie más: no trae ni una columna del trabajo "
-            "de corrección de los tutores (eso es `panorama_comisiones`). Los días son SIN "
+            "de corrección de los tutores (eso es `reporte_coordinacion`). Los días son SIN "
             "ABRIR ESTA MATERIA, no sin entrar al campus — medir por el del campus pierde a la "
             "mayoría, porque el que entra todos los días para otra materia aparece impecable. "
             "«Nunca abrió la materia» NO es abandono confirmado: puede haberse matriculado "
             "esta semana y acá no se ve la fecha de matriculación."
-        ),
-    }
-
-
-# ---------------------------------------------------------------------------
-# TOOL 4 — avance de los alumnos: cuánto entregaron y cómo les fue, por comisión
-# ---------------------------------------------------------------------------
-
-def nota_texto(grade_cfg, valor) -> str | None:
-    """Puente a `ws_api.nota_display`: valor crudo -> 'Aprobado' / '8.5' / None.
-
-    Se importa acá y no se reimplementa porque esa función es la que sabe que **la escala 5
-    de la TUP va invertida** (1=Aprobado, 2=Desaprobado) y que una escala desconocida NO se
-    devuelve como número crudo. Reimplementarlo sería la forma más rápida de leer un
-    desaprobado como aprobado.
-    """
-    from .ws_api import nota_display
-    return nota_display(grade_cfg, None if valor is None else f"{valor:.5f}")
-
-
-def _aprobo(texto: str | None) -> bool | None:
-    """¿Esa nota es aprobatoria? `None` si no se puede decidir — nunca se asume.
-
-    Se lee por TEXTO, no por número, que es la regla del dominio. Ojo con el substring:
-    "satisfactorio" está dentro de "no satisfactorio", así que el chequeo del negativo va
-    PRIMERO y es el que manda.
-    """
-    if not texto or texto.startswith("⚠️"):
-        return None
-    t = texto.strip().lower()
-    if t.startswith("no ") or t.startswith("desaprobado"):
-        return False
-    if t in ("aprobado", "satisfactorio", "supera lo esperado"):
-        return True
-    try:  # numérica: en la TUP se aprueba con 6
-        return float(t.replace(",", ".")) >= 6
-    except ValueError:
-        return None
-
-
-def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones: list[dict],
-                      foros_por_uid: dict | None = None,
-                      dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
-                      orden_tareas: list[str] | None = None) -> dict:
-    """PURA: cuánto entregó y cómo le fue a cada alumno, agrupado por comisión.
-
-    **No calcula un "porcentaje de avance", y es una decisión, no una omisión.** Un porcentaje
-    necesita un denominador —"las actividades que ya deberían estar"— y ese dato NO existe en
-    este campus: 35 de 42 actividades de Prog III y 10 de 11 de Prog I no tienen `duedate`.
-    El atajo tentador es "actividades en juego = las que tienen al menos una entrega", y está
-    medido que falla: en Prog I las unidades 6, 7 y 8 tienen **exactamente una** entrega cada
-    una, así que un alumno adelantado pondría media materia "en juego" y dejaría a los otros
-    565 como atrasados. Con un umbral más alto (20% del padrón) en Prog I no entra ninguna
-    actividad y todos quedan en 0/0.
-
-    Y la mediana tampoco sirve como comparador: cuando más de la mitad del curso está en cero
-    da 0 en TODAS las comisiones y no distingue ninguna (Prog I: 437 de 566). El promedio general
-    tampoco — reparte las entregas de unos pocos adelantados entre todos y da 0,37 entregas por
-    alumno, un número que no describe a nadie.
-
-    Entonces se miden **dos preguntas por separado**: cuántos alumnos ARRANCARON (proporción sin
-    ninguna entrega, que es el comparador entre comisiones y se mueve desde el primer día) y
-    cuánto avanzó EL QUE ARRANCÓ (promedio de los que entregaron, más el máximo). "El 94% de esta
-    comisión no entregó nada contra el 77% del curso" es un hecho; "va al 35% del plan" sería un
-    número inventado.
-
-    El otro cruce, que es el que contesta *por qué* una comisión está atrasada: se mira el
-    reloj de la materia junto con las entregas. Atrasada **con** los alumnos entrando es una
-    cosa (están ahí y no entregan: consigna, acompañamiento); atrasada **porque** se fueron es
-    otra. Por comisión, ninguna de las dos mitades sola lo distingue.
-    """
-    # userid -> comisión, y el crudo de cada alumno para el reloj de la materia.
-    uid_com: dict[int, str] = {}
-    crudo: dict[int, dict] = {}
-    for c in comisiones:
-        p = padrones.get(c["group_id"]) or {}
-        for uid, u in (p.get("accesos") or {}).items():
-            uid_com.setdefault(int(uid), c["comision"])
-            crudo.setdefault(int(uid), u)
-
-    # Entregas y notas por alumno, sobre las tareas relevadas.
-    ent: dict[int, int] = {}
-    aprob: dict[int, int] = {}
-    desap: dict[int, int] = {}
-    sin_nota_al: dict[int, int] = {}
-    esperando: dict[int, float] = {}   # uid -> días que espera su entrega más vieja sin nota
-    import time as _t
-    ahora = int(_t.time())
-    for cmid, d in datos_tareas.items():
-        cfg = (meta.get(str(cmid)) or {}).get("grade_cfg")
-        for uid, t_ent in d["entregas"].items():
-            uid = int(uid)
-            if uid not in uid_com:
-                continue
-            ent[uid] = ent.get(uid, 0) + 1
-            if uid in d.get("sin_nota", ()):
-                sin_nota_al[uid] = sin_nota_al.get(uid, 0) + 1
-            elif uid in d.get("pendientes", ()):
-                esp = _dias(t_ent, ahora)
-                if esp is not None and esp > esperando.get(uid, -1):
-                    esperando[uid] = esp
-            elif uid in d.get("calificadas", {}):
-                ok = _aprobo(nota_texto(cfg, (d.get("notas") or {}).get(uid)))
-                if ok is True:
-                    aprob[uid] = aprob.get(uid, 0) + 1
-                elif ok is False:
-                    desap[uid] = desap.get(uid, 0) + 1
-
-    # UNIDADES: una columna por actividad, en el orden del curso, y sólo las que tuvieron
-    # movimiento en el curso. Una columna donde NADIE entregó no dice nada del alumno: infla la
-    # tabla y la vuelve ilegible (Prog III tiene 42 actividades y 11 con movimiento). Cuántas
-    # quedaron afuera se declara, nunca se recorta en silencio.
-    orden_cmids = [str(c) for c in (orden_tareas or datos_tareas.keys())]
-    unidades = []
-    for cmid in orden_cmids:
-        d = datos_tareas.get(cmid)
-        if not d:
-            continue
-        con_com = sum(1 for uid in d["entregas"] if int(uid) in uid_com)
-        if con_com:
-            tit = (meta.get(cmid) or {}).get("titulo") or f"cmid {cmid}"
-            unidades.append({"cmid": cmid, "titulo": tit, "entregadas": con_com,
-                             "unidad": _nro_unidad(tit)})
-    # Ordenadas por número de unidad cuando el título lo trae; las que no lo traen (integradores,
-    # prácticas sueltas) van después, en el orden del curso. Sin esto la columna "1" de la matriz
-    # podía ser la unidad 2.
-    unidades.sort(key=lambda u: (u["unidad"] is None, u["unidad"] or 0,
-                                 orden_cmids.index(u["cmid"])))
-    sin_movimiento = len(datos_tareas) - len(unidades)
-
-    foros_por_uid = foros_por_uid or {}
-    filas: list[dict] = []
-    for uid, com in uid_com.items():
-        u = crudo.get(uid) or {}
-        estado_aula, dias_aula = None, None
-        f_aula = _fila_aula(u, dias_desenganche) if u else {}
-        # Qué hizo en CADA unidad. Cuatro estados y no dos: el dato de la nota ya está, y
-        # "entregó y desaprobó" no es lo mismo que "entregó y aprobó" ni que "entregó y nadie
-        # se lo corrigió" — ese último no es un problema del alumno.
-        por_unidad = {}
-        for un in unidades:
-            d = datos_tareas[un["cmid"]]
-            if uid not in d["entregas"]:
-                por_unidad[un["cmid"]] = "no_entrego"
-            elif uid in d.get("sin_nota", ()):
-                por_unidad[un["cmid"]] = "sin_nota"
-            elif uid in d.get("pendientes", ()):
-                por_unidad[un["cmid"]] = "sin_corregir"
-            else:
-                cfg = (meta.get(un["cmid"]) or {}).get("grade_cfg")
-                ok = _aprobo(nota_texto(cfg, (d.get("notas") or {}).get(uid)))
-                por_unidad[un["cmid"]] = ("aprobado" if ok is True
-                                          else "desaprobado" if ok is False else "sin_nota")
-        filas.append({
-            "userid": uid,
-            "por_unidad": por_unidad,
-            "nombre": f_aula.get("nombre") or u.get("fullname"),
-            "email": f_aula.get("email") or (u.get("email") or "").lower(),
-            "comision": com,
-            "regional": _regional_de(u),
-            "entregas": ent.get(uid, 0),
-            "aprobadas": aprob.get(uid, 0),
-            "desaprobadas": desap.get(uid, 0),
-            "sin_nota": sin_nota_al.get(uid, 0),
-            "espera_correccion_dias": esperando.get(uid),
-            "consultas_sin_responder": foros_por_uid.get(uid, 0),
-            "estado_aula": f_aula.get("estado_aula"),
-            "dias_sin_abrir_la_materia": f_aula.get("dias_sin_abrir_la_materia"),
-            "entra_al_campus_sin_abrir_la_materia":
-                f_aula.get("entra_al_campus_sin_abrir_la_materia"),
-        })
-
-    def _prom_activos(vals):
-        """Promedio ENTRE LOS QUE ENTREGARON algo. `None` si nadie entregó.
-
-        No es el promedio general y la diferencia importa: con el 77% del curso en cero, el
-        promedio general de Prog I da 0,37 entregas por alumno — un número que no describe a
-        nadie (nadie entregó un tercio de trabajo) y que empujan unos pocos adelantados. Y la
-        MEDIANA da 0 en las 16 comisiones, así que tampoco distingue. Separado en dos preguntas
-        —cuántos arrancaron, y cuánto avanzó el que arrancó— los dos números describen algo real.
-        """
-        act = [v for v in vals if v > 0]
-        return round(sum(act) / len(act), 1) if act else None
-
-    todas = [f["entregas"] for f in filas]
-    hay_movimiento = max(todas or [0]) > 0
-    # El comparador entre comisiones es la PROPORCIÓN de alumnos sin ninguna entrega: es el
-    # único que se mueve desde el primer día del cuatrimestre.
-    pct_cero_curso = (round(100 * sum(1 for v in todas if v == 0) / len(todas))
-                      if todas else None)
-    prom_curso = _prom_activos(todas)
-
-    por_comision = []
-    for c in comisiones:
-        de_com = [f for f in filas if f["comision"] == c["comision"]]
-        if not de_com:
-            continue
-        vals = [f["entregas"] for f in de_com]
-        deseng = sum(1 for f in de_com if f["estado_aula"] == _AULA_NUNCA
-                     or (f["dias_sin_abrir_la_materia"] or 0) >= dias_desenganche)
-        en_cero = sum(1 for f in de_com if f["entregas"] == 0)
-        pct_cero = round(100 * en_cero / len(de_com))
-
-        # Atrasada = se despega del curso por proporción de alumnos que no arrancaron. El
-        # margen existe para que no salga marcada media cohorte por estar a un punto.
-        atrasada = bool(pct_cero_curso is not None
-                        and pct_cero >= pct_cero_curso + _MARGEN_ATRASO_PP)
-
-        # El *por qué*: atrasada con los alumnos presentes no es lo mismo que atrasada porque
-        # se fueron. Es lectura, no veredicto: dice qué mirar, no quién tiene la culpa.
-        if not hay_movimiento:
-            lectura = "nadie entregó todavía en el curso: no hay con qué comparar"
-        elif not atrasada:
-            lectura = (f"en línea con el curso ({pct_cero}% sin arrancar, "
-                       f"{pct_cero_curso}% en el curso)")
-        elif deseng > len(de_com) / 3:
-            lectura = (f"atrasada y con muchos alumnos que no abren la materia "
-                       f"({pct_cero}% sin arrancar contra {pct_cero_curso}% del curso)")
-        else:
-            lectura = (f"atrasada con los alumnos entrando: entregan poco, no es que se fueron "
-                       f"({pct_cero}% sin arrancar contra {pct_cero_curso}% del curso)")
-        por_comision.append({
-            "comision": c["comision"],
-            "alumnos": len(de_com),
-            "alumnos_en_cero": en_cero,
-            "pct_sin_entregar": pct_cero,
-            "entregas_prom_de_los_que_entregaron": _prom_activos(vals),
-            "entregas_max": max(vals),
-            "desaprobadas": sum(f["desaprobadas"] for f in de_com),
-            "no_abren_la_materia": deseng,
-            "esperando_correccion": sum(1 for f in de_com if f["espera_correccion_dias"]),
-            "atrasada": atrasada,
-            "lectura": lectura,
-        })
-    # Primero la que más se despega.
-    por_comision.sort(key=lambda c: (-c["pct_sin_entregar"], -c["alumnos_en_cero"]))
-
-    # Los que menos entregaron, del curso entero. Se ordena por entregas y después por días
-    # sin abrir la materia: el que entregó poco Y no aparece es el más urgente.
-    flojos = sorted(filas, key=lambda f: (f["entregas"],
-                                          -(f["dias_sin_abrir_la_materia"] or 0)))
-    return {
-        "alumnos": len(filas),
-        "pct_sin_entregar_curso": pct_cero_curso,
-        "entregas_prom_de_los_que_entregaron_curso": prom_curso,
-        "unidades": unidades,
-        "unidades_sin_movimiento": sin_movimiento,
-        "alumnos_en_cero": sum(1 for f in filas if f["entregas"] == 0),
-        "con_desaprobadas": sum(1 for f in filas if f["desaprobadas"]),
-        "esperando_correccion": sum(1 for f in filas if f["espera_correccion_dias"]),
-        "por_comision": por_comision,
-        "flojos": flojos,
-        "criterio": {
-            "comparador": "Las comisiones se comparan por PROPORCIÓN de alumnos que no "
-                          "entregaron nada. Ni la mediana ni el promedio general sirven acá: la "
-                          "mediana da 0 en todas las comisiones cuando más de la mitad del curso "
-                          "está en cero (Prog I: 437 de 566), y el promedio general da 0,37 "
-                          "entregas por alumno — un número que no describe a nadie y que "
-                          "empujan unos pocos adelantados.",
-            "dos_preguntas": "Se miden por separado cuántos ARRANCARON (`pct_sin_entregar`) y "
-                             "cuánto avanzó el que arrancó (`entregas_prom_de_los_que_"
-                             "entregaron`, más el máximo). Mezclarlas en un solo número las "
-                             "esconde a las dos.",
-            "sin_porcentaje": "No hay % de avance a propósito: sin fechas de entrega no existe "
-                              "un denominador honesto contra el cual medir atraso.",
-            "matriculacion": "NO se puede saber cuándo se matriculó un alumno (la API no lo "
-                             "expone, verificado). El que entró tarde entregó menos y no es "
-                             "peor alumno: no lo leas como desempeño.",
-            "aprobado": "La nota se lee por TEXTO de la escala, nunca por el número: la escala "
-                        "5 de este campus va invertida (1=Aprobado, 2=Desaprobado).",
-        },
-    }
-
-
-async def avance_alumnos(client, course_id: int, cmids: list[str] | None = None,
-                         dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
-                         incluir_foros: bool = True) -> dict:
-    """Cómo van los ALUMNOS con las entregas, por comisión. Read-only.
-
-    La tercera vista del curso, y responde lo que las otras dos no: `informes_nexos` mira si
-    el alumno aparece, `panorama_comisiones` si el tutor corrigió, y ésta si el alumno
-    **entrega y aprueba**. Cruza el avance con el reloj de la materia, que es lo que permite
-    decir por qué una comisión está atrasada en vez de sólo que lo está.
-    """
-    t0 = time.time()
-    comisiones, ignorados, err = await _comisiones_del_curso(client, course_id)
-    if err:
-        return {"error": err}
-    if not comisiones:
-        return {"error": f"El curso {course_id} no tiene grupos con formato de comisión.",
-                "grupos_ignorados": ignorados}
-
-    padrones, avisos = await _padrones(client, course_id, comisiones)
-    meta, err_meta = await _meta_tareas(client, course_id)
-    if err_meta:
-        avisos.append(err_meta + ": las actividades salen sin título ni tipo de nota.")
-
-    tareas = list(cmids or [])
-    datos_tareas: dict[str, dict] = {}
-    if tareas:
-        sem = asyncio.Semaphore(_SEM)
-
-        async def _una(cmid):
-            async with sem:
-                return cmid, await _tarea_cruda(client, cmid)
-
-        for res in await asyncio.gather(*(_una(t) for t in tareas), return_exceptions=True):
-            if isinstance(res, BaseException):
-                avisos.append(f"Una tarea no se pudo leer: {type(res).__name__}: {res}")
-                continue
-            cmid, d = res
-            if d.get("error"):
-                avisos.append(f"cmid {cmid}: {d['error']}")
-                continue
-            datos_tareas[cmid] = d
-    if not datos_tareas:
-        avisos.append("No se pudo relevar NINGUNA actividad: las entregas de todos quedan en 0 "
-                      "por falta de datos, no porque nadie haya entregado.")
-
-    foros_por_uid: dict[int, int] = {}
-    if incluir_foros:
-        uid_com = {int(uid): c["comision"] for c in comisiones
-                   for uid in ((padrones.get(c["group_id"]) or {}).get("alumnos") or {})}
-        _, av_f, foros_por_uid, _ = await _consultas_sin_responder(
-            client, course_id, uid_com)
-        avisos.extend(av_f)
-
-    av = avance_de_alumnos(datos_tareas, meta, padrones, comisiones, foros_por_uid,
-                           dias_desenganche, orden_tareas=tareas)
-
-    sin_fecha = sum(1 for c in (meta or {}).values() if not c.get("duedate"))
-    if sin_fecha:
-        avisos.append(f"{sin_fecha} de {len(meta)} actividades no tienen fecha de entrega: por "
-                      "eso este informe NO calcula un porcentaje de avance.")
-
-    return {
-        "ok": True,
-        "course_id": course_id,
-        "curso": await _nombre_del_curso(client, course_id),
-        "comisiones": len(comisiones),
-        "tareas_miradas": len(datos_tareas),
-        "tareas_pedidas": len(tareas),
-        **av,
-        "grupos_ignorados": ignorados,
-        "_meta": {
-            "fuente": "vivo",
-            "segundos": round(time.time() - t0, 1),
-            "degradado": bool(avisos),
-            "sin_dato": avisos,
-        },
-        "lectura": (
-            "Mide ALUMNOS: cuánto entregaron y cómo les fue. No hay porcentaje de avance porque "
-            "sin fechas de entrega no hay denominador honesto. Se miden dos cosas aparte: "
-            "cuántos arrancaron (proporción sin entregar, el comparador entre comisiones) y "
-            "cuánto avanzó el que arrancó. «Al día» = nadie de su comisión entregó más, NO que "
-            "haya entregado todo. El que se matriculó tarde entregó menos y NO es peor alumno: la API "
-            "no expone la fecha de matriculación. La `lectura` de cada comisión dice qué mirar, "
-            "no de quién es la culpa."
         ),
     }

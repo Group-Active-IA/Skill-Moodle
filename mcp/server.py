@@ -1041,11 +1041,28 @@ async def _cmids_del_curso(course_id: int, cmids: list[str] | None) -> list[str]
 
 
 @mcp.tool()
-async def panorama_comisiones(course_id: int, cmids: list[str] | None = None,
-                              incluir_foros: bool = True, pdf: bool = True) -> dict:
+async def reporte_coordinacion(course_id: int, cmids: list[str] | None = None,
+                              incluir_foros: bool = True, pdf: bool = True,
+                              anexo: bool = False,
+                              dias_desenganche: int = 7) -> dict:
     """La vista del PROFESOR sobre el TRABAJO DE CORRECCIÓN del curso entero, cortada de tres
     maneras: por comisión, por tutor y por actividad. Con `pdf=True` (por defecto) escribe el
     PDF de coordinación y devuelve la ruta en `pdf.archivo`.
+
+    **El PDF son TRES páginas** y está pensado para leerse todos los días en dos minutos: KPIs
+    y puntos de atención, el desglose por comisión y por tutor, y los alumnos que dejaron de
+    abrir la materia. El detalle largo —una fila por cada entrega esperando, por actividad,
+    hilo por hilo— sale con `anexo=True`; en un curso movido esas listas solas se comen tres
+    páginas y el informe deja de leerse. El dict SIEMPRE trae todo, tenga anexo o no.
+
+    La tabla por tutor incluye una columna **Nota** que lee la cola por la ESPERA y no por el
+    volumen ("cola fresca", "espera de 3,1 d, priorizar"). Es la única interpretación del
+    informe y la regla es pareja para todos: describe el estado de una cola, no a la persona.
+
+    El bloque de alumnos usa el reloj de LA MATERIA (`dias_desenganche`, 7 días por defecto),
+    nunca el del campus — ver `informes_nexos` para por qué el corte por campus pierde a la
+    mayoría. Va la lista de los 25 más urgentes y el total; el listado completo con mails y el
+    nexo de cada sede sigue siendo `informes_nexos`, y este informe no lleva mails.
 
     Es el complemento de `informes_nexos`, que habla sólo de ALUMNOS. Están separados a
     propósito: juntos en un mismo documento, un tutor leía la lista de alumnos desenganchados
@@ -1080,15 +1097,16 @@ async def panorama_comisiones(course_id: int, cmids: list[str] | None = None,
     es el PDF, local, en `salidas/`."""
     from datetime import date
 
-    datos = await panorama.panorama_comisiones(
-        _cli(), course_id, await _cmids_del_curso(course_id, cmids), incluir_foros)
+    datos = await panorama.reporte_coordinacion(
+        _cli(), course_id, await _cmids_del_curso(course_id, cmids), incluir_foros,
+        dias_desenganche=dias_desenganche)
     if datos.get("error") or not pdf:
         return datos
     try:
         nombre = await panorama._nombre_del_curso(_cli(), course_id)
-        datos["pdf"] = informes.panorama_pdf(
+        datos["pdf"] = informes.reporte_coordinacion_pdf(
             datos, str(Path(almacen.SALIDAS_DIR) / "informes"),
-            materia=nombre or "", fecha=date.today().isoformat())
+            materia=nombre or "", fecha=date.today().isoformat(), anexo=anexo)
     except Exception as e:  # noqa: BLE001
         # Que falle el render no puede tirar el relevamiento del curso entero.
         datos["pdf"] = {"error": f"No pude escribir el PDF: {type(e).__name__}: {e}"}
@@ -1105,7 +1123,7 @@ async def demora_correccion(course_id: int, cmids: list[str] | None = None) -> d
       - `demora_*`  → sobre entregas YA corregidas. Es historia.
       - `espera_*`  → sobre las que siguen sin corregir, contra hoy. Es lo accionable.
 
-    Misma regla de lectura que `panorama_comisiones`: son hechos por comisión, no un puntaje
+    Misma regla de lectura que `reporte_coordinacion`: son hechos por comisión, no un puntaje
     del tutor. `sin_dato` avisa cuándo no hay nada medible — que no es lo mismo que estar
     al día. Sin `cmids` mira todas las tareas del curso. READ-ONLY."""
     return await panorama.demora_correccion(
@@ -1114,7 +1132,8 @@ async def demora_correccion(course_id: int, cmids: list[str] | None = None) -> d
 
 @mcp.tool()
 async def informes_nexos(course_id: int, dias_desenganche: int = 7,
-                         pdf: bool = True, emails: bool = True) -> dict:
+                         pdf: bool = True, emails: bool = True,
+                         unidades: str | None = None) -> dict:
     """EL informe para los TUTORES NEXO: los alumnos que dejaron de abrir la materia,
     agrupados por REGIONAL, con el nexo de cada sede y su mail. Con `pdf=True` (por defecto)
     escribe además el PDF listo para mandar y devuelve la ruta en `pdf.archivo`.
@@ -1122,7 +1141,7 @@ async def informes_nexos(course_id: int, dias_desenganche: int = 7,
     Uno por materia: pasás el `course_id` y sale el de ese curso.
 
     **Habla de ALUMNOS y de nadie más.** No trae ni una columna del trabajo de corrección de
-    los tutores — eso es `panorama_comisiones`, y va a coordinación. Estaban juntos en un mismo
+    los tutores — eso es `reporte_coordinacion`, y va a coordinación. Estaban juntos en un mismo
     PDF y el costo no era de formato: un tutor que abre un documento donde su comisión aparece
     medida al lado de una lista de alumnos lo lee como una evaluación suya. Si te piden "el
     rendimiento de los tutores", NO es esta tool.
@@ -1150,12 +1169,21 @@ async def informes_nexos(course_id: int, dias_desenganche: int = 7,
     porque cortaba por el reloj del campus. Contá los hechos, leé `_meta.sin_dato` ANTES de los
     números, y dejá la conclusión a quien lee.
 
+    **`unidades` agrega la columna RETRASO y hay que PREGUNTÁRSELO AL TUTOR.** Es el rango de
+    unidades ya exigibles a la fecha (`"3-5"`, o `"3"` para una sola): un alumno figura retrasado
+    si le falta al menos una de esas actividades de cierre. **El campus NO dice qué unidad se
+    está cursando** —verificado: ninguna actividad de cierre tiene fecha de apertura— así que sin
+    el rango la columna no sale, y el informe lo declara en vez de estimarla. Preguntá cuál es la
+    última unidad ya cerrada, o el rango; `unidades_disponibles` trae las que hay en el aula para
+    ofrecerlas. Ojo que el rango depende de la materia: en Prog I las unidades 1 y 2 son
+    optativas, así que cursando la 4 se exige sólo la 3.
+
     `emails=True` incluye el mail de cada alumno (es lo que lo hace accionable). Son mails
     personales: cuando pases la ruta, avisá que el PDF no va a un repo ni a una nota compartida.
     READ-ONLY sobre el campus; lo único que escribe es el PDF, local, en `salidas/`."""
     from datetime import date
 
-    datos = await panorama.informe_nexos(_cli(), course_id, dias_desenganche)
+    datos = await panorama.informe_nexos(_cli(), course_id, dias_desenganche, unidades)
     if datos.get("error") or not pdf:
         return datos
     try:
@@ -1165,58 +1193,6 @@ async def informes_nexos(course_id: int, dias_desenganche: int = 7,
             emails=emails)
     except Exception as e:  # noqa: BLE001
         # Que falle el render NO puede tirar los datos: se relevó el curso entero y eso vale.
-        datos["pdf"] = {"error": f"No pude escribir el PDF: {type(e).__name__}: {e}"}
-        datos["_meta"]["degradado"] = True
-    return datos
-
-
-@mcp.tool()
-async def avance_alumnos(course_id: int, cmids: list[str] | None = None,
-                         dias_desenganche: int = 7, incluir_foros: bool = True,
-                         pdf: bool = True, emails: bool = True) -> dict:
-    """Cómo van los ALUMNOS con las entregas y las notas, por comisión. Con PDF.
-
-    La tercera vista del curso, y responde lo que las otras dos no:
-    - `informes_nexos` → si el alumno APARECE por la materia.
-    - `panorama_comisiones` → si el TUTOR corrigió.
-    - ésta → si el alumno **entrega y aprueba**.
-
-    **No devuelve un porcentaje de avance y no lo inventes vos.** Un porcentaje necesita saber
-    cuántas actividades ya deberían estar, y ese dato no existe: la mayoría de las actividades
-    de este campus no tiene fecha de entrega (35 de 42 en Prog III, 10 de 11 en Prog I). Se
-    compara contra lo que el curso realmente hizo: cada alumno contra la mediana de su comisión
-    (`entregas_mediana`), cada comisión contra la del curso (`entregas_mediana_curso`).
-
-    **Lo más útil es la `lectura` de cada comisión**, que es el cruce con el reloj de la materia
-    y distingue dos atrasos que se ven iguales:
-    - *"atrasada con los alumnos entrando"* → están ahí y entregan poco: consigna, dificultad,
-      acompañamiento.
-    - *"atrasada y con muchos que no abren la materia"* → se fueron; el problema es retención.
-    Medido en Prog III: com4 y com6 tienen la misma mediana (0) y casi los mismos alumnos en
-    cero, y son los dos casos distintos. Presentá esa diferencia, no el número solo.
-
-    **`esperando_correccion` es el único renglón donde el problema NO es del alumno**: entregó
-    y no recibió nada. Nombralo aparte de los que no entregaron.
-
-    Advertencias que van SIEMPRE al presentarlo: **no se puede saber cuándo se matriculó** un
-    alumno (la API no lo expone, verificado), así que el que entró tarde entregó menos y no es
-    peor alumno. Y las notas se leen por el texto de la escala, nunca por el número: la escala
-    de TPs va invertida en este campus.
-
-    `emails=True` incluye el mail de cada alumno. Son personales: al pasar la ruta avisá que el
-    PDF no va a un repo ni a una nota compartida. READ-ONLY sobre el campus."""
-    from datetime import date
-
-    datos = await panorama.avance_alumnos(
-        _cli(), course_id, await _cmids_del_curso(course_id, cmids), dias_desenganche,
-        incluir_foros)
-    if datos.get("error") or not pdf:
-        return datos
-    try:
-        datos["pdf"] = informes.avance_pdf(
-            datos, str(Path(almacen.SALIDAS_DIR) / "informes"),
-            materia=datos.get("curso") or "", fecha=date.today().isoformat(), emails=emails)
-    except Exception as e:  # noqa: BLE001
         datos["pdf"] = {"error": f"No pude escribir el PDF: {type(e).__name__}: {e}"}
         datos["_meta"]["degradado"] = True
     return datos

@@ -16,7 +16,7 @@ proyecto encuentra los bugs.
 en un mismo PDF y el costo no era de formato: un tutor que abre un documento donde su comisión
 aparece medida al lado de una lista de alumnos lo lee como una evaluación suya. Son dos informes
 con dos destinatarios distintos — los alumnos van al nexo de su sede, el trabajo docente va a
-coordinación (`panorama_comisiones`) — y separarlos es lo que deja hablar de cada cosa sin ruido.
+coordinación (`reporte_coordinacion`) — y separarlos es lo que deja hablar de cada cosa sin ruido.
 """
 
 import os
@@ -42,12 +42,6 @@ TEAL = colors.HexColor("#1f7a6c")
 AMBER = colors.HexColor("#b07d1a")
 RED = colors.HexColor("#a02c2c")
 GREY = colors.HexColor("#dddddd")
-
-# Techo de entregas desde el cual una comisión tiene "recorrido". Abajo de esto, la diferencia
-# entre "entregó 1" y "entregó 2" no significa nada, y cualquier corte por promedio termina
-# listando al padrón entero: com13 salía como "23 de 24 alumnos" — o sea, todos.
-_TECHO_CON_RECORRIDO = 3
-
 
 async def informe_pendientes(
     client, course_id: int, dest_dir: str,
@@ -93,7 +87,7 @@ async def informe_pendientes(
         # El aviso va en el PDF además de en la respuesta: el PDF se comparte y se imprime
         # solo, sin el dict que lo acompañó.
         E.append(Paragraph(
-            f"⚠️ {len(no_relevadas)} tarea(s) NO se pudieron consultar y quedaron FUERA de "
+            f"<b>Atención:</b> {len(no_relevadas)} tarea(s) NO se pudieron consultar y quedaron FUERA de "
             "este informe: " + ", ".join(str(t["tarea"])[:40] for t in no_relevadas[:6])
             + ". Los totales de arriba están incompletos.", small))
         E.append(Spacer(1, 10))
@@ -150,7 +144,14 @@ def _tiles(items: list[tuple], ancho_total: float = 17.0) -> Table:
 
 
 def _tabla(rows: list[list], anchos: list[float], font: float = 7.2,
-           alinear_der: list[int] | None = None) -> Table:
+           alinear_der: list[int] | None = None, compacta: bool = False) -> Table:
+    """Tabla del informe. `compacta` achica el padding vertical.
+
+    Existe por una razón de contenido, no de estética: un curso con 16 comisiones tiene el doble
+    de filas que uno con 8, y con el padding normal la página 2 se partía en dos y el informe
+    pasaba de 3 páginas a 4. El largo del informe no puede depender de cuántas comisiones tiene
+    la materia — es el mismo documento y se lee igual.
+    """
     t = Table(rows, colWidths=[a * cm for a in anchos], repeatRows=1)
     est = [("BACKGROUND", (0, 0), (-1, 0), NAVY),
            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -159,7 +160,8 @@ def _tabla(rows: list[list], anchos: list[float], font: float = 7.2,
            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
            ("GRID", (0, 0), (-1, -1), 0.3, GREY),
            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LT]),
-           ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
+           ("TOPPADDING", (0, 0), (-1, -1), 1.5 if compacta else 3),
+           ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5 if compacta else 3)]
     for c in (alinear_der or []):
         est.append(("ALIGN", (c, 1), (c, -1), "RIGHT"))
     t.setStyle(TableStyle(est))
@@ -229,7 +231,7 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
     uno.
 
     **No trae nada del trabajo de corrección de los tutores.** Eso vive en
-    `panorama_comisiones` y va a coordinación. Estaban juntos en un mismo documento y el
+    `reporte_coordinacion` y va a coordinación. Estaban juntos en un mismo documento y el
     problema no era el largo: un tutor que abre un informe donde su comisión aparece medida al
     lado de una lista de alumnos lo lee como una evaluación suya.
 
@@ -277,13 +279,17 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
         (tot.get("entran_al_campus_sin_abrir_la_materia", "—"),
          "entran al campus y no la abren", AMBER),
         (tot.get("nunca_abrieron", "—"), "nunca la abrieron", NAVY),
-        (datos.get("regionales", "—"), "regionales", TEAL),
+        ((des.get("retraso") or {}).get("retrasados", "—"), "retrasados", AMBER)
+        if des.get("retraso") else (datos.get("regionales", "—"), "regionales", TEAL),
     ]))
     E.append(Spacer(1, 12))
 
     if meta.get("degradado"):
-        E.append(Paragraph("⚠️ Este relevamiento está INCOMPLETO. Los números de arriba no "
-                           "cubren todo el curso:", alerta))
+        # El encabezado NO afirma QUÉ está incompleto: los huecos son de distinta naturaleza
+        # —uno puede ser "faltan alumnos por medir" y otro "no se calculó una columna"— y decir
+        # "los números no cubren todo el curso" sobre el segundo es una afirmación falsa, justo
+        # en el renglón donde el informe promete ser exacto. Cada hueco se explica solo abajo.
+        E.append(Paragraph("<b>Atención:</b> leé estos huecos antes que los números:", alerta))
         for s in meta.get("sin_dato", [])[:6]:
             E.append(Paragraph(f"· {s}", small))
         E.append(Spacer(1, 8))
@@ -306,6 +312,17 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
         "para poder distinguirlo. Y <b>«nunca abrió la materia» no es abandono confirmado</b>: "
         "puede haberse matriculado esta semana, y este informe no ve la fecha de matriculación.",
         small))
+    E.append(Spacer(1, 4))
+    ret0 = des.get("retraso") or {}
+    if ret0:
+        E.append(Spacer(1, 4))
+        E.append(Paragraph(
+            f"<b>Retraso ({ret0['etiqueta']})</b> = le falta entregar al menos una de las "
+            f"actividades de cierre de las unidades {', '.join('U' + str(u) for u in ret0['unidades_medidas'])}, "
+            "que son las ya exigibles a la fecha. <b>Basta que falte una para que diga «Sí»</b>; "
+            "«No» significa que están todas. El rango lo fija el tutor, no el campus: Moodle no "
+            "expone qué unidad se está cursando, así que si no se lo indica, esta columna no "
+            "sale — nunca se estima.", small))
     E.append(Spacer(1, 4))
     E.append(Paragraph(
         "Este informe habla de <b>alumnos</b> y de nadie más: no trae ninguna medición del "
@@ -345,12 +362,17 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
                                "(mcp/nexos.json). Sin contacto para esta regional.", alerta))
         E.append(Spacer(1, 4))
 
+        ret = des.get("retraso") or {}
         cab = ["Alumno", "Com.", "Situación", "Sin abrir\nla materia",
                "Sin entrar\nal campus"]
         anchos = [6.0, 1.3, 4.7, 2.5, 2.5]
         if emails:
             cab.insert(1, "Email")
             anchos = [4.0, 4.4, 1.15, 4.0, 1.75, 1.7]
+        if ret:
+            cab.insert(-2, f"Retraso\n({ret['etiqueta']})")
+            anchos = ([3.4, 3.9, 1.35, 3.35, 1.35, 1.8, 1.85] if emails
+                      else [5.3, 1.4, 4.1, 1.5, 2.35, 2.35])
         rr = [cab]
         for a in b["lista"]:
             aula = ("Nunca" if a.get("estado_aula") == "nunca_abrio"
@@ -370,6 +392,17 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
             com = "s/com" if a.get("comision") == "(sin comisión)" else a.get("comision")
             fila = [Paragraph(a.get("nombre") or "", est_celda),
                     Paragraph(com or "—", est_celda), Paragraph(caso, est_celda), aula, camp]
+            if ret:
+                # Sí en rojo, No en verde. El color va con la palabra, nunca solo: el informe
+                # se imprime en blanco y negro y se fotocopia.
+                r_ = a.get("retraso")
+                txt = ("—" if r_ is None
+                       else (f'<font color="#a02c2c"><b>Sí</b></font>' if r_
+                             else '<font color="#1f7a6c">No</font>'))
+                falt = a.get("unidades_faltantes") or []
+                if r_ and falt:
+                    txt += f' <font size="5.6">U{",U".join(str(u) for u in falt)}</font>'
+                fila.insert(-2, Paragraph(txt, est_celda))
             if emails:
                 fila.insert(1, Paragraph(a.get("email") or "—", est_celda))
             rr.append(fila)
@@ -412,7 +445,7 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
         f"sobre <b>{pad['total_del_curso']}</b> matriculados en el curso"
         + (f", y {pad['sin_comision']} sin comisión." if pad.get("sin_comision")
            else " — cuadra.")
-        + ("" if pad.get("cuadra") else " ⚠️ La cuenta NO cierra: puede haber alguien "
+        + ("" if pad.get("cuadra") else " <b>Atención:</b> la cuenta NO cierra: puede haber alguien "
            "matriculado en dos comisiones, contado dos veces.")
     ) if pad.get("total_del_curso") else (
         f"Las {datos.get('comisiones')} comisiones suman {pad.get('en_comisiones')} alumnos. "
@@ -427,7 +460,7 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
     E.append(Spacer(1, 8))
     if emails:
         E.append(Paragraph(
-            "⚠️ Este documento incluye datos de contacto de alumnos (mails personales). No lo "
+            "<b>Atención:</b> este documento incluye datos de contacto de alumnos (mails personales). No lo "
             "subas a repositorios ni lo compartas fuera del equipo docente.", alerta))
         E.append(Spacer(1, 4))
     E.append(Paragraph(
@@ -445,12 +478,17 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
         canvas.saveState()
         canvas.setFont("Helvetica", 6.2)
         canvas.setFillColor(colors.HexColor("#888888"))
-        canvas.drawString(
-            2.0 * cm, 0.85 * cm,
-            "Situación: «entra al campus, no abre la materia» = eligió no entrar, es el más "
-            "recuperable · «no entra al campus» = tampoco aparece por Moodle · «sin dato» = no "
-            "se pudo medir, NO es que no la haya abierto.")
+        # El número de página se dibuja primero y la leyenda se corta ANTES de llegar a él.
+        # Sin ese tope los dos textos se superponen y quedan ilegibles los dos.
         canvas.drawRightString(19.0 * cm, 0.85 * cm, f"pág. {doc_.page}")
+        leyenda = ("Situación: «entra al campus, no abre la materia» = eligió no entrar, es "
+                   "el más recuperable · «no entra al campus» = tampoco aparece por Moodle.")
+        # Red de seguridad: si algún día la leyenda crece, se recorta con puntos suspensivos
+        # antes de llegar al número de página. Cortada a mitad de palabra parece un bug.
+        tope = 16.2 * cm
+        while canvas.stringWidth(leyenda, "Helvetica", 6.2) > tope and " " in leyenda:
+            leyenda = leyenda.rsplit(" ", 1)[0] + "…"
+        canvas.drawString(2.0 * cm, 0.85 * cm, leyenda)
         canvas.restoreState()
 
     doc = SimpleDocTemplate(path, pagesize=A4, topMargin=1.4 * cm, bottomMargin=1.7 * cm,
@@ -467,7 +505,31 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
 # ---------------------------------------------------------------------------
 
 def _dias_txt(d) -> str:
-    return "—" if d is None else (f"{d:g}" if isinstance(d, float) else str(d))
+    """Número para mostrar. `None` -> «—», y los decimales con COMA.
+
+    La coma no es un capricho de estilo: el informe lo leen tutores y coordinación en
+    castellano, y «2.7» al lado de una tabla con miles se lee mal. Los enteros (conteos) salen
+    tal cual — sólo los días llevan decimal.
+    """
+    if d is None:
+        return "—"
+    return f"{d:g}".replace(".", ",") if isinstance(d, float) else str(d)
+
+
+def _fecha_txt(ts) -> str:
+    """Timestamp -> «14 jul 2026». 0/None -> «Nunca». PURA.
+
+    Va la fecha además de los días porque son para cosas distintas: los días ordenan la lista,
+    la fecha es lo que se le nombra al alumno cuando se lo contacta. El «~» del informe que se
+    armaba a mano se saca: la fecha es exacta, no aproximada.
+    """
+    if not ts:
+        return "Nunca"
+    from datetime import datetime
+    m = ("ene", "feb", "mar", "abr", "may", "jun",
+         "jul", "ago", "sep", "oct", "nov", "dic")
+    d = datetime.fromtimestamp(int(ts))
+    return f"{d.day} {m[d.month - 1]} {d.year}"
 
 
 def sin_emoji(txt: str) -> str:
@@ -487,56 +549,143 @@ def sin_emoji(txt: str) -> str:
     return " ".join("".join(out).split())
 
 
-def focos_de_correccion(datos: dict, tope: int = 4) -> list[tuple]:
-    """PURA: los focos del trabajo de corrección. -> [(titulo, detalle)].
+# Umbrales de la columna "Nota" de la tabla por tutor, en días de espera. Existen porque el
+# conteo de pendientes solo NO se puede leer: en el mismo informe un tutor con 8 en cola está
+# mejor que otro con 5, y la tabla no lo decía — había que hacer la cuenta mental fila por fila.
+_ESPERA_FRESCA = 1.0    # entregado prácticamente hoy: no hay nada que priorizar
+_ESPERA_PRIORIZAR = 3.0  # a partir de acá el alumno ya nota que no le contestaron
 
-    Hechos con su cuenta al lado y a quién llamar. Sin adjetivos y sin puntaje: la unidad de
-    medida es la comisión o la actividad, nunca la persona.
+
+def nota_de_cola(pendientes, espera_dias) -> str:
+    """PURA: traduce (pendientes, espera) a qué hacer con esa cola. -> texto corto.
+
+    Es lo único del informe que interpreta en vez de contar, y se banca porque la regla es
+    explícita y pareja para todos: **la espera manda, el volumen no**. Una cola de 8 entregas de
+    ayer está al día; una sola de hace tres semanas no. Sin esta columna las dos se leen igual.
+
+    No califica a nadie: describe el estado de una cola, que es un hecho del trabajo. Por eso
+    dice "priorizar" —qué hacer— y nunca "lento" ni "atrasado" —cómo es la persona.
+    """
+    if not pendientes:
+        return "sin cola"
+    if espera_dias is None:
+        return "sin dato de espera"
+    if espera_dias >= _ESPERA_PRIORIZAR:
+        return f"espera de {_dias_txt(espera_dias)} d, priorizar"
+    if espera_dias < _ESPERA_FRESCA:
+        return "cola fresca (espera < 1 d)"
+    return f"al día (espera {_dias_txt(espera_dias)} d)"
+
+
+def focos_de_correccion(datos: dict, tope: int = 6) -> list[tuple]:
+    """PURA: los puntos de atención del día. -> [(titulo, detalle)].
+
+    Hechos con su cuenta al lado y a quién llamar. **Sin veredicto**: no hay "estado general",
+    no hay adjetivo sobre el curso ni sobre nadie. El informe que se armaba a mano abría con
+    "Estado general: sano" sobre un curso con 60 alumnos que no abrían la materia — un número
+    raro alguien lo revisa, un "sano" no lo revisa nadie, y si el resumen dice que está bien la
+    página del detalle no la abre nadie tampoco.
+
+    Se nombra la comisión y a su tutor porque sin eso no se sabe a quién llamar, que es para lo
+    que sirve. Nombrar no es puntuar: no hay podio, no hay nota y no hay orden de mejor a peor.
+
+    El último punto es siempre **lo que está funcionando**, y no es cortesía: un informe diario
+    que sólo lista problemas se lee como una acusación y deja de leerse. Es un hecho contable —
+    comisiones sin cola— no un elogio.
     """
     filas = datos.get("filas") or []
     act = datos.get("por_actividad") or []
+    des = (datos.get("desenganche") or {}).get("totales") or {}
     puntos: list[tuple] = []
+
+    def _quien(f) -> str:
+        return (f.get("tutor") or {}).get("nombre") or "sin tutor identificado"
 
     con_cola = [f for f in filas if f.get("sin_corregir")]
     if con_cola:
-        peor = max(con_cola, key=lambda f: (f.get("espera_max_dias") or 0))
         total = sum(f["sin_corregir"] for f in con_cola)
-        quien = (peor.get("tutor") or {}).get("nombre") or "sin tutor identificado"
+        peor = max(con_cola, key=lambda f: (f.get("espera_max_dias") or 0))
         puntos.append((
-            f"{total} entregas sin corregir en {len(con_cola)} comisión(es)",
-            f"La más antigua espera hace {_dias_txt(peor.get('espera_max_dias'))} día(s), en "
-            f"{peor.get('comision')} ({quien}). Volumen no es atraso: una cola grande pero de "
-            "ayer está al día — lo accionable es la espera, no el conteo."))
+            f"{peor.get('comision')} ({_quien(peor)}) — la corrección que más espera",
+            f"{peor['sin_corregir']} entrega(s) sin corregir y la más antigua aguarda hace "
+            f"{_dias_txt(peor.get('espera_max_dias'))} d — la espera más larga del curso. "
+            f"En total hay {total} sin corregir en {len(con_cola)} comisión(es). "
+            "Volumen no es atraso: una cola grande pero de ayer está al día, así que lo "
+            "accionable es la espera y no el conteo."))
+
+        # La de más VOLUMEN, sólo si es otra. Si es la misma comisión, repetirla ocupa un punto
+        # de los seis y no agrega un dato.
+        #
+        # El EMPATE se declara. Un `max()` a secas devuelve la primera y el título decía "la
+        # cola más alta" cuando había cuatro comisiones con la misma cantidad: nombraba a una
+        # sola persona por un desempate de orden alfabético. Un título que la tabla de al lado
+        # desmiente es la forma más barata de que nadie le crea al informe.
+        tope_vol = max(f["sin_corregir"] for f in con_cola)
+        empatadas = [f for f in con_cola if f["sin_corregir"] == tope_vol]
+        mas = max(empatadas, key=lambda f: (f.get("espera_max_dias") or 0))
+        if mas is not peor:
+            if len(empatadas) > 1:
+                titulo = (f"{len(empatadas)} comisiones comparten la cola más alta "
+                          f"({tope_vol} cada una)")
+                detalle = ("Son " + ", ".join(f"{f.get('comision')} ({_quien(f)})"
+                                              for f in empatadas)
+                           + f". La que más espera de ésas es {mas.get('comision')}, con "
+                           f"{_dias_txt(mas.get('espera_max_dias'))} d. ")
+            else:
+                titulo = f"{mas.get('comision')} ({_quien(mas)}) — la cola más alta"
+                detalle = (f"{mas['sin_corregir']} entregas sin corregir, con una espera máxima "
+                           f"de {_dias_txt(mas.get('espera_max_dias'))} d. ")
+            puntos.append((
+                titulo,
+                detalle + nota_de_cola(mas["sin_corregir"],
+                                       mas.get("espera_max_dias")).capitalize() + "."))
     elif datos.get("tareas_miradas"):
         puntos.append((
             "No hay entregas esperando corrección",
             f"Está corregido todo lo entregado en las {datos['tareas_miradas']} actividades "
             "miradas. Es sobre esas actividades: mirá los huecos si hay alguno declarado."))
 
-    act_cola = [a for a in act if a.get("sin_corregir")]
-    if act_cola:
-        # `por_actividad` viene ordenado por ESPERA, no por volumen: el título tiene que decir
-        # eso. Decía "la actividad con más cola" y mostraba una de 1 sola entrega — la etiqueta
-        # contradecía al dato, que es la forma más barata de que nadie le crea al informe.
-        a0 = act_cola[0]
-        varias = (a0.get("comisiones_con_cola") or 0) >= 2
-        mas_volumen = max(act_cola, key=lambda a: a["sin_corregir"])
-        puntos.append((
-            f"La actividad que más espera: {sin_emoji(a0['titulo'])[:60]}",
-            f"{a0['sin_corregir']} sin corregir en {a0['comisiones_con_cola']} comisión(es), la "
-            f"más vieja esperando {_dias_txt(a0.get('espera_max_dias'))} día(s)."
-            + (" Cuando una actividad se atrasa en varias comisiones a la vez, suele ser de la "
-               "consigna o del calendario y no de una persona." if varias else "")
-            + (f" La de más volumen es otra: {sin_emoji(mas_volumen['titulo'])[:50]} "
-               f"({mas_volumen['sin_corregir']} en cola)."
-               if mas_volumen is not a0 else "")))
+    # CADENCIA: cuánto llegó a tardar lo que YA se corrigió. Es historia y no una cola, así que
+    # el punto lo dice explícito — si no, un máximo alto se lee como trabajo pendiente. Sirve
+    # para lo que la espera no muestra: una comisión puede estar sin cola hoy y aun así haber
+    # tenido una entrega que esperó una semana.
+    con_demora = [f for f in filas if f.get("demora_max_dias") is not None]
+    if con_demora:
+        lenta = max(con_demora, key=lambda f: f["demora_max_dias"])
+        if lenta["demora_max_dias"] >= _ESPERA_PRIORIZAR:
+            puntos.append((
+                f"{lenta.get('comision')} ({_quien(lenta)}) — la demora más larga ya corregida",
+                f"Sobre lo que ya tiene nota, alguna entrega llegó a esperar "
+                f"{_dias_txt(lenta['demora_max_dias'])} d (mediana de la comisión: "
+                f"{_dias_txt(lenta.get('demora_mediana_dias'))} d). "
+                f"Hoy tiene {lenta.get('sin_corregir') or 0} en cola: <b>es cadencia histórica, "
+                "no un pendiente</b>. Va como referencia del ritmo, no como algo a resolver hoy."))
 
     sin_nota = sum(f.get("calificado_sin_nota") or 0 for f in filas)
     if sin_nota:
         puntos.append((
             f"{sin_nota} entregas figuran corregidas pero SIN nota",
             "Ni pendientes ni calificadas: no salen en ninguna cola, así que nadie las está "
-            "esperando. Hay que cargarles la nota a mano."))
+            "esperando — ni el tutor ni el alumno. Hay que cargarles la nota a mano."))
+
+    # DESENGANCHE con el reloj de la materia. El corte por "días sin pisar el campus" que se
+    # usaba antes encontraba 3 de cada 30, y siempre para el lado que tranquiliza.
+    if des.get("desenganchados"):
+        activos = des.get("entran_al_campus_sin_abrir_la_materia") or 0
+        puntos.append((
+            f"{des['desenganchados']} alumnos no abren la materia",
+            f"Medido con el reloj de ESTA materia, no con el del campus. De ésos, {activos} "
+            "entran al campus y no la abren: no perdieron el acceso, eligieron no entrar — es "
+            "el grupo más recuperable, y el que un corte por «días sin entrar al campus» no "
+            "encuentra. El detalle con mails y el nexo de cada sede va en el informe de nexos."))
+
+    foros = sum(f.get("consultas_sin_responder") or 0 for f in filas)
+    if foros:
+        puntos.append((
+            f"{foros} consulta(s) de foro sin ninguna respuesta",
+            "Hilos abiertos por alumnos donde no contestó nadie — ni un docente ni otro alumno. "
+            "El campus no dice quién debía responder, así que el informe cuenta el silencio y "
+            "no se lo adjudica a nadie."))
 
     sf = datos.get("actividades_sin_fecha_de_entrega") or 0
     if sf:
@@ -546,21 +695,69 @@ def focos_de_correccion(datos: dict, tope: int = 4) -> list[tuple]:
             "al leer cualquier conteo de faltantes como abandono: es lo que hace que la lista "
             "de riesgo marque al padrón entero."))
 
+    # Lo que funciona va SIEMPRE último y siempre entra, aunque el tope corte lo de arriba.
+    sin_cola = [f for f in filas if f.get("sin_corregir") == 0]
+    if sin_cola and con_cola:
+        funciona = (
+            "Lo que está al día",
+            f"{len(sin_cola)} de {len(filas)} comisiones no tienen ninguna entrega en cola: "
+            + ", ".join(str(f.get("comision")) for f in sin_cola[:8])
+            + ("…" if len(sin_cola) > 8 else "") + ".")
+        return puntos[:max(tope - 1, 0)] + [funciona]
+
     return puntos[:tope]
 
 
-def panorama_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "") -> dict:
-    """Renderiza el panorama del curso (trabajo de corrección). PURA.
+def _caja(texto: str, estilo, ancho_total: float = 17.0, color=NAVY) -> Table:
+    """Caja de resumen: fondo claro y una barra de color a la izquierda.
 
-    Es el informe de COORDINACIÓN sobre el trabajo docente, y el complemento del de nexos
-    (`informe_nexos_pdf`), que habla sólo de alumnos. Están separados a propósito: juntos, un
-    tutor leía la lista de alumnos como parte de su evaluación.
+    Lo que va acá son HECHOS con su número, nunca un veredicto. La versión de este informe que
+    se armaba a mano abría con "Estado general: sano" sobre un curso con 60 alumnos que no
+    abrían la materia: el adjetivo salía de cortar la inactividad por el reloj del campus, que
+    pierde la mayoría de los casos. Un número raro alguien lo revisa; un "sano" no lo revisa
+    nadie, y si el resumen dice que está bien el resto del informe no se abre.
+    """
+    t = Table([[Paragraph(texto, estilo)]], colWidths=[ancho_total * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eef3f7")),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, color),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    return t
+
+
+# Cuántos alumnos desenganchados entran en la tabla de la página 3. El listado completo, con
+# mail y con el nexo de cada sede, es el informe de nexos: éste es el de coordinación y sólo
+# necesita el tamaño del problema y por dónde empezar. Se declara siempre cuántos quedaron
+# afuera — un recorte silencioso se lee como cobertura total.
+_MAX_DESENGANCHE_EN_TABLA = 25
+
+
+def reporte_coordinacion_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "",
+                 anexo: bool = False) -> dict:
+    """Renderiza el reporte de coordinación sobre el trabajo de corrección. PURA.
+
+    Tres páginas y se lee en dos minutos: KPIs y puntos de atención, el desglose por comisión y
+    por tutor, y el riesgo de desenganche. Ese largo es la especificación, no una consecuencia:
+    es un informe DIARIO, y uno que no se lee no existe. El detalle largo —una fila por cada
+    entrega esperando, por actividad, hilo por hilo— pasó a un anexo que sale sólo con
+    `anexo=True`: en un curso movido esas listas solas se comían tres páginas.
 
     **Nombra a todos los tutores y no puntúa a ninguno.** Hay carga por tutor —porque varios
-    llevan dos comisiones y su cola real no está en ninguna fila— pero no hay nota, ni podio,
-    ni etiqueta sobre la persona: las comisiones no son comparables entre sí (tamaño, consigna,
+    llevan dos comisiones y su cola real no está en ninguna fila— pero no hay nota, ni podio, ni
+    orden de mejor a peor: las comisiones no son comparables entre sí (tamaño, consigna,
     cohorte), así que un ranking convertiría un hecho en un juicio. Se ordena por la espera más
     antigua, que es lo que dice por dónde empezar.
+
+    La columna **Nota** de la tabla por tutor es lo único que interpreta, y la regla es pareja
+    para todos: manda la espera, no el volumen. Sin ella, un tutor con 8 entregas de ayer y otro
+    con 5 esperando tres días se leían igual y había que hacer la cuenta a ojo, fila por fila.
+
+    El bloque de desenganche usa el reloj de **la materia**, no el del campus. Con el del campus
+    el informe listaba 13 alumnos y los 13 tenían "ingreso al aula: nunca" — o sea encontraba
+    sólo a los que no están en ninguna parte. Al que entra a diario para otra materia y hace un
+    mes que no abre ésta lo mostraba impecable, y ése es el más recuperable de todos.
     """
     ss = getSampleStyleSheet()
     h0 = ParagraphStyle("h0", parent=ss["Heading1"], fontSize=17, leading=20, textColor=NAVY,
@@ -575,15 +772,18 @@ def panorama_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "")
     kicker = ParagraphStyle("k", parent=ss["Normal"], fontSize=7.5, leading=9,
                             textColor=TEAL, fontName="Helvetica-Bold")
     alerta = ParagraphStyle("a", parent=ss["Normal"], fontSize=8, leading=11, textColor=RED)
-    est_celda = ParagraphStyle("cel", parent=ss["Normal"], fontSize=7, leading=8.2)
+    est_celda = ParagraphStyle("cel", parent=ss["Normal"], fontSize=6.6, leading=7.8)
+    est_caja = ParagraphStyle("cj", parent=ss["Normal"], fontSize=8.3, leading=11.5)
 
     filas = datos.get("filas") or []
     act = datos.get("por_actividad") or []
     tutores = datos.get("por_tutor") or []
     avisos = datos.get("avisos") or []
+    des = datos.get("desenganche") or {}
+    tot_des = des.get("totales") or {}
     titulo = materia or f"Curso {datos.get('course_id')}"
     os.makedirs(dest_dir, exist_ok=True)
-    path = os.path.join(dest_dir, f"panorama_curso{datos.get('course_id')}"
+    path = os.path.join(dest_dir, f"reporte_coordinacion_curso{datos.get('course_id')}"
                         + (f"_{fecha}" if fecha else "") + ".pdf")
 
     def _suma(clave):
@@ -591,62 +791,92 @@ def panorama_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "")
         return sum(vals) if vals else None
 
     entregadas, corregidas = _suma("entregados"), _suma("corregidos")
-    sin_corregir = _suma("sin_corregir")
+    sin_corregir, sin_nota = _suma("sin_corregir"), _suma("calificado_sin_nota")
+    alumnos_tot = _suma("alumnos")
     esperas = [f["espera_max_dias"] for f in filas if f.get("espera_max_dias") is not None]
+    espera_max = max(esperas) if esperas else None
     con_tutor = sum(1 for f in filas if f.get("tutor"))
     pct = round(100 * corregidas / entregadas) if entregadas else None
 
+    # ---------------- Página 1: de qué tamaño es cada cosa ----------------
     E = [Paragraph("UTN · TECNICATURA UNIVERSITARIA EN PROGRAMACIÓN", kicker),
-         Paragraph(f"Panorama del curso — {titulo}", h0),
-         Paragraph("Trabajo de corrección por comisión · vista de coordinación"
+         Paragraph(f"Reporte de coordinación — {titulo}", h0),
+         Paragraph("Seguimiento de tutores y comisiones · vista de supervisión"
                    + (f" · {fecha}" if fecha else ""), small),
          Spacer(1, 12)]
 
+    pad = datos.get("padron") or {}
+    tot_curso = pad.get("total_del_curso")
+    kpi_alumnos = (f"{pad.get('en_comisiones')}/{tot_curso}" if tot_curso
+                   else _dias_txt(pad.get("en_comisiones") or alumnos_tot))
     E.append(_tiles([
         (f"{con_tutor}/{len(filas)}", "comisiones con tutor", NAVY),
         (f"{pct}%" if pct is not None else "—", "entregas corregidas", TEAL),
-        (_dias_txt(entregadas), "entregas relevadas", NAVY),
-        (_dias_txt(sin_corregir), "sin corregir", AMBER),
-        (_dias_txt(max(esperas) if esperas else None), "espera máx (días)", RED),
+        (kpi_alumnos, "alumnos con comisión / total", NAVY),
+        (_dias_txt(sin_corregir), "entregas sin corregir", AMBER),
+        (tot_des.get("desenganchados", "—"), "no abren la materia", RED),
     ]))
     E.append(Spacer(1, 12))
 
     if avisos:
-        E.append(Paragraph("⚠️ Este relevamiento tiene huecos. Leelos antes de los números:",
+        E.append(Paragraph("<b>Atención:</b> este relevamiento tiene huecos. Leelos antes de los números:",
                            alerta))
         for a in avisos[:6]:
             E.append(Paragraph(f"· {a}", small))
         E.append(Spacer(1, 8))
 
-    E.append(Paragraph("Cómo leer esto", h2))
+    peor = max((f for f in filas if f.get("sin_corregir")),
+               key=lambda f: (f.get("espera_max_dias") or 0), default=None)
+    resumen = (
+        f"<b>{pad.get('en_comisiones') or alumnos_tot or 0}</b> alumnos en {len(filas)} "
+        f"comisiones ({con_tutor} con tutor asignado)"
+        + (f" sobre <b>{tot_curso}</b> matriculados en el curso"
+           + (f", y {pad['sin_comision']} sin comisión asignada" if pad.get("sin_comision")
+              else " — cuadra")
+           if tot_curso else "")
+        + ". "
+        + (f"<b>{corregidas} de {entregadas}</b> entregas corregidas ({pct}%), "
+           f"<b>{sin_corregir}</b> sin corregir. " if entregadas else
+           "No se relevó ninguna entrega. ")
+        + (f"La espera más larga es de <b>{_dias_txt(espera_max)} d</b> en "
+           f"<b>{peor.get('comision')}</b> "
+           f"({(peor.get('tutor') or {}).get('nombre') or 'sin tutor identificado'}). "
+           if peor else "")
+        + (f"<b>{tot_des['desenganchados']}</b> alumnos no abren {titulo} hace "
+           f"{des.get('dias_desenganche')}+ días, y "
+           f"<b>{tot_des.get('entran_al_campus_sin_abrir_la_materia')}</b> de ésos sí entran "
+           "al campus."
+           if tot_des.get("desenganchados") else ""))
+    E.append(_caja(resumen, est_caja))
+    E.append(Spacer(1, 6))
     E.append(Paragraph(
-        "<b>Espera máx</b> es lo accionable: los días que aguarda HOY la entrega sin corregir "
-        "más antigua. <b>Demora med</b> es historia: lo que tardó en corregirse lo que ya se "
-        "corrigió. <b>Volumen no es atraso</b> — una cola grande pero de ayer está al día, y "
-        "una cola de una sola entrega de hace tres semanas no lo está.", body))
-    E.append(Spacer(1, 4))
-    E.append(Paragraph(
-        "Las filas son <b>hechos por comisión</b>. Se nombra al tutor a cargo porque sin eso el "
-        "informe no sirve para saber a quién llamar — <b>no hay puntaje ni ranking de "
-        "personas</b>, y no lo armes al presentarlo: las comisiones no son comparables entre sí "
-        "(distinto tamaño, distinta consigna, distinta cohorte). Un número alto puede ser una "
-        "semana de parcial. Y un 0 con motivo en <b>sin_dato</b> no es un 0 de trabajo "
-        "terminado.", small))
+        "Son hechos del campus, sin veredicto. <b>Espera máx</b> es lo accionable: los días que "
+        "aguarda HOY la entrega sin corregir más antigua. <b>Demora</b> es historia: lo que "
+        "tardó en corregirse lo que ya tiene nota. <b>Volumen no es atraso</b> — una cola grande "
+        "pero de ayer está al día, y una sola entrega de hace tres semanas no lo está.", small))
 
     focos = focos_de_correccion(datos)
     if focos:
-        E.append(Paragraph("Focos de hoy", h2))
+        E.append(Paragraph("Puntos de atención de hoy", h2))
         E.append(_bloque_focos(focos, body, small))
 
+    # ---------------- Página 2: el desglose ----------------
     E.append(PageBreak())
-    E.append(Paragraph("Por comisión", h2))
+    E.append(Paragraph("Desglose por comisión", h2))
+    nohab = datos.get("actividades_no_habilitadas") or 0
     E.append(Paragraph(
-        f"{datos.get('tareas_miradas')} de {datos.get('tareas_pedidas')} actividades relevadas. "
-        "«Sin corregir» = entregada y todavía sin nota. «Sin nota» = figura corregida pero sin "
-        "calificación cargada: nadie la está esperando.", small))
+        f"Se evalúan las <b>{datos.get('tareas_miradas')} actividades habilitadas</b> a hoy"
+        + (f" (de {datos.get('actividades_en_el_curso')} cargadas en el curso): quedan afuera "
+           f"{nohab} que todavía no abrieron —parciales, recuperatorios, integradores—, porque "
+           "contarlas mostraría entregas en cero sobre algo que el alumno ni ve." if nohab
+           else ".")
+        + " «Sin corregir» = entregada y todavía sin nota. «Sin nota» = figura corregida pero "
+        "sin calificación cargada: no está en ninguna cola, así que nadie la está esperando.",
+        small))
     E.append(Spacer(1, 5))
     rows = [["Com.", "Tutor", "Alum.", "Entre-\ngadas", "Corre-\ngidas", "Sin\ncorregir",
-             "Sin\nnota", "Espera\nmáx (d)", "Demora\nmed (d)", "Foro\ns/resp."]]
+             "Sin\nnota", "Espera\nmáx (d)", "Demora\nmed (d)", "Demora\nmáx (d)",
+             "Foro\ns/resp."]]
     for f in filas:
         rows.append([f.get("comision"),
                      Paragraph((f.get("tutor") or {}).get("nombre") or "— sin identificar —",
@@ -656,9 +886,25 @@ def panorama_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "")
                      _dias_txt(f.get("calificado_sin_nota")),
                      _dias_txt(f.get("espera_max_dias")),
                      _dias_txt(f.get("demora_mediana_dias")),
+                     _dias_txt(f.get("demora_max_dias")),
                      _dias_txt(f.get("consultas_sin_responder"))])
-    E.append(_tabla(rows, [1.25, 4.15, 1.1, 1.3, 1.3, 1.2, 1.1, 1.4, 1.4, 1.25],
-                    alinear_der=[2, 3, 4, 5, 6, 7, 8, 9]))
+    rows.append(["TOTAL",
+                 Paragraph(f"{len(filas)} comisiones · {len(tutores)} tutores", est_celda),
+                 _dias_txt(alumnos_tot), _dias_txt(entregadas), _dias_txt(corregidas),
+                 _dias_txt(sin_corregir), _dias_txt(sin_nota),
+                 _dias_txt(espera_max), "—", "—",
+                 _dias_txt(_suma("consultas_sin_responder"))])
+    t = _tabla(rows, [1.15, 3.6, 0.95, 1.15, 1.15, 1.15, 1.0, 1.35, 1.35, 1.35, 1.15],
+               font=6.6, alinear_der=[2, 3, 4, 5, 6, 7, 8, 9, 10], compacta=True)
+    # La fila TOTAL se despega del cuerpo: si se lee como una comisión más, el informe miente.
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#dde5ec")),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("LINEABOVE", (0, -1), (-1, -1), 1, NAVY)]))
+    E.append(t)
+    E.append(Paragraph(
+        "Las medianas y los máximos no se suman: la fila TOTAL los deja en — a propósito. "
+        "«Espera máx» del total es la del curso, no una suma.", small))
 
     faltan = [f for f in filas if f.get("sin_dato")]
     if faltan:
@@ -668,110 +914,207 @@ def panorama_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "")
                                small))
 
     if tutores:
-        E.append(Paragraph("Carga por tutor", h2))
+        E.append(Paragraph("Entregas sin corregir, por tutor", h2))
         E.append(Paragraph(
             "Sumando SUS comisiones, porque varios llevan dos y su cola real no está en ninguna "
-            "fila de arriba. Ordenado por la espera más antigua: dice por dónde empezar. "
-            "<b>No es un ranking ni un puntaje</b> — es carga y cola.", small))
+            "fila de arriba. Ordenado por la espera más antigua: dice por dónde empezar. <b>No "
+            "es un ranking ni un puntaje</b> — es carga y cola.", small))
         E.append(Spacer(1, 5))
-        rr = [["Tutor", "Comisiones", "Alum.", "Sin\ncorregir", "Sin\nnota",
-               "Espera\nmáx (d)", "Foro\ns/resp."]]
+        rr = [["Tutor", "Comisiones", "Alum.", "Pend.", "Sin\nnota", "Espera\nmáx (d)",
+               "Foro\ns/resp.", "Nota"]]
         for t_ in tutores:
             rr.append([Paragraph(t_["tutor"], est_celda),
                        Paragraph(", ".join(c for c in t_["comisiones"] if c), est_celda),
                        t_["alumnos"], t_["sin_corregir"], t_["calificado_sin_nota"],
-                       _dias_txt(t_["espera_max_dias"]), t_["consultas_sin_responder"]])
-        E.append(_tabla(rr, [4.6, 4.4, 1.4, 1.7, 1.4, 1.9, 1.6], alinear_der=[2, 3, 4, 5, 6]))
-
-    # ---- Lo que está esperando, con nombre ----
-    esp = datos.get("esperando_detalle") or []
-    if esp:
-        E.append(PageBreak())
-        E.append(Paragraph(f"Qué está esperando corrección ({len(esp)})", h2))
+                       _dias_txt(t_["espera_max_dias"]), t_["consultas_sin_responder"],
+                       Paragraph(nota_de_cola(t_["sin_corregir"], t_.get("espera_max_dias")),
+                                 est_celda)])
+        E.append(_tabla(rr, [3.5, 3.0, 1.0, 1.0, 1.0, 1.35, 1.15, 5.0], font=6.8,
+                        alinear_der=[2, 3, 4, 5, 6], compacta=True))
         E.append(Paragraph(
-            "La lista de trabajo, de la espera más vieja a la más nueva. Las tablas de arriba "
-            "cuentan; ésta dice <b>cuál</b> y <b>de quién</b>, que es lo que hace falta para "
-            "destrabarlo. Cada fila es una entrega que el alumno ya hizo y todavía no recibió "
-            "nada.", small))
-        E.append(Spacer(1, 5))
-        rr = [["Espera\n(días)", "Com.", "Tutor", "Alumno", "Actividad"]]
-        for f in esp:
-            rr.append([_dias_txt(f.get("dias_esperando")), f.get("comision"),
-                       Paragraph(f.get("tutor") or "— sin identificar —", est_celda),
-                       Paragraph(f.get("alumno") or "", est_celda),
-                       Paragraph(sin_emoji(f.get("actividad") or ""), est_celda)])
-        E.append(_tabla(rr, [1.5, 1.2, 3.6, 4.4, 6.3], alinear_der=[0]))
+            "La columna <b>Nota</b> lee la cola por la ESPERA, no por el volumen: una cola de 8 "
+            "entregas de ayer está al día y una sola de hace tres semanas no. Dice qué hacer con "
+            "la cola, no cómo es la persona.", small))
 
-    # ---- Corregidas pero sin nota: nadie las espera ----
-    sn = datos.get("sin_nota_detalle") or []
-    if sn:
-        E.append(Paragraph(f"Corregidas pero SIN nota cargada ({len(sn)})",
-                           ParagraphStyle("snh", parent=h2, textColor=RED)))
-        E.append(Paragraph(
-            "Éstas son las más fáciles de perder: Moodle las saca de la cola de pendientes "
-            "porque figuran corregidas, pero no tienen calificación. <b>Nadie las está "
-            "esperando</b> — no aparecen en ningún listado de trabajo, ni del tutor ni del "
-            "alumno. Hay que cargarles la nota a mano.", small))
-        E.append(Spacer(1, 5))
-        rr = [["Desde la\nentrega (d)", "Com.", "Tutor", "Alumno", "Actividad"]]
-        for f in sn:
-            rr.append([_dias_txt(f.get("dias_desde_la_entrega")), f.get("comision"),
-                       Paragraph(f.get("tutor") or "— sin identificar —", est_celda),
-                       Paragraph(f.get("alumno") or "", est_celda),
-                       Paragraph(sin_emoji(f.get("actividad") or ""), est_celda)])
-        E.append(_tabla(rr, [1.7, 1.2, 3.5, 4.3, 6.3], alinear_der=[0]))
+    E.append(Paragraph("Padrón, comisiones y foros", h2))
+    for b in [
+        f"<b>Comisiones:</b> {con_tutor} de {len(filas)} con tutor asignado "
+        f"({len(tutores)} tutores en total).",
+        f"<b>Alumnos:</b> {alumnos_tot or 0} sumando las {len(filas)} comisiones. El cuadre "
+        "contra el total del curso —y quién quedó sin comisión— va en el informe de nexos, que "
+        "es el que lo consulta.",
+        f"<b>Actividades:</b> {datos.get('tareas_miradas')} habilitadas y relevadas de "
+        f"{datos.get('actividades_en_el_curso')} cargadas en el curso"
+        + (f"; {datos.get('actividades_no_habilitadas')} todavía no abrieron"
+           if datos.get("actividades_no_habilitadas") else "")
+        + (f"; {datos.get('actividades_sin_fecha_de_entrega')} de las habilitadas no tienen "
+           "fecha de entrega." if datos.get("actividades_sin_fecha_de_entrega") else "."),
+        f"<b>Foros:</b> {_suma('consultas_sin_responder') or 0} consulta(s) de alumnos sin "
+        "ninguna respuesta en "
+        f"{(datos.get('foros') or {}).get('foros_de_consulta') or 0} foro(s) de consultas"
+        + (f". El foro de avisos de la comisión lleva "
+           f"{datos['foros']['discusiones_de_avisos']} discusión(es) publicadas."
+           if (datos.get("foros") or {}).get("discusiones_de_avisos") else "."),
+    ]:
+        E.append(Paragraph(f"· {b}", body))
 
-    # ---- Consultas de foro sin ninguna respuesta ----
-    hilos = datos.get("consultas_sin_responder_detalle") or []
-    if hilos:
-        E.append(Paragraph(f"Consultas de foro sin ninguna respuesta ({len(hilos)})", h2))
+    # ---------------- Página 3: los alumnos que dejaron de entrar ----------------
+    E.append(PageBreak())
+    E.append(Paragraph(f"Alumnos que dejaron de abrir {titulo}", h2))
+    if not des:
         E.append(Paragraph(
-            "Hilos abiertos por un alumno donde <b>nadie</b> contestó — ni un docente ni otro "
-            "alumno. Sólo se cuenta eso, que es lo verificable: el campus no dice quién debía "
-            "responder, así que atribuirle el silencio a alguien sería deducirlo del nombre. La "
-            "comisión sale de quién preguntó.", small))
-        E.append(Spacer(1, 5))
-        rr = [["Sin respuesta\n(días)", "Com.", "Alumno", "Consulta", "Foro"]]
-        for h_ in hilos:
-            rr.append([_dias_txt(h_.get("dias_esperando")), h_.get("comision"),
-                       Paragraph(h_.get("alumno") or "", est_celda),
-                       Paragraph(sin_emoji(h_.get("titulo") or ""), est_celda),
-                       Paragraph(sin_emoji(h_.get("foro") or ""), est_celda)])
-        E.append(_tabla(rr, [1.9, 1.2, 4.0, 5.6, 4.3], alinear_der=[0]))
+            "No se pudo medir el desenganche en esta corrida. NO significa que no haya: "
+            "significa que no se sabe.", alerta))
+    else:
+        lista = [a for a in (des.get("alumnos") or [])
+                 if a.get("desenganchado_de_la_materia")]
+        muestra = lista[:_MAX_DESENGANCHE_EN_TABLA]
+        E.append(Paragraph(
+            f"<b>El reloj es el de esta materia, no el del campus.</b> Son los "
+            f"{des.get('dias_desenganche')}+ días sin abrir {titulo} (o no haberla abierto "
+            "nunca). Cortar por «días sin entrar al campus» encuentra sólo a los que no aparecen "
+            "por ningún lado y pierde a la mayoría: el que entra a diario para otra materia y no "
+            "abre ésta se ve impecable con ese corte. Por eso van <b>los dos relojes</b> en cada "
+            "fila.", small))
+        E.append(Spacer(1, 4))
+        if not lista:
+            E.append(Paragraph(
+                f"Ninguno de los {des.get('relevados')} alumnos relevados dejó de abrir la "
+                f"materia por {des.get('dias_desenganche')}+ días.", body))
+        else:
+            E.append(Paragraph(
+                f"<b>{len(lista)} alumnos</b>, de los cuales "
+                f"{tot_des.get('entran_al_campus_sin_abrir_la_materia')} entran al campus y no "
+                "abren la materia — ésos van primero porque no perdieron el acceso: eligieron no "
+                "entrar, y son los más recuperables."
+                + (f" <b>Se listan los {len(muestra)} más urgentes</b>; el listado completo, con "
+                   "el mail de cada uno y el Tutor Nexo de su sede, es el informe de nexos."
+                   if len(lista) > len(muestra) else ""), body))
+            E.append(Spacer(1, 5))
+            rr = [["Alumno", "Com.", "Regional", "Último ingreso\nal aula",
+                   "Sin abrir\nla materia", "Sin entrar\nal campus", "Situación"]]
+            for a in muestra:
+                aula = ("Nunca" if a.get("estado_aula") == "nunca_abrio"
+                        else f"{a.get('dias_sin_abrir_la_materia')} d")
+                camp = ("Nunca" if a.get("dias_sin_entrar_al_campus") is None
+                        else f"{a['dias_sin_entrar_al_campus']} d")
+                caso = ("entra al campus, no abre la materia"
+                        if a.get("entra_al_campus_sin_abrir_la_materia")
+                        else "no entra al campus")
+                com = "s/com" if a.get("comision") == "(sin comisión)" else a.get("comision")
+                rr.append([Paragraph(a.get("nombre") or "", est_celda),
+                           com or "—",
+                           Paragraph(a.get("regional") or "—", est_celda),
+                           _fecha_txt(a.get("ultimo_acceso_aula_ts")),
+                           aula, camp, Paragraph(caso, est_celda)])
+            E.append(_tabla(rr, [3.9, 1.0, 2.2, 1.9, 1.7, 1.7, 4.6], font=6.8,
+                            alinear_der=[4, 5]))
+            E.append(Paragraph(
+                "«Sin entrar al campus» mide la ausencia del <b>sitio completo</b>, no de "
+                "esta aula: por eso puede superar los días desde el inicio de cursada. Y "
+                "«Nunca» en la columna del aula <b>no es abandono confirmado</b>: puede haberse "
+                "matriculado esta semana, y este informe no ve la fecha de matriculación. Sin "
+                "mails a propósito — el listado accionable, por sede y con contacto, es el "
+                "informe de nexos.", small))
 
-    if act:
-        E.append(PageBreak())
-        E.append(Paragraph("Por actividad", h2))
-        E.append(Paragraph(
-            "La misma información cortada al revés. Cuando una actividad se atrasa en varias "
-            "comisiones a la vez, el problema suele ser de la consigna o del calendario y no de "
-            "una persona — eso por comisión no se ve. «Vencimiento» sale de la fecha de entrega "
-            "de Moodle: <b>sin fecha</b> significa que la actividad no tiene `duedate`, y ahí "
-            "«no entregó» no se distingue de «todavía no vencía».", small))
-        E.append(Spacer(1, 5))
-        rr = [["Actividad", "Venci-\nmiento", "Entre-\ngadas", "Corre-\ngidas",
-               "Sin\ncorregir", "Comis. con\ncola", "Espera\nmáx (d)"]]
-        for a in act:
-            rr.append([Paragraph(sin_emoji(a["titulo"]), est_celda), a["vencimiento"],
-                       a["entregadas"], a["corregidas"], a["sin_corregir"],
-                       a["comisiones_con_cola"], _dias_txt(a.get("espera_max_dias"))])
-        E.append(_tabla(rr, [6.9, 1.7, 1.5, 1.5, 1.5, 2.0, 1.9], alinear_der=[2, 3, 4, 5, 6]))
+    # ---------------- Anexo: el detalle largo, sólo si se pide ----------------
+    if anexo:
+        esp = datos.get("esperando_detalle") or []
+        if esp:
+            E.append(PageBreak())
+            E.append(Paragraph(f"Anexo · Qué está esperando corrección ({len(esp)})", h2))
+            E.append(Paragraph(
+                "De la espera más vieja a la más nueva. Las tablas de arriba cuentan; ésta dice "
+                "<b>cuál</b> y <b>de quién</b>.", small))
+            E.append(Spacer(1, 5))
+            rr = [["Espera\n(días)", "Com.", "Tutor", "Alumno", "Actividad"]]
+            for f in esp:
+                rr.append([_dias_txt(f.get("dias_esperando")), f.get("comision"),
+                           Paragraph(f.get("tutor") or "—", est_celda),
+                           Paragraph(f.get("alumno") or "", est_celda),
+                           Paragraph(sin_emoji(f.get("actividad") or ""), est_celda)])
+            E.append(_tabla(rr, [1.5, 1.2, 3.6, 4.4, 6.3], alinear_der=[0]))
+
+        sn = datos.get("sin_nota_detalle") or []
+        if sn:
+            E.append(Paragraph(f"Anexo · Corregidas pero SIN nota cargada ({len(sn)})",
+                               ParagraphStyle("snh", parent=h2, textColor=RED)))
+            E.append(Paragraph(
+                "Moodle las saca de la cola de pendientes porque figuran corregidas, pero no "
+                "tienen calificación. <b>Nadie las está esperando</b> — no aparecen en ningún "
+                "listado, ni del tutor ni del alumno.", small))
+            E.append(Spacer(1, 5))
+            rr = [["Desde la\nentrega (d)", "Com.", "Tutor", "Alumno", "Actividad"]]
+            for f in sn:
+                rr.append([_dias_txt(f.get("dias_desde_la_entrega")), f.get("comision"),
+                           Paragraph(f.get("tutor") or "—", est_celda),
+                           Paragraph(f.get("alumno") or "", est_celda),
+                           Paragraph(sin_emoji(f.get("actividad") or ""), est_celda)])
+            E.append(_tabla(rr, [1.7, 1.2, 3.5, 4.3, 6.3], alinear_der=[0]))
+
+        hilos = datos.get("consultas_sin_responder_detalle") or []
+        if hilos:
+            E.append(Paragraph(f"Anexo · Consultas de foro sin ninguna respuesta ({len(hilos)})",
+                               h2))
+            E.append(Paragraph(
+                "Hilos abiertos por un alumno donde <b>nadie</b> contestó. El campus no dice "
+                "quién debía responder, así que atribuirle el silencio a alguien sería deducirlo "
+                "del nombre. La comisión sale de quién preguntó.", small))
+            E.append(Spacer(1, 5))
+            rr = [["Sin respuesta\n(días)", "Com.", "Alumno", "Consulta", "Foro"]]
+            for h_ in hilos:
+                rr.append([_dias_txt(h_.get("dias_esperando")), h_.get("comision"),
+                           Paragraph(h_.get("alumno") or "", est_celda),
+                           Paragraph(sin_emoji(h_.get("titulo") or ""), est_celda),
+                           Paragraph(sin_emoji(h_.get("foro") or ""), est_celda)])
+            E.append(_tabla(rr, [1.9, 1.2, 4.0, 5.6, 4.3], alinear_der=[0]))
+
+        if act:
+            E.append(PageBreak())
+            E.append(Paragraph("Anexo · Por actividad", h2))
+            E.append(Paragraph(
+                "La misma información cortada al revés. Cuando una actividad se atrasa en varias "
+                "comisiones a la vez, el problema suele ser de la consigna o del calendario y no "
+                "de una persona — eso por comisión no se ve. <b>Sin fecha</b> significa que la "
+                "actividad no tiene `duedate`, y ahí «no entregó» no se distingue de «todavía no "
+                "vencía».", small))
+            E.append(Spacer(1, 5))
+            rr = [["Actividad", "Venci-\nmiento", "Entre-\ngadas", "Corre-\ngidas",
+                   "Sin\ncorregir", "Comis. con\ncola", "Espera\nmáx (d)"]]
+            for a in act:
+                rr.append([Paragraph(sin_emoji(a["titulo"]), est_celda), a["vencimiento"],
+                           a["entregadas"], a["corregidas"], a["sin_corregir"],
+                           a["comisiones_con_cola"], _dias_txt(a.get("espera_max_dias"))])
+            E.append(_tabla(rr, [6.9, 1.7, 1.5, 1.5, 1.5, 2.0, 1.9],
+                            alinear_der=[2, 3, 4, 5, 6]))
 
     E.append(Spacer(1, 10))
     E.append(Paragraph(
         f"UTN · {titulo} · datos leídos EN VIVO de la API REST del campus"
         + (f" el {fecha}" if fecha else "")
         + f" · relevamiento en {datos.get('segundos')} s · hechos por comisión, sin ranking de "
-        "personas. Los alumnos que dejaron de abrir la materia van en el informe de nexos.",
-        small))
+        "personas."
+        + ("" if anexo else " El detalle entrega por entrega sale con anexo=True."), small))
 
-    doc = SimpleDocTemplate(path, pagesize=A4, topMargin=1.4 * cm, bottomMargin=1.4 * cm,
+    def _pie(canvas, doc_):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 6.2)
+        canvas.setFillColor(colors.HexColor("#888888"))
+        canvas.drawString(2.0 * cm, 0.8 * cm, f"Reporte de coordinación — {titulo}")
+        canvas.drawRightString(19.0 * cm, 0.8 * cm, f"Pág. {doc_.page}")
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(path, pagesize=A4, topMargin=1.4 * cm, bottomMargin=1.5 * cm,
                             leftMargin=2.0 * cm, rightMargin=2.0 * cm,
-                            title=f"Panorama del curso — {titulo}",
+                            title=f"Reporte de coordinación — {titulo}",
                             author="tup-campus-navigator")
-    doc.build(E)
+    doc.build(E, onFirstPage=_pie, onLaterPages=_pie)
+    listados = [a for a in (des.get("alumnos") or []) if a.get("desenganchado_de_la_materia")]
     return {"archivo": path, "paginas": getattr(doc, "page", None),
-            "incluye_emails": False, "degradado": bool(avisos)}
+            "incluye_emails": False, "con_anexo": bool(anexo),
+            "desenganchados_listados": min(len(listados), _MAX_DESENGANCHE_EN_TABLA),
+            "desenganchados_total": tot_des.get("desenganchados"),
+            "degradado": bool(avisos)}
 
 
 def _bloque_focos(focos: list[tuple], body, small, ancho_total: float = 17.0) -> Table:
@@ -795,293 +1138,3 @@ def _bloque_focos(focos: list[tuple], body, small, ancho_total: float = 17.0) ->
         est.append(("BACKGROUND", (0, i), (0, i), colores[i % len(colores)]))
     t.setStyle(TableStyle(est))
     return t
-
-
-# ---------------------------------------------------------------------------
-# PDF de AVANCE — matriz alumnos × unidades, por comisión. Render PURO.
-# ---------------------------------------------------------------------------
-
-# Cuántas columnas de unidades entran cómodas en A4 apaisado con nombre, mail y días. Pasado
-# esto la celda queda tan angosta que no se lee, así que se recortan las de menos movimiento
-# — y el informe DECLARA cuántas dejó afuera. Un recorte silencioso se lee como cobertura total.
-_MAX_UNIDADES_EN_TABLA = 18
-
-# Estado de cada celda: (letra, fondo). La letra va además del color a propósito: el informe se
-# fotocopia, se imprime en blanco y negro y hay gente que no distingue rojo de verde.
-_CELDA = {
-    "aprobado":     ("A", colors.HexColor("#d9ece8")),
-    "desaprobado":  ("D", colors.HexColor("#f6dada")),
-    "sin_corregir": ("·", colors.HexColor("#f7ecd3")),
-    "sin_nota":     ("?", colors.HexColor("#e8e8e8")),
-    "no_entrego":   ("",  colors.white),
-}
-
-
-def focos_de_avance(datos: dict, tope: int = 4) -> list[tuple]:
-    """PURA: los focos del avance. Hechos con su cuenta, sin adjetivos ni porcentajes."""
-    coms = datos.get("por_comision") or []
-    puntos: list[tuple] = []
-
-    cero = datos.get("alumnos_en_cero") or 0
-    if cero:
-        top = sorted(coms, key=lambda c: -(c["alumnos_en_cero"] or 0))[:3]
-        puntos.append((
-            f"{cero} de {datos.get('alumnos')} alumnos no entregaron NADA",
-            "Donde más se concentra: "
-            + ", ".join(f"{c['comision']} ({c['alumnos_en_cero']} de {c['alumnos']})"
-                        for c in top if c["alumnos_en_cero"])
-            + ". Ojo: quien se matriculó tarde también aparece acá, y la API no expone la fecha "
-              "de matriculación."))
-
-    atrasadas = [c for c in coms if c.get("atrasada")]
-    if atrasadas:
-        se_fueron = [c for c in atrasadas if "no abren la materia" in (c.get("lectura") or "")]
-        estan = [c for c in atrasadas if c not in se_fueron]
-        detalle = []
-        if estan:
-            detalle.append("con los alumnos entrando (entregan poco, no es que se fueron): "
-                           + ", ".join(c["comision"] for c in estan))
-        if se_fueron:
-            detalle.append("y por alumnos que dejaron de abrir la materia: "
-                           + ", ".join(c["comision"] for c in se_fueron))
-        puntos.append((
-            f"{len(atrasadas)} comisión(es) se despegan del curso",
-            "Son dos problemas distintos y se resuelven distinto — " + " · ".join(detalle)
-            + f". En el curso el {datos.get('pct_sin_entregar_curso')}% no entregó nada."))
-
-    esp = datos.get("esperando_correccion") or 0
-    if esp:
-        peor = max((f for f in datos.get("flojos") or [] if f.get("espera_correccion_dias")),
-                   key=lambda f: f["espera_correccion_dias"], default=None)
-        puntos.append((
-            f"{esp} alumnos entregaron y siguen esperando la corrección",
-            "Es el único renglón donde el problema NO es del alumno: entregó y no recibió nada. "
-            f"La espera más larga es de "
-            f"{_dias_txt(peor['espera_correccion_dias']) if peor else '—'} día(s)"
-            + (f", en {peor['comision']}." if peor else ".")))
-
-    desap = datos.get("con_desaprobadas") or 0
-    if desap:
-        puntos.append((
-            f"{desap} alumnos tienen al menos una actividad desaprobada",
-            "La nota se lee por el texto de la escala, no por el número: en este campus la "
-            "escala de TPs va invertida y un índice suelto se leería al revés."))
-
-    return puntos[:tope]
-
-
-def avance_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "",
-               emails: bool = True) -> dict:
-    """Renderiza el avance de los alumnos: una MATRIZ alumnos × unidades por comisión. PURA.
-
-    Va apaisado porque es una tabla ancha, y muestra en vez de resumir. Eso último es la
-    decisión de fondo: intentar resumir el avance en una métrica no funcionó, y no por falta de
-    ideas — el campus no tiene fechas de entrega, así que **no existe un denominador honesto**.
-    La mediana da 0 en todas las comisiones cuando más de la mitad del curso está en cero
-    (Prog I: 437 de 566). El promedio general reparte las entregas de unos pocos adelantados
-    entre todos y da 0,37 por alumno, que no describe a nadie. Y cualquier corte por promedio
-    listaba al padrón entero ("23 de 24 alumnos").
-
-    Una matriz no tiene ese problema porque no resume: el que la lee ve el patrón directamente.
-    Si una unidad está vacía en toda la comisión, se ve. Si un alumno hizo las tres primeras y
-    paró, se ve. Y la conclusión la saca una persona, que es lo que este informe viene diciendo
-    desde el principio.
-    """
-    from reportlab.lib.pagesizes import landscape
-
-    ss = getSampleStyleSheet()
-    h0 = ParagraphStyle("h0", parent=ss["Heading1"], fontSize=17, leading=20, textColor=NAVY,
-                        spaceAfter=2)
-    h2 = ParagraphStyle("h2", parent=ss["Heading2"], fontSize=11.5, textColor=NAVY,
-                        spaceBefore=10, spaceAfter=4)
-    h3 = ParagraphStyle("h3", parent=ss["Heading3"], fontSize=10, textColor=TEAL,
-                        spaceBefore=9, spaceAfter=2)
-    body = ParagraphStyle("b", parent=ss["Normal"], fontSize=8.5, leading=11.5)
-    small = ParagraphStyle("s", parent=ss["Normal"], fontSize=7, leading=9,
-                           textColor=colors.HexColor("#666666"))
-    kicker = ParagraphStyle("k", parent=ss["Normal"], fontSize=7.5, leading=9,
-                            textColor=TEAL, fontName="Helvetica-Bold")
-    alerta = ParagraphStyle("a", parent=ss["Normal"], fontSize=8, leading=11, textColor=RED)
-    est_celda = ParagraphStyle("cel", parent=ss["Normal"], fontSize=6.8, leading=8)
-    est_mini = ParagraphStyle("mini", parent=ss["Normal"], fontSize=6.4, leading=7.4,
-                              alignment=1)
-
-    meta = datos.get("_meta", {})
-    coms = datos.get("por_comision") or []
-    flojos = datos.get("flojos") or []
-    todas_unidades = datos.get("unidades") or []
-    titulo = materia or f"Curso {datos.get('course_id')}"
-    ANCHO = 26.7  # A4 apaisado menos márgenes
-
-    # Recorte de columnas, declarado.
-    unidades = todas_unidades[:_MAX_UNIDADES_EN_TABLA]
-    if len(todas_unidades) > _MAX_UNIDADES_EN_TABLA:
-        unidades = sorted(todas_unidades, key=lambda u: -u["entregadas"])[:_MAX_UNIDADES_EN_TABLA]
-        unidades = [u for u in todas_unidades if u in unidades]  # de vuelta al orden del curso
-    recortadas = len(todas_unidades) - len(unidades)
-
-    os.makedirs(dest_dir, exist_ok=True)
-    path = os.path.join(dest_dir, f"avance_curso{datos.get('course_id')}"
-                        + (f"_{fecha}" if fecha else "") + ".pdf")
-
-    E = [Paragraph("UTN · TECNICATURA UNIVERSITARIA EN PROGRAMACIÓN", kicker),
-         Paragraph(f"Avance de los alumnos — {titulo}", h0),
-         Paragraph("Qué entregó cada alumno, unidad por unidad · vista de coordinación"
-                   + (f" · {fecha}" if fecha else ""), small),
-         Spacer(1, 10)]
-
-    E.append(_tiles([
-        (datos.get("alumnos", "—"), "alumnos", NAVY),
-        (f"{datos.get('alumnos_en_cero')} ({datos.get('pct_sin_entregar_curso')}%)",
-         "no entregaron nada", RED),
-        (len(todas_unidades), "unidades con entregas", TEAL),
-        (datos.get("con_desaprobadas", "—"), "con alguna desaprobada", AMBER),
-        (datos.get("esperando_correccion", "—"), "esperando corrección", NAVY),
-    ], ancho_total=ANCHO))
-    E.append(Spacer(1, 10))
-
-    if meta.get("degradado"):
-        E.append(Paragraph("⚠️ Leé esto antes de los números:", alerta))
-        for s_ in meta.get("sin_dato", [])[:6]:
-            E.append(Paragraph(f"· {s_}", small))
-        E.append(Spacer(1, 6))
-
-    E.append(Paragraph("Cómo leer esto", h2))
-    E.append(Paragraph(
-        "<b>No hay porcentaje de avance ni promedios, y es a propósito.</b> Un porcentaje "
-        "necesita saber cuántas actividades ya deberían estar entregadas, y ese dato no existe "
-        "en este campus: la mayoría de las actividades no tiene fecha de entrega. En vez de "
-        "inventar un número, la tabla de cada comisión <b>muestra qué entregó cada alumno en "
-        "cada unidad</b> y la conclusión la saca quien lee. Si una unidad está vacía en toda la "
-        "comisión, se ve. Si alguien hizo las primeras y paró, se ve.", body))
-    E.append(Spacer(1, 3))
-    E.append(Paragraph(
-        f"<b>Las columnas son las {len(todas_unidades)} unidades que tuvieron alguna entrega "
-        "en el curso</b>, en el orden del curso. Las que nadie entregó no están: una columna "
-        "vacía no dice nada del alumno."
-        + (f" <b>Además quedaron afuera {recortadas} por ancho de página</b> (entran "
-           f"{_MAX_UNIDADES_EN_TABLA}): se priorizaron las de más movimiento."
-           if recortadas else "")
-        + f" El curso tiene {datos.get('unidades_sin_movimiento')} actividad(es) más sin "
-          "ninguna entrega.", body))
-    E.append(Spacer(1, 3))
-    E.append(Paragraph(
-        "<b>Advertencias.</b> (1) <b>No se puede saber cuándo se matriculó un alumno</b> — la "
-        "API no lo expone, está verificado: el que entró tarde entregó menos y NO es peor "
-        "alumno. (2) Las notas se leen por el <b>texto</b> de la escala y nunca por el número: "
-        "la escala de TPs de este campus va invertida. (3) «Sin abrir» son los días sin abrir "
-        "<b>la materia</b>, no sin entrar al campus.", small))
-
-    focos = focos_de_avance(datos)
-    if focos:
-        E.append(Paragraph("Focos de hoy", h2))
-        E.append(_bloque_focos(focos, body, small, ancho_total=ANCHO))
-
-    # ---- Por comisión ----
-    E.append(PageBreak())
-    E.append(Paragraph("Por comisión", h2))
-    E.append(Paragraph(
-        f"{datos.get('tareas_miradas')} de {datos.get('tareas_pedidas')} actividades relevadas. "
-        "Ordenadas por proporción sin entregar, la más alta primero. «No abren la materia» es el "
-        "cruce que explica el atraso: una comisión atrasada con los alumnos entrando es un "
-        "problema distinto de una donde se fueron.", small))
-    E.append(Spacer(1, 5))
-    rows = [["Com.", "Alum.", "Sin entregar\nnada", "De los que entregaron\nprom · máx",
-             "Desapro-\nbadas", "No abren\nla materia", "Esperando\ncorrección", "Lectura"]]
-    for c in coms:
-        rows.append([c["comision"], c["alumnos"],
-                     f"{c['alumnos_en_cero']} ({c.get('pct_sin_entregar')}%)",
-                     f"{_dias_txt(c.get('entregas_prom_de_los_que_entregaron'))} · "
-                     f"{c['entregas_max']}",
-                     c["desaprobadas"], c["no_abren_la_materia"], c["esperando_correccion"],
-                     Paragraph(c["lectura"], est_celda)])
-    E.append(_tabla(rows, [1.6, 1.4, 2.4, 3.0, 1.9, 2.0, 2.1, 12.3],
-                    alinear_der=[1, 2, 3, 4, 5, 6]))
-
-    # ---- La matriz, comisión por comisión ----
-    E.append(PageBreak())
-    E.append(Paragraph("Qué entregó cada alumno, unidad por unidad", h2))
-    def _etiqueta(i, u):
-        return f"U{u['unidad']}" if u.get("unidad") else f"#{i + 1}"
-
-    ref = " · ".join(f"<b>{_etiqueta(i, u)}</b> {sin_emoji(u['titulo'])[:42]}"
-                     for i, u in enumerate(unidades))
-    E.append(Paragraph("<b>Referencia de las columnas.</b> " + ref, small))
-    E.append(Spacer(1, 3))
-    E.append(Paragraph(
-        "<b>Cada celda:</b> <b>A</b> entregó y aprobó · <b>D</b> entregó y desaprobó · "
-        "<b>·</b> entregó y todavía no se lo corrigieron (eso no es un problema del alumno) · "
-        "<b>?</b> figura corregido pero sin nota cargada · <b>vacío</b> no entregó. La letra va "
-        "además del color porque el informe se fotocopia y se imprime en blanco y negro.", small))
-    E.append(Spacer(1, 6))
-
-    por_com = {}
-    for f in flojos:
-        por_com.setdefault(f["comision"], []).append(f)
-
-    # Ancho de las columnas de unidad: con TECHO. Sin él, un curso con 2 unidades reparte todo
-    # el sobrante entre dos columnas de 7 cm cada una y la tabla queda absurda. El espacio que
-    # queda se lo lleva el nombre, que es lo que más se lee.
-    n = max(len(unidades), 1)
-    ancho_fijo = 5.2 + (4.8 if emails else 0) + 2.0
-    ancho_u = min(max((ANCHO - ancho_fijo) / n, 0.7), 1.5)
-    sobra = max(ANCHO - ancho_fijo - ancho_u * n, 0)
-    ancho_nombre = 5.2 + (sobra * 0.6)
-    ancho_mail = (4.8 + sobra * 0.4) if emails else 0
-
-    for c in coms:
-        de_com = sorted(por_com.get(c["comision"], []),
-                        key=lambda f: (f["entregas"], -(f["dias_sin_abrir_la_materia"] or 0)))
-        if not de_com:
-            continue
-        E.append(Paragraph(
-            f"{c['comision']} — {c['alumnos']} alumnos · {c['alumnos_en_cero']} sin entregar "
-            f"nada · {c['no_abren_la_materia']} no abren la materia", h3))
-        cab = ["Alumno"] + ([("Email")] if emails else []) + \
-              [_etiqueta(i, u) for i, u in enumerate(unidades)] + ["Sin abrir\nla materia"]
-        anchos = ([ancho_nombre] + ([ancho_mail] if emails else [])
-                  + [ancho_u] * len(unidades) + [2.0])
-        rows = [cab]
-        estilos_celda = []
-        for r, f in enumerate(de_com, start=1):
-            fila = [Paragraph(f.get("nombre") or "", est_celda)]
-            if emails:
-                fila.append(Paragraph(f.get("email") or "—", est_celda))
-            base = len(fila)
-            for i, u in enumerate(unidades):
-                est = (f.get("por_unidad") or {}).get(u["cmid"], "no_entrego")
-                letra, fondo = _CELDA.get(est, _CELDA["no_entrego"])
-                fila.append(Paragraph(letra, est_mini))
-                if fondo is not colors.white:
-                    estilos_celda.append(("BACKGROUND", (base + i, r), (base + i, r), fondo))
-            aula = ("Nunca" if f.get("estado_aula") == "nunca_abrio"
-                    else ("—" if f.get("estado_aula") == "sin_dato"
-                          else f"{f.get('dias_sin_abrir_la_materia')} d"))
-            fila.append(Paragraph(aula, est_mini))
-            rows.append(fila)
-        t = _tabla(rows, anchos, font=6.8)
-        for e in estilos_celda:
-            t.setStyle(TableStyle([e]))
-        E.append(t)
-        E.append(Spacer(1, 7))
-
-    E.append(Spacer(1, 6))
-    if emails:
-        E.append(Paragraph(
-            "⚠️ Este documento incluye datos de contacto de alumnos (mails personales). No lo "
-            "subas a repositorios ni lo compartas fuera del equipo docente.", alerta))
-        E.append(Spacer(1, 3))
-    E.append(Paragraph(
-        f"UTN · {titulo} · datos leídos EN VIVO de la API REST del campus"
-        + (f" el {fecha}" if fecha else "")
-        + f" · relevamiento en {meta.get('segundos')} s · sin porcentajes de avance: no hay "
-        "fechas de entrega contra las que medirlos.", small))
-
-    doc = SimpleDocTemplate(path, pagesize=landscape(A4), topMargin=1.3 * cm,
-                            bottomMargin=1.3 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm,
-                            title=f"Avance de los alumnos — {titulo}",
-                            author="tup-campus-navigator")
-    doc.build(E)
-    return {"archivo": path, "paginas": getattr(doc, "page", None),
-            "incluye_emails": bool(emails), "degradado": bool(meta.get("degradado")),
-            "unidades_en_la_tabla": len(unidades), "unidades_recortadas": recortadas}

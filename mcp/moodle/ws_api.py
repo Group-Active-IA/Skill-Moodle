@@ -854,6 +854,11 @@ def _fila_aula(u: dict, dias_desenganche: int = _AULA_DESENGANCHE_DIAS) -> dict:
         "estado_aula": estado,
         "dias_sin_abrir_la_materia": dias_aula,
         "dias_sin_entrar_al_campus": dias_sitio,
+        # Los timestamps crudos, además de los días. Una fecha ("~24 jun 2025") es más concreta
+        # que "414 d" para quien tiene que escribirle al alumno, y el informe no puede
+        # reconstruirla desde los días sin reintroducir el redondeo. 0 = nunca.
+        "ultimo_acceso_aula_ts": int(u.get("lastcourseaccess") or 0),
+        "ultimo_acceso_campus_ts": int(u.get("lastaccess") or 0),
         "desenganchado_de_la_materia": desenganchado,
         "entra_al_campus_sin_abrir_la_materia": elige_no_entrar,
         "detalle": _detalle_aula(estado, dias_aula, dias_sitio, elige_no_entrar),
