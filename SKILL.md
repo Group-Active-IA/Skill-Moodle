@@ -355,43 +355,27 @@ Todo el resto de la skill mira **una** comisión: la del tutor logueado. Éstas 
 - **`avance_alumnos(course_id)`** → ¿el alumno **ENTREGA y aprueba**? Entregas, aprobadas,
   desaprobadas y quién menos entregó, por comisión.
 
-`avance_alumnos` **no devuelve un porcentaje de avance y no lo inventes vos**: sin fechas de
-entrega no hay denominador honesto (35 de 42 actividades de Prog III no la tienen). Compara cada
-alumno contra la mediana de su comisión. Lo más útil es la `lectura` de cada comisión, que cruza
-el avance con el reloj de la materia y separa dos atrasos que se ven idénticos: *"atrasada con
-los alumnos entrando"* (están y entregan poco: consigna, acompañamiento) de *"atrasada y con
-muchos que no abren la materia"* (se fueron: es retención). Medido en Prog III, com4 y com6
-tienen la misma mediana y son los dos casos distintos. Y `esperando_correccion` es el único
-renglón donde el problema **no** es del alumno: entregó y no recibió nada.
+`avance_alumnos` **no resume el avance en ninguna métrica, y es deliberado.** No hay porcentaje,
+ni mediana, ni promedio. Un porcentaje necesita saber cuántas actividades ya deberían estar
+entregadas y ese dato no existe (la mayoría de las actividades no tiene `duedate`); la mediana da
+0 en todas las comisiones cuando más de la mitad del curso está en cero (Prog I: 437 de 566); el
+promedio general reparte las entregas de unos pocos adelantados entre todos y da 0,37 por alumno,
+que no describe a nadie. **Se probaron los tres y los tres fallan.**
 
-Estaban juntos en un mismo PDF y el costo no era de formato: un tutor que abre un documento
-donde su comisión aparece medida al lado de una lista de alumnos lo lee como una evaluación
-suya. Si te piden "quién no entra a la materia" es la primera; si te piden "cómo viene la
-corrección" o "el rendimiento de los tutores", la segunda. **No las mezcles en una sola
-presentación.**
+Lo que hace en cambio es **mostrar**: el PDF (apaisado) trae una **matriz alumnos × unidades** por
+comisión, con una celda por unidad — `A` aprobó · `D` desaprobó · `·` entregó y nadie se lo
+corrigió · `?` corregido sin nota · vacío no entregó. El que lee ve el patrón directamente: si una
+unidad está vacía en toda la comisión, se ve; si alguien hizo las primeras y paró, se ve; y
+aparecen cosas que ningún promedio muestra, como el alumno que entregó la unidad 3 sin haber
+entregado la 1 ni la 2. Las columnas son sólo las unidades **con alguna entrega en el curso**, en
+orden de unidad, y las que quedan afuera se declaran.
 
-`informes_nexos(course_id, dias_desenganche?, pdf=True, emails=True)` — uno por materia. Los
-alumnos que no abren esa materia, por regional (las que más concentran primero), cada bloque
-encabezado por su nexo con nombre y mail — sale de `mcp/nexos.json`, que viaja con la skill. Si
-una regional no está en el catálogo, el bloque sale SIN contacto y se declara: nunca se le
-adjudica a alguien una sede ajena.
-
-También cuadra el padrón contra el total del curso y lista a los que están matriculados **en
-ninguna comisión** — a ésos no los ve ningún tutor, porque todas las vistas del campus trabajan
-por comisión. En Prog I aparecieron 11.
-
-Sin la mitad de correcciones no consulta ninguna tarea, así que tarda 9-18 s en vez de 20-25.
-
-**El email de cada alumno va en el PDF** (es lo que lo hace accionable). Son mails personales:
-cuando pases la ruta, avisá que ese PDF no va a un repo ni a una nota compartida. El documento
-lo dice en el pie, pero un archivo se reenvía solo y sin contexto. `emails=False` lo genera sin
-datos de contacto.
-
-**Nunca abras la presentación con un "estado general: sano"** ni lo inventes vos. Un informe
-real de coordinación arrancaba así y con "el único foco son 7 alumnos" sobre 238, porque cortaba
-la inactividad por el reloj del **campus** — criterio que sobre datos medidos pierde el ~90% de
-los desenganchados. Contá los hechos, leé `_meta.sin_dato` **antes** de los números, y dejá la
-conclusión a quien lee.
+Para comparar comisiones entre sí sí hay un número, y es el único que se mueve desde el primer
+día: la **proporción de alumnos que no entregó nada** (`pct_sin_entregar`). Lo más útil sigue
+siendo la `lectura` de cada comisión, que cruza eso con el reloj de la materia y separa dos
+atrasos idénticos en los números: *"atrasada con los alumnos entrando"* (están y entregan poco:
+consigna, acompañamiento) de *"atrasada y con muchos que no abren la materia"* (se fueron: es
+retención). Y `esperando_correccion` es el único renglón donde el problema **no** es del alumno.
 
 `panorama_comisiones(course_id, cmids?, incluir_foros?, pdf=True)` — el trabajo de corrección
 del curso, cortado de **tres** maneras, con PDF:

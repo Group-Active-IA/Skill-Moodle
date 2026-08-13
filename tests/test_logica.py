@@ -1326,7 +1326,7 @@ class TestAvanceDeAlumnos(unittest.TestCase):
         self.assertIn("no hay con qué comparar", lect)
         self.assertFalse(r["por_comision"][0]["atrasada"])
 
-    def test_una_comision_en_cero_se_marca_aunque_la_mediana_del_curso_sea_cero(self):
+    def test_una_comision_sin_entregas_se_marca_aunque_medio_curso_este_en_cero(self):
         coms = [{"comision": "com_cero", "group_id": 1}, {"comision": "com_ok", "group_id": 2}]
         padrones = {1: self._padron([1, 2, 3], {1: 0, 2: 0, 3: 0}),
                     2: self._padron([4, 5], {4: 0, 5: 0})}
@@ -1336,11 +1336,11 @@ class TestAvanceDeAlumnos(unittest.TestCase):
                          "pendientes": set(), "notas": {4: 1.0, 5: 1.0}}}
         r = panorama.avance_de_alumnos(datos, {"100": {"grade_cfg": -5}}, padrones, coms)
         por = {c["comision"]: c for c in r["por_comision"]}
-        self.assertEqual(r["entregas_mediana_curso"], 0)
+        self.assertEqual(r["pct_sin_entregar_curso"], 60)
         self.assertTrue(por["com_cero"]["atrasada"])
-        self.assertIn("sin entregar contra", por["com_cero"]["lectura"])
+        self.assertIn("sin arrancar contra", por["com_cero"]["lectura"])
 
-    def test_la_mediana_saturada_se_declara_y_no_marca_a_todas(self):
+    def test_no_marca_a_todas_cuando_medio_curso_esta_en_cero(self):
         # Prog I real: 437 de 566 alumnos en cero -> la mediana del curso da 0 y comparar
         # contra ella marcaba 16 de 16 comisiones. Con proporciones sólo se despega la que
         # de verdad se despega.
@@ -1355,12 +1355,13 @@ class TestAvanceDeAlumnos(unittest.TestCase):
                          "sin_nota": set(), "pendientes": set(),
                          "notas": {u: 1.0 for u in (6, 7, 10, 11)}}}
         r = panorama.avance_de_alumnos(datos, {"100": {"grade_cfg": -5}}, padrones, coms)
-        self.assertEqual(r["entregas_mediana_curso"], 0)
-        self.assertTrue(r["mediana_no_discrimina"])
+        # 8 de 12 alumnos en cero (67%) -> la mediana daría 0 en las tres comisiones y no
+        # distinguiría ninguna. Con proporciones, sólo com1 (100%) pasa el margen de 10 puntos.
+        self.assertEqual(r["pct_sin_entregar_curso"], 67)
         marcadas = [c["comision"] for c in r["por_comision"] if c["atrasada"]]
         self.assertEqual(marcadas, ["com1"])   # la única despegada, no las tres
 
-    def test_mediana_cero_no_dice_que_nadie_entrego(self):
+    def test_no_dice_que_nadie_entrego_si_alguien_entrego(self):
         # Etiqueta falsa que apareció en Prog I: com9 tenía un alumno con 7 entregas y la
         # lectura decía "nadie entregó en esta comisión". Mediana 0 = más de la mitad, no todos.
         coms = [{"comision": "com1", "group_id": 1}]
@@ -1368,8 +1369,53 @@ class TestAvanceDeAlumnos(unittest.TestCase):
         datos = {"100": {"entregas": {1: 1000}, "calificadas": {1: 1100}, "sin_nota": set(),
                          "pendientes": set(), "notas": {1: 1.0}}}
         r = panorama.avance_de_alumnos(datos, {"100": {"grade_cfg": -5}}, padrones, coms)
-        self.assertEqual(r["por_comision"][0]["entregas_mediana"], 0)
-        self.assertNotIn("nadie entregó en esta comisión", r["por_comision"][0]["lectura"])
+        c = r["por_comision"][0]
+        self.assertEqual(c["entregas_max"], 1)
+        self.assertEqual(c["entregas_prom_de_los_que_entregaron"], 1.0)
+        self.assertNotIn("nadie entregó en esta comisión", c["lectura"])
+
+    def test_la_matriz_marca_los_cuatro_estados_por_unidad(self):
+        # La celda distingue cuatro cosas y no dos: el dato de la nota ya está, y "entregó y
+        # nadie se lo corrigió" no es un problema del alumno.
+        coms = [{"comision": "com1", "group_id": 1}]
+        padrones = {1: self._padron([1, 2, 3, 4], {u: 0 for u in (1, 2, 3, 4)})}
+        datos = {"10": {"entregas": {1: 1000, 2: 1000, 3: 1000},
+                        "calificadas": {1: 1100, 2: 1100}, "sin_nota": set(),
+                        "pendientes": {3}, "notas": {1: 1.0, 2: 2.0}}}
+        r = panorama.avance_de_alumnos(datos, {"10": {"grade_cfg": -5, "titulo": "U1"}},
+                                       padrones, coms, orden_tareas=["10"])
+        por_uid = {f["userid"]: f["por_unidad"]["10"] for f in r["flojos"]}
+        self.assertEqual(por_uid[1], "aprobado")
+        self.assertEqual(por_uid[2], "desaprobado")
+        self.assertEqual(por_uid[3], "sin_corregir")
+        self.assertEqual(por_uid[4], "no_entrego")
+
+    def test_las_unidades_sin_ninguna_entrega_no_son_columna_pero_se_cuentan(self):
+        # Una columna vacía no dice nada del alumno e infla la tabla (Prog III: 42 actividades,
+        # 11 con movimiento). Se saca, pero se declara cuántas quedaron afuera.
+        coms = [{"comision": "com1", "group_id": 1}]
+        padrones = {1: self._padron([1], {1: 0})}
+        datos = {"10": {"entregas": {1: 1000}, "calificadas": {1: 1100}, "sin_nota": set(),
+                        "pendientes": set(), "notas": {1: 1.0}},
+                 "20": {"entregas": {}, "calificadas": {}, "sin_nota": set(),
+                        "pendientes": set(), "notas": {}}}
+        meta = {"10": {"grade_cfg": -5, "titulo": "Con entregas"},
+                "20": {"grade_cfg": -5, "titulo": "Vacía"}}
+        r = panorama.avance_de_alumnos(datos, meta, padrones, coms, orden_tareas=["10", "20"])
+        self.assertEqual([u["titulo"] for u in r["unidades"]], ["Con entregas"])
+        self.assertEqual(r["unidades_sin_movimiento"], 1)
+
+    def test_las_unidades_van_en_el_orden_del_curso(self):
+        # No en el orden en que llegaron las respuestas (van en paralelo).
+        coms = [{"comision": "com1", "group_id": 1}]
+        padrones = {1: self._padron([1], {1: 0})}
+        base = {"calificadas": {1: 1100}, "sin_nota": set(), "pendientes": set(),
+                "notas": {1: 1.0}}
+        datos = {"30": {"entregas": {1: 1000}, **base}, "10": {"entregas": {1: 1000}, **base}}
+        meta = {"10": {"grade_cfg": -5, "titulo": "primera"},
+                "30": {"grade_cfg": -5, "titulo": "tercera"}}
+        r = panorama.avance_de_alumnos(datos, meta, padrones, coms, orden_tareas=["10", "30"])
+        self.assertEqual([u["titulo"] for u in r["unidades"]], ["primera", "tercera"])
 
     def test_cuenta_aprobadas_desaprobadas_y_esperando_por_separado(self):
         coms = [{"comision": "com1", "group_id": 1}]
@@ -1394,7 +1440,7 @@ class TestAvanceDeAlumnos(unittest.TestCase):
         texto = json.dumps(r, ensure_ascii=False, default=str)
         self.assertNotIn("porcentaje_avance", texto)
         self.assertNotIn("pct_avance", texto)
-        self.assertIn("mediana", texto)
+        self.assertIn("pct_sin_entregar_curso", texto)
 
     def test_los_focos_de_avance_NO_emiten_veredicto(self):
         datos = {"alumnos": 239, "alumnos_en_cero": 107, "entregas_mediana_curso": 1,

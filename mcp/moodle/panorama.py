@@ -153,6 +153,16 @@ _CAMPOS_ACCESO = ("id", "fullname", "email", "lastaccess", "lastcourseaccess", "
 # `grupos_ignorados`: lo que para una mitad del módulo es ruido, para ésta es el dato.
 _RE_REGIONAL = re.compile(r"^\s*R\s*-\s*(.+?)\s*$")
 
+# Número de unidad del título de una actividad ("Actividad de cierre de la unidad 4 - Git" -> 4).
+# Sirve para ordenar las columnas de la matriz por unidad y no por el orden en que el campus
+# devuelve las tareas, que no coincide: la columna "1" salía siendo la unidad 2.
+_RE_UNIDAD = re.compile(r"unidad\s*(\d+)", re.I)
+
+
+def _nro_unidad(titulo: str) -> int | None:
+    m = _RE_UNIDAD.search(titulo or "")
+    return int(m.group(1)) if m else None
+
 
 def _regional_de(u: dict) -> str | None:
     """Regional (sede) del alumno, de sus grupos. `None` si no está en ninguna `R-*`."""
@@ -1230,7 +1240,8 @@ def _aprobo(texto: str | None) -> bool | None:
 
 def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones: list[dict],
                       foros_por_uid: dict | None = None,
-                      dias_desenganche: int = _AULA_DESENGANCHE_DIAS) -> dict:
+                      dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
+                      orden_tareas: list[str] | None = None) -> dict:
     """PURA: cuánto entregó y cómo le fue a cada alumno, agrupado por comisión.
 
     **No calcula un "porcentaje de avance", y es una decisión, no una omisión.** Un porcentaje
@@ -1242,9 +1253,16 @@ def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones
     565 como atrasados. Con un umbral más alto (20% del padrón) en Prog I no entra ninguna
     actividad y todos quedan en 0/0.
 
-    Entonces se compara contra lo que el curso REALMENTE hizo: cada alumno contra la **mediana
-    de su comisión**, cada comisión contra la **mediana del curso**. "Entregó 0 donde la
-    mediana de su comisión es 4" es un hecho; "va al 35% del plan" sería un número inventado.
+    Y la mediana tampoco sirve como comparador: cuando más de la mitad del curso está en cero
+    da 0 en TODAS las comisiones y no distingue ninguna (Prog I: 437 de 566). El promedio general
+    tampoco — reparte las entregas de unos pocos adelantados entre todos y da 0,37 entregas por
+    alumno, un número que no describe a nadie.
+
+    Entonces se miden **dos preguntas por separado**: cuántos alumnos ARRANCARON (proporción sin
+    ninguna entrega, que es el comparador entre comisiones y se mueve desde el primer día) y
+    cuánto avanzó EL QUE ARRANCÓ (promedio de los que entregaron, más el máximo). "El 94% de esta
+    comisión no entregó nada contra el 77% del curso" es un hecho; "va al 35% del plan" sería un
+    número inventado.
 
     El otro cruce, que es el que contesta *por qué* una comisión está atrasada: se mira el
     reloj de la materia junto con las entregas. Atrasada **con** los alumnos entrando es una
@@ -1288,14 +1306,54 @@ def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones
                 elif ok is False:
                     desap[uid] = desap.get(uid, 0) + 1
 
+    # UNIDADES: una columna por actividad, en el orden del curso, y sólo las que tuvieron
+    # movimiento en el curso. Una columna donde NADIE entregó no dice nada del alumno: infla la
+    # tabla y la vuelve ilegible (Prog III tiene 42 actividades y 11 con movimiento). Cuántas
+    # quedaron afuera se declara, nunca se recorta en silencio.
+    orden_cmids = [str(c) for c in (orden_tareas or datos_tareas.keys())]
+    unidades = []
+    for cmid in orden_cmids:
+        d = datos_tareas.get(cmid)
+        if not d:
+            continue
+        con_com = sum(1 for uid in d["entregas"] if int(uid) in uid_com)
+        if con_com:
+            tit = (meta.get(cmid) or {}).get("titulo") or f"cmid {cmid}"
+            unidades.append({"cmid": cmid, "titulo": tit, "entregadas": con_com,
+                             "unidad": _nro_unidad(tit)})
+    # Ordenadas por número de unidad cuando el título lo trae; las que no lo traen (integradores,
+    # prácticas sueltas) van después, en el orden del curso. Sin esto la columna "1" de la matriz
+    # podía ser la unidad 2.
+    unidades.sort(key=lambda u: (u["unidad"] is None, u["unidad"] or 0,
+                                 orden_cmids.index(u["cmid"])))
+    sin_movimiento = len(datos_tareas) - len(unidades)
+
     foros_por_uid = foros_por_uid or {}
     filas: list[dict] = []
     for uid, com in uid_com.items():
         u = crudo.get(uid) or {}
         estado_aula, dias_aula = None, None
         f_aula = _fila_aula(u, dias_desenganche) if u else {}
+        # Qué hizo en CADA unidad. Cuatro estados y no dos: el dato de la nota ya está, y
+        # "entregó y desaprobó" no es lo mismo que "entregó y aprobó" ni que "entregó y nadie
+        # se lo corrigió" — ese último no es un problema del alumno.
+        por_unidad = {}
+        for un in unidades:
+            d = datos_tareas[un["cmid"]]
+            if uid not in d["entregas"]:
+                por_unidad[un["cmid"]] = "no_entrego"
+            elif uid in d.get("sin_nota", ()):
+                por_unidad[un["cmid"]] = "sin_nota"
+            elif uid in d.get("pendientes", ()):
+                por_unidad[un["cmid"]] = "sin_corregir"
+            else:
+                cfg = (meta.get(un["cmid"]) or {}).get("grade_cfg")
+                ok = _aprobo(nota_texto(cfg, (d.get("notas") or {}).get(uid)))
+                por_unidad[un["cmid"]] = ("aprobado" if ok is True
+                                          else "desaprobado" if ok is False else "sin_nota")
         filas.append({
             "userid": uid,
+            "por_unidad": por_unidad,
             "nombre": f_aula.get("nombre") or u.get("fullname"),
             "email": f_aula.get("email") or (u.get("email") or "").lower(),
             "comision": com,
@@ -1312,19 +1370,25 @@ def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones
                 f_aula.get("entra_al_campus_sin_abrir_la_materia"),
         })
 
-    def _mediana(vals):
-        return round(statistics.median(vals), 1) if vals else None
+    def _prom_activos(vals):
+        """Promedio ENTRE LOS QUE ENTREGARON algo. `None` si nadie entregó.
+
+        No es el promedio general y la diferencia importa: con el 77% del curso en cero, el
+        promedio general de Prog I da 0,37 entregas por alumno — un número que no describe a
+        nadie (nadie entregó un tercio de trabajo) y que empujan unos pocos adelantados. Y la
+        MEDIANA da 0 en las 16 comisiones, así que tampoco distingue. Separado en dos preguntas
+        —cuántos arrancaron, y cuánto avanzó el que arrancó— los dos números describen algo real.
+        """
+        act = [v for v in vals if v > 0]
+        return round(sum(act) / len(act), 1) if act else None
 
     todas = [f["entregas"] for f in filas]
-    mediana_curso = _mediana(todas)
     hay_movimiento = max(todas or [0]) > 0
-    # La proporción de alumnos SIN NINGUNA entrega es el comparador que sirve en cualquier
-    # momento del cuatrimestre. La mediana no: probado en Prog I, con 437 de 566 alumnos en
-    # cero la mediana del curso es 0, ninguna comisión queda "por debajo" y marcaba 16 de 16 —
-    # la misma saturación de la racha, ahora en este informe. Con proporciones, Prog I da una
-    # sola comisión despegada del resto (94% contra 77% del curso), que es una lista accionable.
-    pct_cero_curso = (round(100 * sum(1 for f in filas if f["entregas"] == 0) / len(filas))
-                      if filas else None)
+    # El comparador entre comisiones es la PROPORCIÓN de alumnos sin ninguna entrega: es el
+    # único que se mueve desde el primer día del cuatrimestre.
+    pct_cero_curso = (round(100 * sum(1 for v in todas if v == 0) / len(todas))
+                      if todas else None)
+    prom_curso = _prom_activos(todas)
 
     por_comision = []
     for c in comisiones:
@@ -1332,46 +1396,43 @@ def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones
         if not de_com:
             continue
         vals = [f["entregas"] for f in de_com]
-        med = _mediana(vals)
         deseng = sum(1 for f in de_com if f["estado_aula"] == _AULA_NUNCA
                      or (f["dias_sin_abrir_la_materia"] or 0) >= dias_desenganche)
         en_cero = sum(1 for f in de_com if f["entregas"] == 0)
         pct_cero = round(100 * en_cero / len(de_com))
 
-        # Atrasada = se despega del curso, por proporción de alumnos en cero o por mediana.
-        # El margen existe para que no salga marcada media cohorte por estar a un punto.
-        atrasada = bool(
-            (pct_cero_curso is not None and pct_cero >= pct_cero_curso + _MARGEN_ATRASO_PP)
-            or (med is not None and mediana_curso is not None and mediana_curso > 0
-                and med < mediana_curso))
+        # Atrasada = se despega del curso por proporción de alumnos que no arrancaron. El
+        # margen existe para que no salga marcada media cohorte por estar a un punto.
+        atrasada = bool(pct_cero_curso is not None
+                        and pct_cero >= pct_cero_curso + _MARGEN_ATRASO_PP)
 
         # El *por qué*: atrasada con los alumnos presentes no es lo mismo que atrasada porque
         # se fueron. Es lectura, no veredicto: dice qué mirar, no quién tiene la culpa.
         if not hay_movimiento:
             lectura = "nadie entregó todavía en el curso: no hay con qué comparar"
         elif not atrasada:
-            lectura = (f"en línea con el curso ({pct_cero}% sin entregar, "
+            lectura = (f"en línea con el curso ({pct_cero}% sin arrancar, "
                        f"{pct_cero_curso}% en el curso)")
         elif deseng > len(de_com) / 3:
             lectura = (f"atrasada y con muchos alumnos que no abren la materia "
-                       f"({pct_cero}% sin entregar contra {pct_cero_curso}% del curso)")
+                       f"({pct_cero}% sin arrancar contra {pct_cero_curso}% del curso)")
         else:
             lectura = (f"atrasada con los alumnos entrando: entregan poco, no es que se fueron "
-                       f"({pct_cero}% sin entregar contra {pct_cero_curso}% del curso)")
+                       f"({pct_cero}% sin arrancar contra {pct_cero_curso}% del curso)")
         por_comision.append({
             "comision": c["comision"],
             "alumnos": len(de_com),
-            "entregas_mediana": med,
-            "entregas_max": max(vals),
             "alumnos_en_cero": en_cero,
             "pct_sin_entregar": pct_cero,
+            "entregas_prom_de_los_que_entregaron": _prom_activos(vals),
+            "entregas_max": max(vals),
             "desaprobadas": sum(f["desaprobadas"] for f in de_com),
             "no_abren_la_materia": deseng,
             "esperando_correccion": sum(1 for f in de_com if f["espera_correccion_dias"]),
             "atrasada": atrasada,
             "lectura": lectura,
         })
-    # Primero la que más se despega: por proporción sin entregar, no por mediana.
+    # Primero la que más se despega.
     por_comision.sort(key=lambda c: (-c["pct_sin_entregar"], -c["alumnos_en_cero"]))
 
     # Los que menos entregaron, del curso entero. Se ordena por entregas y después por días
@@ -1380,23 +1441,28 @@ def avance_de_alumnos(datos_tareas: dict, meta: dict, padrones: dict, comisiones
                                           -(f["dias_sin_abrir_la_materia"] or 0)))
     return {
         "alumnos": len(filas),
-        "entregas_mediana_curso": mediana_curso,
         "pct_sin_entregar_curso": pct_cero_curso,
-        # Si más de la mitad del curso no entregó nada, la mediana es 0 y NO sirve para
-        # comparar comisiones. Se declara para que nadie la lea como si discriminara.
-        "mediana_no_discrimina": bool(mediana_curso == 0 and hay_movimiento),
+        "entregas_prom_de_los_que_entregaron_curso": prom_curso,
+        "unidades": unidades,
+        "unidades_sin_movimiento": sin_movimiento,
         "alumnos_en_cero": sum(1 for f in filas if f["entregas"] == 0),
         "con_desaprobadas": sum(1 for f in filas if f["desaprobadas"]),
         "esperando_correccion": sum(1 for f in filas if f["espera_correccion_dias"]),
         "por_comision": por_comision,
         "flojos": flojos,
         "criterio": {
-            "comparador": "La comisión se compara por PROPORCIÓN de alumnos sin ninguna "
-                          "entrega, no por mediana: con el curso arrancando la mediana da 0 en "
-                          "todas y no discrimina (Prog I: 437 de 566 en cero).",
+            "comparador": "Las comisiones se comparan por PROPORCIÓN de alumnos que no "
+                          "entregaron nada. Ni la mediana ni el promedio general sirven acá: la "
+                          "mediana da 0 en todas las comisiones cuando más de la mitad del curso "
+                          "está en cero (Prog I: 437 de 566), y el promedio general da 0,37 "
+                          "entregas por alumno — un número que no describe a nadie y que "
+                          "empujan unos pocos adelantados.",
+            "dos_preguntas": "Se miden por separado cuántos ARRANCARON (`pct_sin_entregar`) y "
+                             "cuánto avanzó el que arrancó (`entregas_prom_de_los_que_"
+                             "entregaron`, más el máximo). Mezclarlas en un solo número las "
+                             "esconde a las dos.",
             "sin_porcentaje": "No hay % de avance a propósito: sin fechas de entrega no existe "
-                              "un denominador honesto. Cada alumno se compara contra la mediana "
-                              "de su comisión y cada comisión contra la del curso.",
+                              "un denominador honesto contra el cual medir atraso.",
             "matriculacion": "NO se puede saber cuándo se matriculó un alumno (la API no lo "
                              "expone, verificado). El que entró tarde entregó menos y no es "
                              "peor alumno: no lo leas como desempeño.",
@@ -1459,7 +1525,7 @@ async def avance_alumnos(client, course_id: int, cmids: list[str] | None = None,
         avisos.extend(av_f)
 
     av = avance_de_alumnos(datos_tareas, meta, padrones, comisiones, foros_por_uid,
-                           dias_desenganche)
+                           dias_desenganche, orden_tareas=tareas)
 
     sin_fecha = sum(1 for c in (meta or {}).values() if not c.get("duedate"))
     if sin_fecha:
@@ -1483,8 +1549,10 @@ async def avance_alumnos(client, course_id: int, cmids: list[str] | None = None,
         },
         "lectura": (
             "Mide ALUMNOS: cuánto entregaron y cómo les fue. No hay porcentaje de avance porque "
-            "sin fechas de entrega no hay denominador honesto — cada alumno va contra la mediana "
-            "de su comisión. El que se matriculó tarde entregó menos y NO es peor alumno: la API "
+            "sin fechas de entrega no hay denominador honesto. Se miden dos cosas aparte: "
+            "cuántos arrancaron (proporción sin entregar, el comparador entre comisiones) y "
+            "cuánto avanzó el que arrancó. «Al día» = nadie de su comisión entregó más, NO que "
+            "haya entregado todo. El que se matriculó tarde entregó menos y NO es peor alumno: la API "
             "no expone la fecha de matriculación. La `lectura` de cada comisión dice qué mirar, "
             "no de quién es la culpa."
         ),
