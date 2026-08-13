@@ -566,7 +566,7 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
     """
     fs = await listar_foros(client, course_id)
     if fs.get("error"):
-        return {}, [f"No pude listar los foros: {fs['error']}"], {}
+        return {}, [f"No pude listar los foros: {fs['error']}"], {}, []
 
     foros = []
     for f in fs.get("foros", []):
@@ -581,7 +581,7 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
         if (f.get("discusiones") or 0) > 0:
             foros.append(f)
     if not foros:
-        return {}, [], {}
+        return {}, [], {}, []
 
     sem = asyncio.Semaphore(_SEM)
 
@@ -591,9 +591,11 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
 
     conteo: dict[str, int] = {}
     sin_respuesta_uid: dict[int, int] = {}
+    hilos: list[dict] = []
     avisos: list[str] = []
     huerfanas = 0
-    for res in await asyncio.gather(*(_hilos(f) for f in foros), return_exceptions=True):
+    resultados = await asyncio.gather(*(_hilos(f) for f in foros), return_exceptions=True)
+    for f, res in zip(foros, resultados):
         if isinstance(res, BaseException):
             avisos.append(f"Un foro no se pudo leer: {type(res).__name__}: {res}")
             continue
@@ -614,13 +616,21 @@ async def _consultas_sin_responder(client, course_id: int, uid_a_comision: dict[
             # Quién preguntó, para el informe de avance: una consulta sin respuesta es un
             # problema que apunta para adentro, y por comisión no se ve a quién le pasó.
             sin_respuesta_uid[int(autor)] = sin_respuesta_uid.get(int(autor), 0) + 1
+            # Y el hilo, para poder listarlo: "3 consultas sin responder" no dice a quién le
+            # quedó colgada la pregunta ni desde cuándo, así que no se puede actuar.
+            hilos.append({"comision": com, "foro": f.get("nombre") or "",
+                          "titulo": d.get("titulo") or "", "alumno": d.get("autor") or "",
+                          "userid": int(autor),
+                          "dias_esperando": _dias(_ts(d.get("ultimo_ts")), int(time.time())),
+                          "discussion_id": d.get("discussion_id")})
     if huerfanas:
         avisos.append(
             f"{huerfanas} consulta(s) sin responder no se pudieron atribuir a ninguna "
             "comisión (autor fuera del padrón: otro docente, grupo regional o baja). "
             "No se sumaron a nadie."
         )
-    return conteo, avisos, sin_respuesta_uid
+    hilos.sort(key=lambda h: -(h["dias_esperando"] or 0))
+    return conteo, avisos, sin_respuesta_uid, hilos
 
 
 # ---------------------------------------------------------------------------
@@ -812,9 +822,10 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
         avisos.append(err_meta + ": las actividades salen sin título ni fecha de entrega.")
 
     foros_por_comision: dict[str, int] = {}
+    hilos_sin_responder: list[dict] = []
     foros_ok = False
     if incluir_foros:
-        foros_por_comision, av_f, _ = await _consultas_sin_responder(
+        foros_por_comision, av_f, _, hilos_sin_responder = await _consultas_sin_responder(
             client, course_id, uid_a_comision)
         avisos.extend(av_f)
         foros_ok = not any("No pude listar los foros" in a for a in av_f)
@@ -906,6 +917,35 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
             "sin_dato": sin_dato,
         })
 
+    # QUÉ está esperando y de QUIÉN. "com15: 2 sin corregir, espera 2,9 d" no alcanza para
+    # actuar: hay que ir a buscar cuáles son a otra parte. Es la misma lección que el informe de
+    # avance: contar no es mostrar. Sale gratis, el dato ya está bajado.
+    nombres = {}
+    for c in comisiones:
+        nombres.update((padrones.get(c["group_id"]) or {}).get("alumnos") or {})
+    tutor_de = {f["comision"]: (f.get("tutor") or {}).get("nombre") for f in filas}
+
+    esperando_detalle, sin_nota_detalle = [], []
+    for cmid, d in datos_tareas.items():
+        titulo = (meta_tareas.get(str(cmid)) or {}).get("titulo") or f"cmid {cmid}"
+        for uid, t_ent in d["entregas"].items():
+            com = uid_a_comision.get(uid)
+            if com is None:
+                continue
+            fila = {"comision": com, "tutor": tutor_de.get(com),
+                    "alumno": nombres.get(uid) or f"userid {uid}", "userid": uid,
+                    "actividad": titulo}
+            if uid in d.get("pendientes", ()):
+                fila["dias_esperando"] = _dias(t_ent, ahora)
+                esperando_detalle.append(fila)
+            elif uid in d.get("sin_nota", ()):
+                # Corregida pero sin nota: salió de todas las colas, así que NADIE la está
+                # esperando. Es lo más accionable del informe y hoy era un número en una columna.
+                fila["dias_desde_la_entrega"] = _dias(t_ent, ahora)
+                sin_nota_detalle.append(fila)
+    esperando_detalle.sort(key=lambda f: -(f.get("dias_esperando") or 0))
+    sin_nota_detalle.sort(key=lambda f: -(f.get("dias_desde_la_entrega") or 0))
+
     por_actividad = resumen_por_actividad(datos_tareas, uid_a_comision, meta_tareas, ahora)
     sin_fecha = [a for a in por_actividad if a["vencimiento"] == "sin fecha"]
     if sin_fecha and len(sin_fecha) == len(por_actividad) and por_actividad:
@@ -927,6 +967,9 @@ async def panorama_comisiones(client, course_id: int, cmids: list[str] | None = 
         "filas": filas,
         "por_actividad": por_actividad,
         "por_tutor": carga_por_tutor(filas),
+        "esperando_detalle": esperando_detalle,
+        "sin_nota_detalle": sin_nota_detalle,
+        "consultas_sin_responder_detalle": hilos_sin_responder,
         "actividades_sin_fecha_de_entrega": len(sin_fecha),
         "grupos_ignorados": ignorados,
         "avisos": avisos,
@@ -1521,7 +1564,8 @@ async def avance_alumnos(client, course_id: int, cmids: list[str] | None = None,
     if incluir_foros:
         uid_com = {int(uid): c["comision"] for c in comisiones
                    for uid in ((padrones.get(c["group_id"]) or {}).get("alumnos") or {})}
-        _, av_f, foros_por_uid = await _consultas_sin_responder(client, course_id, uid_com)
+        _, av_f, foros_por_uid, _ = await _consultas_sin_responder(
+            client, course_id, uid_com)
         avisos.extend(av_f)
 
     av = avance_de_alumnos(datos_tareas, meta, padrones, comisiones, foros_por_uid,
