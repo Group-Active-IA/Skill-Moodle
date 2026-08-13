@@ -314,25 +314,10 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
     focos = focos_de_alumnos(datos)
     if focos:
         E.append(Paragraph("Focos de hoy", h2))
-        est_t = ParagraphStyle("pt", parent=body, fontName="Helvetica-Bold", fontSize=8.5)
-        colores = [RED, AMBER, NAVY, TEAL]
-        rows = []
-        for i, (titulo_p, detalle) in enumerate(focos):
-            num = Paragraph(f'<font color="white"><b>{i + 1}</b></font>',
-                            ParagraphStyle("n", parent=body, alignment=1, fontSize=11))
-            cuerpo = Table([[Paragraph(titulo_p, est_t)], [Paragraph(detalle, small)]],
-                           style=TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 6),
-                                             ("TOPPADDING", (0, 0), (-1, -1), 1),
-                                             ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
-            rows.append([num, cuerpo])
-        t = Table(rows, colWidths=[0.9 * cm, (ancho_total - 0.9) * cm])
-        est = [("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-               ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-               ("ROWBACKGROUNDS", (1, 0), (1, -1), [colors.white, LT])]
-        for i in range(len(rows)):
-            est.append(("BACKGROUND", (0, i), (0, i), colores[i % len(colores)]))
-        t.setStyle(TableStyle(est))
-        E.append(t)
+        # Se usa la función compartida: este bloque estaba copiado y por eso un reemplazo
+        # pensado para el otro lo dejó llamando a una variable que acá no existe. Un bloque
+        # duplicado no falla el día que se copia — falla el día que se toca el original.
+        E.append(_bloque_focos(focos, body, small))
 
     # ---- Los bloques por regional ----
     E.append(PageBreak())
