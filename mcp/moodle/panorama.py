@@ -1232,6 +1232,21 @@ async def _nombre_del_curso(client, course_id: int) -> str | None:
     return (cs[0].get("fullname") or None) if cs else None
 
 
+def meta_de_huecos(huecos: list[str], **extra) -> dict:
+    """El `_meta` de un informe. PURA. `degradado` sale de la lista COMPLETA de huecos.
+
+    Existe porque se calculaba enumerando las fuentes una por una —`deseng["sin_dato"] or
+    sin_nexo or aviso_cat or ...`— y cada hueco nuevo había que acordarse de sumarlo también
+    ahí. No se sumaron dos, así que el dict los declaraba y el PDF, que es lo que se comparte,
+    salía SIN el aviso. Un hueco que el documento no muestra es un hueco que no existe.
+
+    Acá el invariante es uno solo y no se puede olvidar: hay huecos <-> está degradado.
+    Los `extra` van PRIMERO justamente para que no puedan pisarlo: un `degradado=False` pasado
+    desde afuera volvería a esconder el aviso, que es el bug que esta función vino a cerrar.
+    """
+    return {**extra, "degradado": bool(huecos), "sin_dato": list(huecos)}
+
+
 def nexos_por_regional() -> tuple[dict, str | None]:
     """Catálogo de Tutores Nexo por regional. -> (regionales, aviso).
 
@@ -1433,20 +1448,14 @@ async def informe_nexos(client, course_id: int,
         "retraso_calculado": bool(deseng.get("retraso")),
         "unidades_disponibles": sorted(cierres),
         "grupos_ignorados": ignorados,
-        "_meta": {
-            "fuente": "vivo",
-            "segundos": round(time.time() - t0, 1),
-            "nexos_en_catalogo": len(catalogo),
-            "regionales_sin_nexo": sin_nexo,
-            "alumnos_sin_regional": sin_regional,
-            # Sale de `huecos`, que es la lista COMPLETA, y no de los componentes sueltos: se
-            # calculaba enumerando las fuentes una por una y cada hueco nuevo había que
-            # acordarse de sumarlo acá también. No se sumaron dos (el retraso sin calcular y
-            # los alumnos sin regional), así que el dict los declaraba y el PDF —que es lo que
-            # se comparte, y muchas veces lo único que alguien lee— salía sin el aviso.
-            "degradado": bool(huecos),
-            "sin_dato": huecos,
-        },
+        "_meta": meta_de_huecos(
+            huecos,
+            fuente="vivo",
+            segundos=round(time.time() - t0, 1),
+            nexos_en_catalogo=len(catalogo),
+            regionales_sin_nexo=sin_nexo,
+            alumnos_sin_regional=sin_regional,
+        ),
         "lectura": (
             "Este informe habla de ALUMNOS y de nadie más: no trae ni una columna del trabajo "
             "de corrección de los tutores (eso es `reporte_coordinacion`). Los días son SIN "

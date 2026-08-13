@@ -481,11 +481,9 @@ def informe_nexos_pdf(datos: dict, dest_dir: str, materia: str = "",
         # El número de página se dibuja primero y la leyenda se corta ANTES de llegar a él.
         # Sin ese tope los dos textos se superponen y quedan ilegibles los dos.
         canvas.drawRightString(19.0 * cm, 0.85 * cm, f"pág. {doc_.page}")
-        leyenda = ("Situación: «entra al campus, no abre la materia» = eligió no entrar, es "
-                   "el más recuperable · «no entra al campus» = tampoco aparece por Moodle.")
         # Red de seguridad: si algún día la leyenda crece, se recorta con puntos suspensivos
         # antes de llegar al número de página. Cortada a mitad de palabra parece un bug.
-        tope = 16.2 * cm
+        leyenda, tope = LEYENDA_SITUACION, LEYENDA_ANCHO_MAX
         while canvas.stringWidth(leyenda, "Helvetica", 6.2) > tope and " " in leyenda:
             leyenda = leyenda.rsplit(" ", 1)[0] + "…"
         canvas.drawString(2.0 * cm, 0.85 * cm, leyenda)
@@ -726,6 +724,14 @@ def _caja(texto: str, estilo, ancho_total: float = 17.0, color=NAVY) -> Table:
     ]))
     return t
 
+
+# La leyenda del pie y el ancho que tiene disponible antes de chocar con el número de página.
+# Van como constantes para poder MEDIRLAS en un test: `canvas.drawString` no recorta ni hace
+# wrap — dibuja encima —, así que una leyenda que crece se monta sobre el número de página y
+# quedan ilegibles los dos. Ya pasó.
+LEYENDA_SITUACION = ("Situación: «entra al campus, no abre la materia» = eligió no entrar, es "
+                     "el más recuperable · «no entra al campus» = tampoco aparece por Moodle.")
+LEYENDA_ANCHO_MAX = 16.2 * cm
 
 # Cuántos alumnos desenganchados entran en la tabla de la página 3. El listado completo, con
 # mail y con el nexo de cada sede, es el informe de nexos: éste es el de coordinación y sólo

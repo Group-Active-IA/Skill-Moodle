@@ -92,6 +92,13 @@ async def _assign_map(client, refrescar: bool = False) -> dict:
                 "grade": a.get("grade"),
                 "name": a.get("name", ""),
                 "feedback_file": acepta_archivos,
+                # FECHA DE ENTREGA. Venía en esta misma respuesta y se estaba tirando, y esa
+                # ausencia es la que rompía `alumnos_en_riesgo`: sin `duedate` no se puede
+                # distinguir "no entregó" de "todavía no vencía", así que contaba como
+                # abandono cualquier actividad futura y marcaba al padrón entero en rojo
+                # (94 de 94 en Prog I, donde ninguna actividad de cierre tiene fecha).
+                # 0 = la actividad NO tiene fecha de entrega. No es "vence en 1970".
+                "duedate": int(a.get("duedate") or 0),
             }
     # Sólo pisamos el caché si el WS devolvió algo. Una respuesta vacía (caída, permisos)
     # no debe borrar un mapa bueno ni, peor, dejar el diccionario vacío como verdad.
@@ -572,12 +579,34 @@ def es_actividad_de_cierre(titulo: str) -> bool:
     return bool(_RE_CIERRE_UNIDAD.search(t))
 
 
+def _vencidas(orden: list[str], duedates: dict, ahora: int) -> tuple[list[str], list[str]]:
+    """Parte las tareas en (vencidas, no_exigibles). PURA.
+
+    **Sólo lo VENCIDO puede contarse como no entregado.** Sin `duedate` no se puede distinguir
+    "no entregó" de "todavía no vencía", y tratar las dos igual es lo que hacía que
+    `alumnos_en_riesgo` marcara 94 de 94 alumnos en rojo en Prog I — un curso donde NINGUNA de
+    las 10 actividades de cierre tiene fecha. Una alarma que marca a todos no es una alarma, y
+    encima envenena la confianza en el resto de la herramienta.
+
+    `duedate == 0` es "no tiene fecha", no "venció en 1970": va a `no_exigibles` junto con las
+    que vencen más adelante. Que el conteo baje mucho es el punto, no un efecto secundario.
+    """
+    vencidas, fuera = [], []
+    for aid in orden:
+        d = int((duedates.get(str(aid)) or 0))
+        (vencidas if 0 < d <= ahora else fuera).append(str(aid))
+    return vencidas, fuera
+
+
 def _racha_final_sin_entregar(estados: list[str]) -> int:
     """Cuántas tareas seguidas quedaron sin entregar CONTANDO DESDE LA ÚLTIMA.
 
     Se mira la racha final y no el total a propósito: alguien que no entregó el TP1 hace
     tres meses pero viene entregando los últimos cinco NO está abandonando. El que dejó de
-    entregar las últimas dos, sí. El total esconde esa diferencia; la racha la muestra."""
+    entregar las últimas dos, sí. El total esconde esa diferencia; la racha la muestra.
+
+    Recibe SÓLO los estados de las tareas ya vencidas (ver `_vencidas`): una actividad que
+    todavía no venció no puede formar parte de una racha de abandono."""
     racha = 0
     for estado in reversed(estados):
         if estado == "Sin entrega":
@@ -738,6 +767,29 @@ async def alumnos_en_riesgo(client, course_id: int, group_id: int, tareas: list[
     # Respetar el orden de `tareas`, no el de llegada de las respuestas (van en paralelo).
     orden = [str(t.get("assign_id")) for t in tareas if str(t.get("assign_id")) in orden_ok]
 
+    # SÓLO LO VENCIDO cuenta como no entregado. El `duedate` sale de `_assign_map`, que ya
+    # está cacheado: no cuesta ninguna request. Ver `_vencidas` para el porqué.
+    import time as _time
+    amap = await _assign_map(client)
+    orden, no_exigibles = _vencidas(orden, {k: v.get("duedate") for k, v in amap.items()},
+                                    int(_time.time()))
+    sin_fecha = [a for a in no_exigibles
+                 if not int((amap.get(a) or {}).get("duedate") or 0)]
+    if no_exigibles:
+        avisos.append(
+            f"{len(no_exigibles)} de {len(no_exigibles) + len(orden)} actividades NO se "
+            f"contaron para la racha porque todavía no vencieron"
+            + (f" ({len(sin_fecha)} de ésas no tienen fecha de entrega cargada)"
+               if sin_fecha else "")
+            + ": una entrega que no venció no puede leerse como abandono.")
+    if not orden:
+        # No es un detalle: acá el eje de ENTREGAS queda sin medir y el riesgo pasa a
+        # apoyarse sólo en el reloj de la materia. Decirlo importa más que el número.
+        avisos.append(
+            "NINGUNA actividad venció todavía, así que la racha de entregas no se pudo medir "
+            "y NO entra en la clasificación: lo que ves sale sólo del reloj de la materia. "
+            "Un alumno sin marcar acá no está 'al día con las entregas' — no se sabe.")
+
     filas = []
     sin_dato_aula = 0
     for u in alumnos:
@@ -765,6 +817,9 @@ async def alumnos_en_riesgo(client, course_id: int, group_id: int, tareas: list[
             "dias_sin_entrar_al_campus": dias_campus,
             "tareas_seguidas_sin_entregar": racha,
             "sin_entregar_total": sum(1 for e in estados if e == "Sin entrega"),
+            # Sobre cuántas se midió. Sin esto, `racha: 0` con cero vencidas se lee como
+            # "viene entregando todo" cuando en realidad es "no había nada que entregar".
+            "actividades_vencidas_miradas": len(orden),
             "motivos": motivos,
         })
 

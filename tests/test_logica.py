@@ -25,6 +25,7 @@ from moodle.ws_api import (  # noqa: E402
     _lectura_aula,
     _orden_aula,
     _racha_final_sin_entregar,
+    _vencidas,
     _resolver_valor_nota,
     clasificar_mensaje_entrante,
     crear_discusion,
@@ -1257,3 +1258,136 @@ class TestCortesDelTrabajo(unittest.TestCase):
         f = informes.focos_de_correccion({"tareas_miradas": 5, "filas": [], "por_actividad": []})
         self.assertIn("No hay entregas esperando", f[0][0])
         self.assertIn("5 actividades miradas", f[0][1])
+
+
+class TestSoloCuentaLoVencido(unittest.TestCase):
+    """La racha de abandono NO puede contar lo que todavía no venció.
+
+    Es el bug que marcaba 94 de 94 alumnos en rojo en Prog I: ninguna de sus 10 actividades de
+    cierre tiene fecha de entrega, y `duedate = 0` se estaba leyendo como "venció hace mucho".
+    """
+
+    AHORA = 1_800_000_000
+    AYER = AHORA - 86400
+    MANANA = AHORA + 86400
+
+    def test_sin_fecha_de_entrega_NO_es_exigible(self):
+        # El caso que rompía: 0 no es "venció en 1970", es "no tiene fecha".
+        venc, fuera = _vencidas(["a", "b"], {"a": 0, "b": 0}, self.AHORA)
+        self.assertEqual(venc, [])
+        self.assertEqual(fuera, ["a", "b"])
+
+    def test_la_que_vence_manana_no_cuenta_y_la_de_ayer_si(self):
+        venc, fuera = _vencidas(["vieja", "futura"],
+                                {"vieja": self.AYER, "futura": self.MANANA}, self.AHORA)
+        self.assertEqual(venc, ["vieja"])
+        self.assertEqual(fuera, ["futura"])
+
+    def test_conserva_el_orden_del_curso(self):
+        # La racha se lee desde la última, así que un reordenamiento la cambia.
+        d = {"u1": self.AYER, "u2": self.AYER, "u3": self.AYER}
+        self.assertEqual(_vencidas(["u3", "u1", "u2"], d, self.AHORA)[0], ["u3", "u1", "u2"])
+
+    def test_una_tarea_que_no_esta_en_el_mapa_no_se_asume_vencida(self):
+        venc, fuera = _vencidas(["huerfana"], {}, self.AHORA)
+        self.assertEqual((venc, fuera), ([], ["huerfana"]))
+
+    def test_el_padron_entero_en_rojo_ya_no_puede_pasar(self):
+        # Prog I: 10 actividades de cierre, ninguna con fecha. Antes daba racha 10.
+        orden = [f"u{i}" for i in range(1, 11)]
+        venc, _ = _vencidas(orden, {a: 0 for a in orden}, self.AHORA)
+        self.assertEqual(_racha_final_sin_entregar(["Sin entrega"] * len(venc)), 0)
+
+
+class TestElPDFNoEsCONDEDeLosHuecos(unittest.TestCase):
+    """Un hueco declarado en el dict que el PDF no muestra es un hueco que no existe.
+
+    El PDF es lo que se comparte y muchas veces lo único que alguien lee. `degradado` decide si
+    el bloque de avisos se dibuja, así que tiene que salir de la lista COMPLETA de huecos y no
+    de una enumeración de fuentes que hay que acordarse de mantener.
+    """
+
+    def _datos(self, avisos):
+        return {"ok": True, "course_id": 1, "comisiones": 1, "tareas_miradas": 1,
+                "tareas_pedidas": 1, "actividades_en_el_curso": 1,
+                "actividades_no_habilitadas": 0, "padron": {}, "foros": {},
+                "filas": [{"comision": "com1", "tutor": {"nombre": "T"}, "alumnos": 1,
+                           "entregados": 1, "corregidos": 1, "sin_corregir": 0,
+                           "calificado_sin_nota": 0, "espera_max_dias": None,
+                           "demora_mediana_dias": None, "demora_max_dias": None,
+                           "consultas_sin_responder": 0, "sin_dato": []}],
+                "desenganche": {}, "por_actividad": [], "por_tutor": [],
+                "esperando_detalle": [], "sin_nota_detalle": [],
+                "consultas_sin_responder_detalle": [],
+                "actividades_sin_fecha_de_entrega": 0, "avisos": avisos, "segundos": 1.0}
+
+    def test_con_huecos_el_pdf_sale_marcado_degradado(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            r = informes.reporte_coordinacion_pdf(
+                self._datos(["falta algo"]), d, materia="X", fecha="2026-01-01")
+            self.assertTrue(r["degradado"], "el PDF no marcó el hueco que el dict declaraba")
+
+    def test_sin_huecos_no_se_marca(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(informes.reporte_coordinacion_pdf(
+                self._datos([]), d, materia="X", fecha="2026-01-01")["degradado"])
+
+    def test_el_render_completo_no_se_rompe(self):
+        # Humo: los bugs de esta capa (columnas, paginación, emoji) no los ve ningún test puro.
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            r = informes.reporte_coordinacion_pdf(
+                self._datos(["🎯 título con emoji que Helvetica no dibuja"]), d,
+                materia="Programación I", fecha="2026-01-01", anexo=True)
+            self.assertTrue(os.path.getsize(r["archivo"]) > 1000)
+            self.assertGreaterEqual(r["paginas"], 1)
+
+
+class TestLaLeyendaDelPieEntra(unittest.TestCase):
+    """`canvas.drawString` no recorta ni hace wrap: dibuja ENCIMA.
+
+    La leyenda se montaba sobre el número de página y quedaban ilegibles las dos cosas. Un
+    `Paragraph` del flow se acomoda solo; el canvas no. Por eso esto se mide."""
+
+    def test_no_pisa_el_numero_de_pagina(self):
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        ancho = stringWidth(informes.LEYENDA_SITUACION, "Helvetica", 6.2)
+        self.assertLessEqual(
+            ancho, informes.LEYENDA_ANCHO_MAX,
+            f"la leyenda mide {ancho:.0f}pt y el tope es {informes.LEYENDA_ANCHO_MAX:.0f}pt: "
+            "se va a dibujar encima del número de página")
+
+
+class TestDegradadoSaleDeTodosLosHuecos(unittest.TestCase):
+    """El invariante que se rompió: hay huecos <-> está degradado.
+
+    Se calculaba enumerando las fuentes de huecos una por una y faltaban dos, así que el dict
+    los declaraba y el PDF salía sin el aviso. Un hueco que el documento no muestra no existe.
+    """
+
+    def test_un_solo_hueco_ya_degrada(self):
+        m = panorama.meta_de_huecos(["no pude leer una comisión"])
+        self.assertTrue(m["degradado"])
+        self.assertEqual(m["sin_dato"], ["no pude leer una comisión"])
+
+    def test_sin_huecos_no_degrada(self):
+        self.assertFalse(panorama.meta_de_huecos([])["degradado"])
+
+    def test_ningun_hueco_puede_quedar_afuera_del_flag(self):
+        # El bug real: un hueco de una fuente que nadie sumó a la enumeración.
+        for n in range(1, 6):
+            m = panorama.meta_de_huecos([f"hueco {i}" for i in range(n)])
+            self.assertTrue(m["degradado"], f"con {n} huecos no marcó degradado")
+            self.assertEqual(len(m["sin_dato"]), n)
+
+    def test_los_extras_NO_pueden_pisar_el_invariante(self):
+        # Si alguien pasa degradado=False desde afuera, el aviso se volvería a esconder.
+        m = panorama.meta_de_huecos(["x"], fuente="vivo", segundos=1.0,
+                                    degradado=False, sin_dato=[])
+        self.assertTrue(m["degradado"], "un extra pisó el flag y el hueco se esconde de nuevo")
+        self.assertEqual(m["sin_dato"], ["x"])
+        self.assertEqual(m["fuente"], "vivo")
+
