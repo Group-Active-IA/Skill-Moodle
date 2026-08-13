@@ -966,8 +966,14 @@ def reporte_coordinacion_pdf(datos: dict, dest_dir: str, materia: str = "", fech
             "No se pudo medir el desenganche en esta corrida. NO significa que no haya: "
             "significa que no se sabe.", alerta))
     else:
-        lista = [a for a in (des.get("alumnos") or [])
+        todos = [a for a in (des.get("alumnos") or [])
                  if a.get("desenganchado_de_la_materia")]
+        # Los que NO están retrasados salen de la lista principal y van a su propio bloque.
+        # Son el caso que la columna existe para encontrar —no entra porque ya entregó todo— y
+        # mezclados con los otros no aparecían nunca: la tabla se recorta a 25 por urgencia, y
+        # justamente éstos no son urgentes. La columna quedaba diciendo "Sí" 25 veces.
+        al_dia = [a for a in todos if a.get("retraso") is False]
+        lista = [a for a in todos if a.get("retraso") is not False]
         muestra = lista[:_MAX_DESENGANCHE_EN_TABLA]
         E.append(Paragraph(
             f"<b>El reloj es el de esta materia, no el del campus.</b> Son los "
@@ -983,7 +989,10 @@ def reporte_coordinacion_pdf(datos: dict, dest_dir: str, materia: str = "", fech
                 f"materia por {des.get('dias_desenganche')}+ días.", body))
         else:
             E.append(Paragraph(
-                f"<b>{len(lista)} alumnos</b>, de los cuales "
+                f"<b>{len(lista)} alumnos</b>"
+                + (f" (de {len(todos)}; los otros {len(al_dia)} están al día y van aparte "
+                   "abajo)" if al_dia else "")
+                + ", de los cuales "
                 f"{tot_des.get('entran_al_campus_sin_abrir_la_materia')} entran al campus y no "
                 "abren la materia — ésos van primero porque no perdieron el acceso: eligieron no "
                 "entrar, y son los más recuperables."
@@ -991,8 +1000,23 @@ def reporte_coordinacion_pdf(datos: dict, dest_dir: str, materia: str = "", fech
                    "el mail de cada uno y el Tutor Nexo de su sede, es el informe de nexos."
                    if len(lista) > len(muestra) else ""), body))
             E.append(Spacer(1, 5))
-            rr = [["Alumno", "Com.", "Regional", "Último ingreso\nal aula",
-                   "Sin abrir\nla materia", "Sin entrar\nal campus", "Situación"]]
+            ret = des.get("retraso") or {}
+            if ret:
+                E.append(Paragraph(
+                    f"<b>La columna Retraso ({ret['etiqueta']}) separa dos casos que acá se ven "
+                    "iguales</b>: el que no entra y además no entregó nada, y el que no entra "
+                    "<b>porque ya entregó todo</b>. Al segundo no hay que llamarlo. Hoy son "
+                    f"{ret.get('al_dia')} de {ret.get('medidos')}. El rango lo fija el tutor: "
+                    "Moodle no expone qué unidad se está cursando, así que sin indicarlo la "
+                    "columna no sale — nunca se estima.", small))
+                E.append(Spacer(1, 4))
+            cab = ["Alumno", "Com.", "Regional", "Último ingreso\nal aula",
+                   "Sin abrir\nla materia", "Sin entrar\nal campus", "Situación"]
+            anchos_t = [3.9, 1.0, 2.2, 1.9, 1.7, 1.7, 4.6]
+            if ret:
+                cab.insert(4, f"Retraso\n({ret['etiqueta']})")
+                anchos_t = [3.5, 1.0, 1.9, 1.75, 1.35, 1.5, 1.5, 4.5]
+            rr = [cab]
             for a in muestra:
                 aula = ("Nunca" if a.get("estado_aula") == "nunca_abrio"
                         else f"{a.get('dias_sin_abrir_la_materia')} d")
@@ -1002,13 +1026,21 @@ def reporte_coordinacion_pdf(datos: dict, dest_dir: str, materia: str = "", fech
                         if a.get("entra_al_campus_sin_abrir_la_materia")
                         else "no entra al campus")
                 com = "s/com" if a.get("comision") == "(sin comisión)" else a.get("comision")
-                rr.append([Paragraph(a.get("nombre") or "", est_celda),
-                           com or "—",
-                           Paragraph(a.get("regional") or "—", est_celda),
-                           _fecha_txt(a.get("ultimo_acceso_aula_ts")),
-                           aula, camp, Paragraph(caso, est_celda)])
-            E.append(_tabla(rr, [3.9, 1.0, 2.2, 1.9, 1.7, 1.7, 4.6], font=6.8,
-                            alinear_der=[4, 5]))
+                fila = [Paragraph(a.get("nombre") or "", est_celda),
+                        com or "—",
+                        Paragraph(a.get("regional") or "—", est_celda),
+                        _fecha_txt(a.get("ultimo_acceso_aula_ts")),
+                        aula, camp, Paragraph(caso, est_celda)]
+                if ret:
+                    # La palabra además del color: el informe se imprime en blanco y negro.
+                    r_ = a.get("retraso")
+                    txt = ("—" if r_ is None
+                           else ('<font color="#a02c2c"><b>Sí</b></font>' if r_
+                                 else '<font color="#1f7a6c"><b>No</b></font>'))
+                    fila.insert(4, Paragraph(txt, est_celda))
+                rr.append(fila)
+            E.append(_tabla(rr, anchos_t, font=6.8, compacta=True,
+                            alinear_der=([5, 6] if ret else [4, 5])))
             E.append(Paragraph(
                 "«Sin entrar al campus» mide la ausencia del <b>sitio completo</b>, no de "
                 "esta aula: por eso puede superar los días desde el inicio de cursada. Y "
@@ -1016,6 +1048,30 @@ def reporte_coordinacion_pdf(datos: dict, dest_dir: str, materia: str = "", fech
                 "matriculado esta semana, y este informe no ve la fecha de matriculación. Sin "
                 "mails a propósito — el listado accionable, por sede y con contacto, es el "
                 "informe de nexos.", small))
+
+        if al_dia:
+            E.append(Paragraph(
+                f"No entran, pero están AL DÍA con las entregas ({len(al_dia)})",
+                ParagraphStyle("ok", parent=h2, textColor=TEAL)))
+            E.append(Paragraph(
+                "Entregaron todo lo exigible y por eso no abren la materia. <b>A éstos no hay "
+                "que llamarlos</b> — y en la lista de arriba quedaban indistinguibles de los que "
+                "abandonaron, que es la razón por la que van aparte.", small))
+            E.append(Spacer(1, 4))
+            rr2 = [["Alumno", "Com.", "Regional", "Último ingreso\nal aula",
+                    "Sin abrir\nla materia", "Sin entrar\nal campus"]]
+            for a in al_dia:
+                rr2.append([Paragraph(a.get("nombre") or "", est_celda),
+                            ("s/com" if a.get("comision") == "(sin comisión)"
+                             else a.get("comision")) or "—",
+                            Paragraph(a.get("regional") or "—", est_celda),
+                            _fecha_txt(a.get("ultimo_acceso_aula_ts")),
+                            ("Nunca" if a.get("estado_aula") == "nunca_abrio"
+                             else f"{a.get('dias_sin_abrir_la_materia')} d"),
+                            ("Nunca" if a.get("dias_sin_entrar_al_campus") is None
+                             else f"{a['dias_sin_entrar_al_campus']} d")])
+            E.append(_tabla(rr2, [5.0, 1.2, 2.6, 2.4, 2.9, 2.9], font=6.8, compacta=True,
+                            alinear_der=[4, 5]))
 
     # ---------------- Anexo: el detalle largo, sólo si se pide ----------------
     if anexo:

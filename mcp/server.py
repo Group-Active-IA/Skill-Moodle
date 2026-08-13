@@ -1044,7 +1044,8 @@ async def _cmids_del_curso(course_id: int, cmids: list[str] | None) -> list[str]
 async def reporte_coordinacion(course_id: int, cmids: list[str] | None = None,
                               incluir_foros: bool = True, pdf: bool = True,
                               anexo: bool = False,
-                              dias_desenganche: int = 7) -> dict:
+                              dias_desenganche: int = 7,
+                              unidades: str | None = None) -> dict:
     """La vista del PROFESOR sobre el TRABAJO DE CORRECCIÓN del curso entero, cortada de tres
     maneras: por comisión, por tutor y por actividad. Con `pdf=True` (por defecto) escribe el
     PDF de coordinación y devuelve la ruta en `pdf.archivo`.
@@ -1058,6 +1059,12 @@ async def reporte_coordinacion(course_id: int, cmids: list[str] | None = None,
     La tabla por tutor incluye una columna **Nota** que lee la cola por la ESPERA y no por el
     volumen ("cola fresca", "espera de 3,1 d, priorizar"). Es la única interpretación del
     informe y la regla es pareja para todos: describe el estado de una cola, no a la persona.
+
+    **`unidades` agrega la columna RETRASO y hay que PREGUNTÁRSELO AL TUTOR** (`"3-5"`, o `"3"`
+    para una sola). Es lo que separa dos casos que en la tabla se ven idénticos: el alumno que no
+    entra Y no entregó nada, y el que no entra **porque ya entregó todo** — a ése no hay que
+    llamarlo. El campus NO dice qué unidad se cursa (verificado: ninguna actividad de cierre
+    tiene fecha de apertura), así que sin el rango la columna no sale y se declara por qué.
 
     El bloque de alumnos usa el reloj de LA MATERIA (`dias_desenganche`, 7 días por defecto),
     nunca el del campus — ver `informes_nexos` para por qué el corte por campus pierde a la
@@ -1099,7 +1106,7 @@ async def reporte_coordinacion(course_id: int, cmids: list[str] | None = None,
 
     datos = await panorama.reporte_coordinacion(
         _cli(), course_id, await _cmids_del_curso(course_id, cmids), incluir_foros,
-        dias_desenganche=dias_desenganche)
+        dias_desenganche=dias_desenganche, unidades=unidades)
     if datos.get("error") or not pdf:
         return datos
     try:

@@ -810,7 +810,8 @@ async def reporte_coordinacion(client, course_id: int, cmids: list[str] | None =
                               incluir_foros: bool = True,
                               padrones: dict | None = None,
                               avisos_padron: list[str] | None = None,
-                              dias_desenganche: int = _AULA_DESENGANCHE_DIAS) -> dict:
+                              dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
+                              unidades: str | None = None) -> dict:
     """Una fila por comisión del curso: tutor a cargo, entregas, correcciones pendientes,
     cuánto hace que espera la más vieja y consultas de foro sin responder.
 
@@ -1056,6 +1057,16 @@ async def reporte_coordinacion(client, course_id: int, cmids: list[str] | None =
     deseng = desenganche_del_curso(padrones, comisiones, dias_desenganche,
                                    sueltos=curso_entero.get("sueltos"))
 
+    # RETRASO sobre los desenganchados. Es lo que separa dos casos que en la tabla se ven
+    # idénticos: el que no entra porque abandonó, y el que no entra PORQUE YA ENTREGÓ TODO. Al
+    # segundo no hay que llamarlo, y hasta ahora estaba mezclado con los otros 156.
+    res_ret, aviso_ret = await anotar_retraso(
+        client, meta_tareas, unidades, deseng.get("alumnos") or [], err_meta)
+    if res_ret:
+        deseng["retraso"] = res_ret
+    if aviso_ret:
+        avisos.append(aviso_ret)
+
     en_comisiones = sum(len((padrones.get(c["group_id"]) or {}).get("alumnos") or {})
                         for c in comisiones)
     sueltos = curso_entero.get("sueltos") or []
@@ -1243,6 +1254,83 @@ def nexos_por_regional() -> tuple[dict, str | None]:
     return regs, None
 
 
+async def anotar_retraso(client, meta: dict, unidades, filas: list[dict],
+                         err_meta: str | None = None) -> tuple[dict | None, str | None]:
+    """Marca a cada alumno de `filas` con su RETRASO. -> (resumen, aviso). Muta `filas`.
+
+    Vive acá y no adentro de cada informe porque **la usan los dos**, y un criterio de "está
+    retrasado" escrito dos veces es un criterio que dentro de un mes dice cosas distintas del
+    mismo alumno en dos documentos que se leen juntos. Ya pasó en este módulo con el corte de
+    desenganche.
+
+    **El rango NO se adivina.** El campus no dice qué unidad se está cursando: verificado el
+    2026-08-13, NINGUNA de las 10 actividades de cierre de Prog I tiene
+    `allowsubmissionsfromdate` (la única con fecha es el Integrador, que abre el 26/10), y en
+    Prog III las 22 "Práctica" abren todas el 03/08, o sea el inicio de cursada. La heurística de
+    "la que abrió esta semana" no encuentra nada en ningún curso, así que se pregunta — igual que
+    `auditar_aula` con su unidad. Sin rango la columna no sale y se declara por qué: adivinarlo
+    sería escribir "Retrasado: Sí" al lado del nombre de un alumno que está al día.
+
+    Sólo cuentan las actividades de CIERRE. Las "Práctica - Actividad N" de Prog III son
+    optativas y sumarlas marcaría retrasado a medio curso por no hacer ejercicios sueltos.
+    """
+    cierres = cierres_por_unidad(meta)
+    rango = parsear_unidades(unidades)
+
+    if rango is None:
+        return None, (
+            "No se calculó el RETRASO porque no se dijo qué unidades exigir, y el campus no lo "
+            "expone: ninguna actividad de cierre tiene fecha de apertura. Preguntale al tutor "
+            "cuál es la última unidad ya cerrada (o el rango, ej. `unidades=\"3-5\"`) y volvé a "
+            "correrlo. Ojo que el rango depende de la materia: en Prog I las unidades 1 y 2 son "
+            "optativas.")
+    if err_meta or not cierres:
+        return None, (f"No se calculó el RETRASO: no encontré actividades de cierre por unidad "
+                      f"en este curso ({err_meta or 'ningún título matchea'}).")
+
+    faltan_unidades = [u for u in rango if u not in cierres]
+    mirar = [u for u in rango if u in cierres]
+    crudas: dict[int, dict] = {}
+    sem = asyncio.Semaphore(_SEM)
+
+    async def _una_u(u):
+        async with sem:
+            return u, await _tarea_cruda(client, cierres[u]["cmid"])
+
+    for res in await asyncio.gather(*(_una_u(u) for u in mirar), return_exceptions=True):
+        if isinstance(res, BaseException) or res[1].get("error"):
+            continue
+        crudas[res[0]] = res[1]
+    no_leidas = [u for u in mirar if u not in crudas]
+
+    retrasados = 0
+    for f in filas:
+        uid = f.get("userid")
+        if uid is None:
+            continue
+        faltantes = [u for u, d in sorted(crudas.items()) if int(uid) not in d["entregas"]]
+        f["retraso"] = bool(faltantes)
+        f["unidades_faltantes"] = faltantes
+        retrasados += bool(faltantes)
+
+    resumen = {
+        "rango": rango,
+        "etiqueta": f"U{rango[0]}" if len(rango) == 1 else f"U{rango[0]}–U{rango[-1]}",
+        "unidades_medidas": sorted(crudas),
+        "retrasados": retrasados,
+        "medidos": len(filas),
+        "al_dia": len(filas) - retrasados,
+    }
+    aviso = None
+    if faltan_unidades or no_leidas:
+        aviso = ("El RETRASO no cubre todas las unidades pedidas: "
+                 + (f"no hay actividad de cierre para {faltan_unidades}. " if faltan_unidades
+                    else "")
+                 + (f"No se pudieron leer las entregas de {no_leidas}. " if no_leidas else "")
+                 + "Un «No» en esa columna puede estar mirando menos unidades de las que creés.")
+    return resumen, aviso
+
+
 async def informe_nexos(client, course_id: int,
                         dias_desenganche: int = _AULA_DESENGANCHE_DIAS,
                         unidades: str | None = None) -> dict:
@@ -1273,88 +1361,12 @@ async def informe_nexos(client, course_id: int,
     deseng = desenganche_del_curso(padrones, comisiones, dias_desenganche,
                                    sueltos=curso_entero.get("sueltos"))
 
-    # ---- RETRASO: qué actividades de cierre le faltan a cada alumno ----
-    #
-    # El rango NO se adivina. El campus no dice qué unidad se está cursando: verificado el
-    # 2026-08-13, NINGUNA de las 10 actividades de cierre de Prog I tiene
-    # `allowsubmissionsfromdate` (la única con fecha es el Integrador, que abre el 26/10), y en
-    # Prog III las 22 "Práctica" abren todas el 03/08, o sea el inicio de cursada. Cualquier
-    # heurística de "la que abrió esta semana" no encuentra nada en ningún curso.
-    #
-    # Entonces se pregunta, igual que `auditar_aula` con su unidad. Sin rango el informe sale
-    # completo pero SIN la columna, y devuelve las unidades que encontró para que el tutor
-    # elija. Inventar el rango acá no sería un número flojo: sería escribirle "Retrasado: Sí"
-    # al lado del nombre de un alumno que está al día.
-    meta, err_meta = await _meta_tareas(client, course_id)
-    cierres = cierres_por_unidad(meta)
-    rango = parsear_unidades(unidades)
-    retraso: dict[int, dict] = {}
-    aviso_retraso = None
-
-    if rango is None:
-        aviso_retraso = (
-            "No se calculó el RETRASO porque no se dijo qué unidades exigir, y el campus no lo "
-            "expone: ninguna actividad de cierre tiene fecha de apertura. Preguntale al tutor "
-            "cuál es la última unidad ya cerrada (o el rango, ej. `unidades=\"3-5\"`) y volvé "
-            "a correrlo. Ojo que el rango depende de la materia: en Prog I las unidades 1 y 2 "
-            "son optativas.")
-    elif err_meta or not cierres:
-        aviso_retraso = (f"No se calculó el RETRASO: no encontré actividades de cierre por "
-                         f"unidad en este curso ({err_meta or 'ningún título matchea'}).")
-    else:
-        faltan_unidades = [u for u in rango if u not in cierres]
-        mirar = [u for u in rango if u in cierres]
-        crudas = {}
-        sem = asyncio.Semaphore(_SEM)
-
-        async def _una_u(u):
-            async with sem:
-                return u, await _tarea_cruda(client, cierres[u]["cmid"])
-
-        for res in await asyncio.gather(*(_una_u(u) for u in mirar), return_exceptions=True):
-            if isinstance(res, BaseException) or res[1].get("error"):
-                continue
-            crudas[res[0]] = res[1]
-        no_leidas = [u for u in mirar if u not in crudas]
-
-        for f in deseng.get("alumnos", []):
-            uid = f.get("userid")
-            faltantes = [u for u, d in sorted(crudas.items()) if int(uid) not in d["entregas"]]
-            f["retraso"] = bool(faltantes)
-            f["unidades_faltantes"] = faltantes
-            retraso[int(uid)] = {"retraso": bool(faltantes), "faltantes": faltantes}
-
-        etiqueta = (f"U{rango[0]}" if len(rango) == 1
-                    else f"U{rango[0]}–U{rango[-1]}")
-        deseng["retraso"] = {
-            "rango": rango, "etiqueta": etiqueta,
-            "unidades_medidas": sorted(crudas),
-            "retrasados": sum(1 for v in retraso.values() if v["retraso"]),
-            "medidos": len(retraso),
-        }
-        if faltan_unidades or no_leidas:
-            aviso_retraso = (
-                "El RETRASO no cubre todas las unidades pedidas: "
-                + (f"no hay actividad de cierre para {faltan_unidades}. " if faltan_unidades else "")
-                + (f"No se pudieron leer las entregas de {no_leidas}. " if no_leidas else "")
-                + "Un «No» en esa columna puede estar mirando menos unidades de las que creés.")
-
-    # El nexo de cada bloque. Si una regional no está en el catálogo, el bloque sale SIN nexo
-    # y se declara: nunca se le adjudica a alguien una sede que no es suya.
-    catalogo, aviso_cat = nexos_por_regional()
-    sin_nexo, sin_regional = [], 0
-    for b in deseng.get("por_regional_bloques", []):
-        if b["regional"] == _SIN_REGIONAL:
-            # No es una regional: es el balde de los que no están en ningún grupo `R-*`.
-            # Contarlo como "regional sin nexo en el catálogo" sería mandar a revisar un
-            # renombre que no existe — y marcaba el informe como degradado por nada.
-            b["nexo"] = None
-            sin_regional = b["desenganchados"]
-            continue
-        datos_nexo = catalogo.get(b["regional"])
-        b["nexo"] = datos_nexo or None
-        if not datos_nexo:
-            sin_nexo.append(b["regional"])
+    meta_n, err_meta_n = await _meta_tareas(client, course_id)
+    res_ret, aviso_retraso = await anotar_retraso(
+        client, meta_n, unidades, deseng.get("alumnos") or [], err_meta_n)
+    if res_ret:
+        deseng["retraso"] = res_ret
+    cierres = cierres_por_unidad(meta_n)
 
     huecos = list(deseng["sin_dato"]) + list(avisos_padron)
     if aviso_retraso:
