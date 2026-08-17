@@ -19,6 +19,12 @@ Un tutor le habla a Claude Code en castellano y la skill opera el campus por él
   corregir, por comisión, en todos tus cursos (Prog I, II y III).
 - **Mensajes y foros**: qué alumnos te escribieron y qué posts están sin responder, con
   la respuesta previsualizada antes de publicarla.
+- **Panel en el navegador** (opcional): la misma skill con interfaz. Abre en el estado
+  de tus comisiones —padrón, pendientes y en qué unidad—, tiene el mapa de entregas
+  comisión × unidad, la ficha de cada comisión alumno por alumno y un chat con el mismo
+  agente y las mismas tools. Corre en tu máquina, escucha sólo en `127.0.0.1` y **no
+  necesita ninguna API key**: usa tu propia sesión de Claude Code. Toda escritura al
+  campus sigue pidiendo tu OK, y ahí el freno lo aplica el panel, no el prompt.
 - **Auditoría de aula**: chequea que el aula esté bien armada (presencia, ausencia y
   consistencia de actividades), con un pase por navegador para lo que la API no expone.
 - **Detecta quién está abandonando**: cruza días sin entrar con tareas seguidas sin
@@ -134,6 +140,39 @@ En una sesión de Claude Code, decí algo como:
 La primera vez **siempre** hay que mapear (Paso 0 — Bootstrap en `SKILL.md`); sin eso
 la skill no sabe cuáles son tus comisiones.
 
+## El panel (opcional)
+
+Decile a Claude **«abrí el panel»** y se levanta en `http://127.0.0.1:8787`.
+
+Trae dependencias propias que el core no usa, así que la primera vez hay que
+instalarlas:
+
+```bash
+.venv/bin/pip install -r panel/requirements.txt
+```
+
+No hace falta Node ni compilar: el build viaja en el repo. Sí hace falta tener Claude
+Code instalado y con sesión iniciada, porque el chat del panel usa **tu** sesión — por
+eso no lleva API key.
+
+Tres cosas que lo separan de un tablero cualquiera:
+
+- **Los números los produce el código, no el modelo.** Todo lo que se ve sale de las
+  tools de esta skill, llamadas directamente. El agente los lee y dice qué mirar; no los
+  fabrica. Cada tabla muestra de qué tool salió y de cuándo es la foto.
+- **Un blanco nunca tranquiliza.** `—` (no se pudo relevar) y `0` (no hay) se ven
+  distinto siempre, y si una consulta falla la pantalla lo declara arriba en vez de
+  mostrar un conteo corto que parece completo.
+- **Escucha sólo en `127.0.0.1`.** Corre con tus credenciales del campus y puede escribir
+  en él: no se expone a la red y no hay servidor central.
+
+Podés abrirle carpetas propias (fichas, apuntes, un vault de notas) creando
+`~/.moodle-skill/panel.json` con `{"carpetas": ["/ruta/a/tu/carpeta"]}`. El panel lee y
+escribe adentro de ésas, carga sus `CLAUDE.md` si los tienen, y **se niega a escribir
+afuera**. Ese archivo es tuyo y no va al repo.
+
+Detalle completo en `panel/README.md`.
+
 ## Estructura
 
 ```
@@ -143,7 +182,7 @@ Skill-Moodle/
 ├── VERSION                   # Versión publicada (la compara `version_skill`)
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 42 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, panorama del curso, Active-IA…)
+│   ├── server.py             # 45 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, panorama del curso, Active-IA…)
 │   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
 │   ├── comisiones.json       # Catálogo tutor→comisión y cmid de actividades por materia
 │   ├── requirements.txt
@@ -159,6 +198,18 @@ Skill-Moodle/
 │       ├── active_ia.py      # Cliente de la API de Active-IA (corrección con Gemini)
 │       ├── version.py        # Chequeo de versión nueva + actualización por git
 │       └── almacen.py        # Persistencia local (mis_datos.json + SQLite)
+├── panel/                    # Panel web local (OPCIONAL — deps aparte)
+│   ├── backend/              # FastAPI: sirve la interfaz y llama las tools directo
+│   │   ├── app.py            # Escucha SÓLO en 127.0.0.1
+│   │   ├── agente.py         # Chat con el Agent SDK + gate de escritura
+│   │   ├── datos.py          # Importa mcp/server.py y llama sus tools (sin duplicar lógica)
+│   │   ├── dia.py            # Relevamiento de las comisiones propias, con caché
+│   │   └── comision.py       # Ficha alumno por alumno
+│   ├── web/                  # React + Vite. El `dist/` compilado se commitea
+│   │   └── contraste.py      # Verifica el contraste WCAG de la paleta (corrélo si tocás un color)
+│   ├── PRODUCT.md            # Contexto de producto del panel
+│   ├── DESIGN.md             # Sistema visual (tokens, tipografía, estados)
+│   └── requirements.txt      # fastapi · uvicorn · claude-agent-sdk
 ├── install.sh               # Instalador de un comando (venv + claude mcp add)
 └── references/
     └── active-ia.md          # Pipeline de corrección automática con Active-IA

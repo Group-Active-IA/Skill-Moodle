@@ -1,0 +1,14 @@
+# Dependencias del panel local.
+# Se instalan sobre el MISMO venv de la skill, porque el panel importa
+# mcp/server.py para llamar las tools sin duplicar lógica:
+#
+#   .venv/bin/pip install -r panel/requirements.txt
+#
+# El core de la skill NO depende de esto: quien no usa el panel no lo instala.
+
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+
+# El chat. Lanza el CLI de Claude Code del propio tutor, así que hereda su
+# sesión: no hace falta ninguna API key.
+claude-agent-sdk>=0.2.139,<0.3

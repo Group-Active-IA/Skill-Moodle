@@ -158,6 +158,35 @@ async def _git(*args: str) -> tuple[int, str, str]:
     return proc.returncode, out.decode().strip(), err.decode().strip()
 
 
+def _deps_del_panel_que_faltan() -> list[str]:
+    """
+    Dependencias del panel que no están instaladas.
+
+    Devuelve `[]` cuando el panel no existe en esta instalación (nada que avisar)
+    y cuando están todas. La lista se lee del propio `panel/requirements.txt`, no
+    se hardcodea: un requirements que crece sin que nadie toque esta función
+    volvería a dejar al tutor con una tool que no arranca.
+    """
+    import importlib.util
+
+    reqs = _raiz() / "panel" / "requirements.txt"
+    if not reqs.is_file():
+        return []
+
+    # `uvicorn[standard]` -> módulo `uvicorn`; `claude-agent-sdk` -> `claude_agent_sdk`.
+    faltan = []
+    for linea in reqs.read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if not linea or linea.startswith("#"):
+            continue
+        paquete = linea.split("[")[0].split(">")[0].split("<")[0].split("=")[0].strip()
+        if not paquete:
+            continue
+        if importlib.util.find_spec(paquete.replace("-", "_")) is None:
+            faltan.append(paquete)
+    return faltan
+
+
 async def actualizar() -> dict:
     """Baja la última versión publicada con `git pull --ff-only`.
 
@@ -231,6 +260,21 @@ async def actualizar() -> dict:
                 "requirements.txt cambió: corré "
                 f"`{_raiz()}/.venv/bin/pip install -r {_raiz()}/mcp/requirements.txt` "
                 "antes de reiniciar."
+            )
+
+        # El panel es opcional y trae dependencias propias. Para quien actualiza
+        # por primera vez ese requirements no "cambió": apareció, así que el
+        # `diff` de arriba no lo agarra. Y sin ellas `abrir_panel` está en el
+        # menú y no arranca — una capacidad visible que no funciona es peor que
+        # una que no está.
+        panel_faltantes = _deps_del_panel_que_faltan()
+        if panel_faltantes:
+            salida["panel"] = (
+                "La skill ahora trae un PANEL web (tool `abrir_panel`: chat + estado de "
+                f"tus comisiones en el navegador). Le faltan {', '.join(panel_faltantes)}. "
+                f"Para habilitarlo: `{_raiz()}/.venv/bin/pip install -r "
+                f"{_raiz()}/panel/requirements.txt`. "
+                "Es opcional: sin esto el resto de la skill funciona igual."
             )
     else:
         salida["aviso"] = ("Ya tenías la última versión: no había nada que bajar, "

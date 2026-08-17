@@ -1609,6 +1609,132 @@ async def errores_frecuentes(course_id: int | None = None, assign_id: str | None
     return salida
 
 
+@mcp.tool()
+async def abrir_panel(puerto: int = 8787) -> dict:
+    """Abre el panel local en el navegador: chat con el agente + estado de las comisiones.
+
+    El panel corre en la máquina del tutor y escucha SÓLO en 127.0.0.1, porque
+    trabaja con sus credenciales del campus y puede escribir en él.
+
+    Si ya estaba levantado, no arranca otro: devuelve la URL del que corre.
+    """
+    import importlib.util
+    import shutil
+    import subprocess
+    import sys
+    import urllib.error
+    import urllib.request
+    from pathlib import Path
+
+    raiz = Path(__file__).resolve().parent.parent
+    url = f"http://127.0.0.1:{puerto}"
+
+    def _vivo() -> bool:
+        try:
+            with urllib.request.urlopen(f"{url}/api/salud", timeout=1.5) as r:
+                return r.status == 200
+        except (urllib.error.URLError, OSError):
+            return False
+
+    if not (raiz / "panel" / "web" / "dist" / "index.html").exists():
+        return {
+            "ok": False,
+            "motivo": "El panel no está compilado en esta instalación.",
+            "como_arreglar": "Actualizá la skill: el build viaja en el repo.",
+        }
+
+    # El panel suma dependencias que el core de la skill NO usa, así que una
+    # instalación vieja las tiene todas menos éstas. Sin este chequeo, el tutor
+    # que actualiza ve la tool en el menú y se come un ImportError adentro de un
+    # subproceso que ni siquiera puede leer: el panel arranca, muere, y `_vivo()`
+    # devuelve False sin decir por qué.
+    faltan = []
+    for modulo, paquete in (
+        ("fastapi", "fastapi"),
+        ("uvicorn", "uvicorn[standard]"),
+        ("claude_agent_sdk", "claude-agent-sdk"),
+    ):
+        if importlib.util.find_spec(modulo) is None:
+            faltan.append(paquete)
+    if faltan:
+        return {
+            "ok": False,
+            "motivo": f"Al panel le faltan dependencias: {', '.join(faltan)}.",
+            "como_arreglar": (
+                f"Instalalas una sola vez con:  cd {raiz} && "
+                ".venv/bin/pip install -r panel/requirements.txt"
+            ),
+            "por_que": "El core de la skill no las usa, así que no vienen instaladas.",
+        }
+
+    ya_estaba = _vivo()
+    if not ya_estaba:
+        # No se ramifica por sistema operativo: Git Bash sobre Windows reporta
+        # `msys` y WSL reporta `linux`, corren el MISMO script y tienen layouts
+        # de venv distintos. Se le pregunta al filesystem cuál existe, que no se
+        # equivoca nunca.
+        candidatos = [
+            raiz / ".venv" / "bin" / "python",
+            raiz / ".venv" / "Scripts" / "python.exe",
+            raiz / ".venv" / "Scripts" / "python",
+        ]
+        python = next((c for c in candidatos if c.exists()), Path(sys.executable))
+        try:
+            subprocess.Popen(
+                [str(python), "-m", "panel.backend.app"],
+                cwd=str(raiz),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                # Se despega de esta sesión de Claude Code: el panel tiene que
+                # seguir vivo cuando el tutor cierre la terminal.
+                start_new_session=True,
+            )
+        except Exception as exc:
+            return {"ok": False, "motivo": f"No se pudo arrancar el panel: {exc}"}
+
+        for _ in range(30):
+            await asyncio.sleep(0.4)
+            if _vivo():
+                break
+        else:
+            return {
+                "ok": False,
+                "motivo": "El panel no respondió a tiempo.",
+                "como_arreglar": (
+                    f"Probá a mano: cd {raiz} && .venv/bin/pip install -r "
+                    "panel/requirements.txt && .venv/bin/python -m panel.backend.app"
+                ),
+            }
+
+    # Mismo criterio que arriba: se busca el que exista, no el que "debería"
+    # existir según el sistema. `wslview` va antes que `xdg-open` a propósito —
+    # en WSL los dos están, y sólo el primero abre el navegador de Windows.
+    abridor = next(
+        (c for c in ("wslview", "xdg-open", "open") if shutil.which(c)), None
+    )
+    abierto = False
+    if abridor:
+        subprocess.Popen(
+            [abridor, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        abierto = True
+    elif hasattr(os, "startfile"):  # Windows nativo
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+            abierto = True
+        except OSError:
+            pass
+
+    return {
+        "ok": True,
+        "url": url,
+        "ya_estaba": ya_estaba,
+        "navegador_abierto": abierto,
+        "nota": "El panel escucha sólo en 127.0.0.1. Se cierra con: pkill -f panel.backend.app",
+    }
+
+
 if __name__ == "__main__":
     # Transport stdio: lo lanza el propio Claude Code del tutor como MCP local.
     mcp.run()

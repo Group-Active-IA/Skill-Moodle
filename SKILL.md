@@ -214,6 +214,7 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 
 | Querés… | Tool |
 |---|---|
+| **Abrir el panel en el navegador** (chat + estado de tus comisiones) | `abrir_panel` |
 | Ver tu config guardada | `mis_datos` |
 | **Saber tu comisión y actividades diciendo tu nombre** | `mi_comision` |
 | Elegir materia (aulas pre-cargadas) | `aulas` (fallback: `descubrir_cursos`) |
@@ -244,6 +245,28 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | **Qué corrigió Active-IA de verdad, con su nota** | `activeia_correcciones` |
 | Resolver comisión/rúbrica de Active-IA | `activeia_resolver` |
 | **Corregir con Active-IA + PDF de devolución** | `corregir_con_active_ia` |
+
+## El panel (misma skill, en el navegador)
+
+Si el tutor dice **«abrí el panel»**, **«quiero verlo en el navegador»** o pide una
+interfaz, es `abrir_panel`. Levanta un servidor local y abre
+`http://127.0.0.1:8787`.
+
+Adentro tiene lo mismo que acá: la conversación con las mismas 44 tools, y arriba
+el estado de sus comisiones (padrón, pendientes y en qué unidad están), relevado
+con `sumario`.
+
+Tres cosas que conviene saber para explicárselo:
+
+- **No necesita API key.** Usa la sesión de Claude Code que el tutor ya tiene.
+- **Escucha sólo en `127.0.0.1`.** Corre con sus credenciales del campus y puede
+  escribir en él: no se expone a la red, y no hay servidor central.
+- **Toda escritura sigue pidiendo OK**, igual que acá, pero el freno lo aplica el
+  panel y no el prompt: `cargar_nota`, `responder_mensaje`, `responder_foro`,
+  `crear_discusion` y `confirmar_cola` quedan detenidas hasta que el tutor
+  confirme en pantalla.
+
+Si responde que no está compilado, la instalación es vieja: `actualizar_skill`.
 
 ## Reglas de oro (no negociables)
 

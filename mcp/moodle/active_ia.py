@@ -27,7 +27,9 @@ del lado de Active-IA: es async y a veces DA TIMEOUT del servicio de IA (caso re
 frecuente); se maneja como error recuperable, no como excepción."""
 
 import asyncio
+import json
 import os
+from pathlib import Path
 
 import httpx
 
@@ -260,6 +262,35 @@ def _match_rubrica(unidad_titulo: str, rubricas: list[dict]) -> dict | None:
     return None
 
 
+# ---------- Mapa local de rúbricas (respaldo del resolver) ----------
+
+_RUTA_MAPA = Path.home() / ".moodle-skill" / "activeia_rubricas.json"
+
+
+def _mapa_local() -> dict:
+    """
+    Rúbricas que Active-IA tiene cargadas pero no mapeó al cmid de Moodle.
+
+    Vive en la carpeta personal del tutor y NO en el repo, por la misma razón que
+    `comisiones.json` es candidato a podarse: un catálogo copiado a mano vence sin
+    avisar, y acá equivocarse no es errar un id — es corregir un TP de listas con
+    la rúbrica de condicionales y ponerle ese número al legajo de alguien.
+
+    Formato:
+
+        {"17792": {"rubrica_id": 149, "materia_id": 19, "titulo": "Práctico 5: Listas"}}
+
+    Un archivo ilegible se ignora: el resolver sigue funcionando sin respaldo.
+    """
+    if not _RUTA_MAPA.is_file():
+        return {}
+    try:
+        datos = json.loads(_RUTA_MAPA.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {str(k): v for k, v in datos.items() if isinstance(v, dict)}
+
+
 # ---------- FUNCIÓN 2: resolver comision_id + rubrica_id desde Moodle ----------
 
 async def activeia_resolver(assign_id: int | str, group_id: int) -> dict:
@@ -309,7 +340,84 @@ async def activeia_resolver(assign_id: int | str, group_id: int) -> dict:
                 "materia_id": materia.get("id"),
                 "moodle_grader_url": comision.get("moodleGraderUrl"),
             }
-    return {"error": f"No encontré la tarea con cmid={cmid} en /pendientes/moodle."}
+    # Active-IA no mapeó este cmid. NO significa que no haya rúbrica: significa que
+    # el cruce cmid -> unidad no está hecho de ese lado. Pasó con la unidad 5 de
+    # Prog I, que tiene la rúbrica 149 cargada y sin embargo acá daba "no existe" —
+    # y con esa respuesta se dio por hecho que había que corregir a mano.
+    #
+    # **Un error del resolver no es prueba de que no haya rúbrica.** Por eso hay un
+    # mapa de respaldo que el tutor completa a mano, y por eso la respuesta declara
+    # de dónde salió el dato.
+    respaldo = _mapa_local().get(cmid)
+    if respaldo and respaldo.get("rubrica_id"):
+        materia_id = respaldo.get("materia_id")
+        comision_id = None
+        # Las comisiones son las mismas para todas las unidades de una materia, así
+        # que el comision_id se resuelve EN VIVO de cualquier otra unidad. No se
+        # guarda en el mapa: un id copiado a mano es un id que vence sin avisar.
+        for materia in data.get("materias", []):
+            if materia_id is not None and materia.get("id") != materia_id:
+                continue
+            for unidad in materia.get("unidades", []):
+                c = next(
+                    (x for x in unidad.get("comisiones", []) if x.get("groupId") == group_id),
+                    None,
+                )
+                if c is not None:
+                    comision_id = c.get("id")
+                    materia_id = materia.get("id")
+                    break
+            if comision_id is not None:
+                break
+
+        if comision_id is None:
+            return {
+                "error": f"Tengo la rúbrica {respaldo['rubrica_id']} para cmid={cmid} en el "
+                f"mapa local, pero no pude resolver el comision_id del grupo {group_id} "
+                f"en vivo. No lo invento.",
+                "fuente": "mapa_local_incompleto",
+            }
+
+        return {
+            "ok": True,
+            "comision_id": comision_id,
+            "rubrica_id": respaldo["rubrica_id"],
+            "unidad_titulo": respaldo.get("titulo") or f"(cmid {cmid}, del mapa local)",
+            "materia_id": materia_id,
+            "verificado": bool(respaldo.get("verificado")),
+            "_meta": {
+                "fuente": "mapa_local",
+                # Un par sin confirmar y uno confirmado NO pueden avisar lo mismo:
+                # el segundo es un dato, el primero es una deducción por número de
+                # unidad, y con una rúbrica equivocada la nota no sale floja, sale
+                # de otra cosa.
+                "degradado": not respaldo.get("verificado"),
+                "avisos": (
+                    [
+                        f"La rúbrica {respaldo['rubrica_id']} salió del mapa local del "
+                        f"tutor, no de Active-IA ({_RUTA_MAPA}). Está marcada como "
+                        f"VERIFICADA: {respaldo.get('como', 'sin detalle')}"
+                    ]
+                    if respaldo.get("verificado")
+                    else [
+                        f"⚠️ La rúbrica {respaldo['rubrica_id']} es una DEDUCCIÓN sin "
+                        f"confirmar, del mapa local ({_RUTA_MAPA}). "
+                        f"{respaldo.get('como', '')} "
+                        "Abrí la rúbrica en Active-IA y confirmá que sea la de esta "
+                        "unidad ANTES de cargar la nota: una rúbrica equivocada no da "
+                        "una nota floja, corrige otra cosa."
+                    ]
+                ),
+            },
+        }
+
+    return {
+        "error": f"No encontré la tarea con cmid={cmid} en /pendientes/moodle.",
+        "ojo": "Esto NO prueba que no haya rúbrica: Active-IA puede tenerla cargada y "
+        "sin mapear al cmid de Moodle. Fijate en el panel de Active-IA; si existe, "
+        f"anotala en {_RUTA_MAPA} y esta tool la va a encontrar sola la próxima vez.",
+        "como_anotarla": '{"%s": {"rubrica_id": 149, "materia_id": 19, "titulo": "..."}}' % cmid,
+    }
 
 
 # ---------- Descarga del archivo del alumno de Moodle (por API REST, sin browser) ----------

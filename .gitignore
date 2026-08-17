@@ -18,3 +18,13 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Panel: el código fuente y el BUILD van al repo; las dependencias no.
+# El dist compilado se commitea a propósito — el tutor no instala Node ni
+# buildea nada, y si el build no viaja, `abrir_panel` no arranca en su máquina.
+panel/web/node_modules/
+# Caché incremental de tsc: se regenera en cada build y ensucia el diff.
+panel/web/tsconfig.tsbuildinfo
+!panel/web/package.json
+!panel/web/package-lock.json
+!panel/web/tsconfig.json
