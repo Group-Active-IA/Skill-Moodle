@@ -520,8 +520,11 @@ trabajo en vez de duplicarlo.
 cargada en el campus", no "Active-IA no corrigió". Confundirlos hizo dar por perdidas
 correcciones que ya estaban hechas. Para eso está `activeia_correcciones`.
 
-**Es una ESCRITURA** (dispara la corrección y puede cargar la nota en Moodle): con
-`confirmado=false` devuelve un preview de lo que va a hacer SIN ejecutar. Mostráselo
-al tutor y volvé a llamar con `confirmado=true` solo tras su OK explícito.
+**Es una ESCRITURA, pero en Active-IA — NO en Moodle.** Sube la entrega del alumno y
+dispara una corrección con IA: cuesta tiempo de cómputo y deja registro del lado de
+Active-IA. La nota del campus NO la toca ninguna rama de esta tool; eso es `cargar_nota`,
+aparte y con su propia confirmación. Con `confirmado=false` devuelve un preview de lo que
+va a hacer SIN ejecutar. Mostráselo al tutor y volvé a llamar con `confirmado=true` solo
+tras su OK explícito.
 
 El detalle de estados y modo híbrido está en **`references/active-ia.md`**.
