@@ -1555,3 +1555,14 @@ body {
   color: var(--tinta-tenue);
   margin-right: 8px;
 }
+
+/* El «+N» del padrón: matiz de un número, no alarma. Por eso va en tinta tenue
+   y no en el ámbar de atención — el trabajo de esos alumnos, si entregaron, ya
+   se rescata y se cuenta. */
+.dia__extra {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tinta-tenue);
+  cursor: help;
+}

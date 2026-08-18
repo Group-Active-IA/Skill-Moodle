@@ -74,17 +74,6 @@ export function Dia({ onPreguntar }: { onPreguntar: (texto: string) => void }) {
         />
       </header>
 
-      {filas.some((f) => (f.invisibles?.length ?? 0) > 0) && (
-        <p className="aviso">
-          Hay alumnos matriculados y activos que las tareas no listan, así que{' '}
-          <strong>no figuran en ningún conteo de esta tabla</strong>:{' '}
-          {filas
-            .flatMap((f) => (f.invisibles ?? []).map((a) => `${a.nombre} (${f.comision})`))
-            .join(' · ')}
-          . La causa no se ve por la API — hay que mirarlos en el campus.
-        </p>
-      )}
-
       {foto?.procedencia.degradado && (
         <p className="aviso">
           {foto.procedencia.fallaron} de {foto.procedencia.consultas} consultas fallaron. Los
@@ -125,15 +114,25 @@ export function Dia({ onPreguntar }: { onPreguntar: (texto: string) => void }) {
               <td className="num">
                 {f.participantes ?? <span className="sin-dato">—</span>}
                 {f.invisibles && f.invisibles.length > 0 && (
+                  // El padrón de las tareas no coincide con la matrícula. Va acá, al lado
+                  // del número que corrige, y no en un cartel arriba: es un matiz del dato,
+                  // no una alarma — el trabajo de estos alumnos, si entregaron, ya se
+                  // rescata y se cuenta.
                   <span
-                    className="dia__hueco"
+                    className="dia__extra"
                     title={
-                      'Matriculados y activos que las tareas NO listan, así que no figuran ' +
-                      'en ningún conteo:\n' +
-                      f.invisibles.map((a) => `${a.nombre} (${a.userid})`).join('\n')
+                      `La matrícula del grupo tiene ${
+                        (f.participantes ?? 0) + f.invisibles.length
+                      } alumnos y las tareas listan ${f.participantes}. ` +
+                      'Fuera del padrón de tareas:\n' +
+                      f.invisibles.map((a) => `  · ${a.nombre}`).join('\n') +
+                      '\n\nSi entregaron, su trabajo igual se recupera y entra a la cola. ' +
+                      'La causa de que no figuren no se ve por la API: hay que mirarlos en ' +
+                      'el campus.'
                     }
                   >
-                    {' '}+{f.invisibles.length}?
+                    {' '}
+                    +{f.invisibles.length}
                   </span>
                 )}
               </td>
@@ -149,7 +148,10 @@ export function Dia({ onPreguntar }: { onPreguntar: (texto: string) => void }) {
               <td className="dia__donde">
                 {relevando ? (
                   <span className="sin-dato">relevando…</span>
-                ) : f.degradado ? (
+                ) : f.fallaron.length > 0 ? (
+                  // Sólo las consultas que fallaron de verdad. Antes esta rama miraba
+                  // `degradado`, que también se prende por el padrón, y escribía "0 sin
+                  // relevar" — un mensaje que no significa nada y encima tapaba el "al día".
                   <span className="dia__hueco">
                     {f.fallaron.length} sin relevar
                   </span>
