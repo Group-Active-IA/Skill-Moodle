@@ -285,6 +285,70 @@ async def grades_map(client, inst: int) -> dict:
     return {u: v[0] for u, v in m.items()}
 
 
+async def alumnos_fuera_de_la_tarea(client, course_id: int, group_id: int,
+                                    ids_en_la_tarea: set) -> dict:
+    """Quién está MATRICULADO y activo pero la tarea no lista. -> dict con `_meta`.
+
+    Existe porque este hueco no se ve desde ninguna vista: `mod_assign_list_participants`
+    devuelve menos gente que `core_enrol_get_enrolled_users` con `onlyactive:1`, y la
+    diferencia son alumnos que **no figuran en ningún informe de corrección**. No aparecen
+    como deudores, ni como pendientes, ni como nada — no están en la lista.
+
+    Medido el 2026-08-18 en las cuatro comisiones de un tutor: dos alumnos así, uno de ellos
+    ausente de las ONCE actividades de su curso. Los campos que devuelve la API para ellos son
+    idénticos a los de cualquier otro (rol `student`, matrícula activa, grupo correcto), así
+    que **la causa no se puede determinar desde acá** y no se inventa: se declara el hecho y
+    se los nombra, para que alguien los mire en el campus.
+
+    Es la misma familia que los alumnos sin comisión: gente invisible por construcción. La
+    diferencia es que a esos los delataba un total que no cuadraba, y a estos no los delata
+    nada — el conteo de la tarea es internamente consistente y se lee como completo.
+
+    Devuelve `{"invisibles": [...], "_meta": {...}}`. Ante cualquier fallo devuelve la lista
+    vacía **con `verificado: False`**: "no encontré a nadie afuera" y "no pude chequear" son
+    cosas distintas y no pueden leerse igual.
+    """
+    params: dict = {
+        "courseid": course_id,
+        "options[0][name]": "onlyactive", "options[0][value]": 1,
+    }
+    if group_id:
+        params["options[1][name]"] = "groupid"
+        params["options[1][value]"] = group_id
+    try:
+        us = await client.ws("core_enrol_get_enrolled_users", params)
+    except MoodleWSError as e:
+        return {"invisibles": [],
+                "_meta": {"verificado": False,
+                          "motivo": f"no pude leer la matrícula del grupo ({e})"}}
+    if not isinstance(us, list):
+        return {"invisibles": [],
+                "_meta": {"verificado": False,
+                          "motivo": "la matrícula no vino como lista"}}
+
+    # Sólo ALUMNOS. `len(us)` incluye a los docentes del grupo, y compararlo contra el
+    # padrón de la tarea —que son alumnos— da una diferencia falsa: en com6 decía "36 de 38"
+    # cuando los alumnos son 37 y el 38 era el tutor. Un número que no compara lo mismo de
+    # los dos lados no es un chequeo, es una alarma que suena siempre.
+    def _es_alumno(u: dict) -> bool:
+        roles = u.get("roles") or []
+        return any(r.get("shortname") == _ROL_ALUMNO for r in roles) or not roles
+
+    alumnos_matriculados = [u for u in us if _es_alumno(u)]
+    invisibles = [
+        {"nombre": u.get("fullname"), "userid": u.get("id"),
+         "email": (u.get("email") or "").lower()}
+        for u in alumnos_matriculados
+        if u.get("id") not in ids_en_la_tarea
+    ]
+    return {
+        "invisibles": invisibles,
+        "_meta": {"verificado": True,
+                  "alumnos_matriculados": len(alumnos_matriculados),
+                  "matriculados_totales": len(us)},
+    }
+
+
 async def entregas_tarea(client, cmid: str, group_id: int = 0) -> dict:
     """Padrón COMPLETO de una tarea: quién entregó, quién no, y con qué nota.
 
@@ -351,11 +415,42 @@ async def entregas_tarea(client, cmid: str, group_id: int = 0) -> dict:
         "sin_entrega": sum(1 for a in alumnos if not a["entregado"]),
         "alumnos": alumnos,
     }
+    avisos = []
     if sin_nota:
-        out["aviso"] = (
+        avisos.append(
             f"⚠️ {sin_nota} entrega(s) figuran como corregidas pero NO tienen nota. "
             "No salen en ninguna cola de pendientes: hay que cargarles la nota a mano."
         )
+
+    # ¿El padrón de la tarea cuadra con la matrícula del grupo? Si no, hay alumnos que este
+    # informe NO está viendo, y el conteo de arriba se lee como completo igual.
+    if group_id and cfg.get("course"):
+        fuera = await alumnos_fuera_de_la_tarea(
+            client, cfg["course"], group_id, {a["userid"] for a in alumnos})
+        out["padron"] = {
+            "en_la_tarea": len(est),
+            "alumnos_matriculados": fuera["_meta"].get("alumnos_matriculados"),
+            "invisibles": fuera["invisibles"],
+            "cuadra": (not fuera["invisibles"]) if fuera["_meta"]["verificado"] else None,
+            "verificado": fuera["_meta"]["verificado"],
+        }
+        if not fuera["_meta"]["verificado"]:
+            avisos.append(
+                "No se pudo cuadrar el padrón contra la matrícula "
+                f"({fuera['_meta'].get('motivo')}): puede haber alumnos que esta tarea no "
+                "lista y este informe no ve.")
+        elif fuera["invisibles"]:
+            quienes = ", ".join(f"{a['nombre']} ({a['userid']})" for a in fuera["invisibles"])
+            avisos.append(
+                f"⚠️ {len(fuera['invisibles'])} alumno(s) están matriculados y ACTIVOS en el "
+                f"grupo pero la tarea no los lista, así que NO figuran en este informe ni en "
+                f"ninguna cola: {quienes}. Los conteos de arriba son sobre {len(est)} de "
+                f"{fuera['_meta']['alumnos_matriculados']}. La causa no se ve por API — hay "
+                "que mirarlos en el campus.")
+
+    if avisos:
+        out["aviso"] = " · ".join(avisos)
+        out["avisos"] = avisos
     return out
 
 

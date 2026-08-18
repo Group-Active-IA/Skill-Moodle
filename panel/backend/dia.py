@@ -119,6 +119,30 @@ def orden_actividad(titulo: str) -> tuple[int, int, str]:
     return (3, 0, titulo)
 
 
+async def _padron_de(sem: asyncio.Semaphore, curso: dict, com: dict) -> dict:
+    """¿El padrón de las tareas cuadra con la matrícula del grupo?
+
+    Una consulta por COMISIÓN, no por actividad: el padrón del grupo es el mismo para las 11
+    o 15 tareas, así que preguntarlo una vez alcanza y evita multiplicar por 15 el costo.
+
+    Existe porque el conteo de una tarea es internamente consistente aunque le falte gente:
+    `sumario` dice 36 y no hay nada que delate que hay 37 matriculados. Medido el 2026-08-18:
+    dos alumnos así en cuatro comisiones, uno ausente de las once actividades de su curso.
+    """
+    primera = (curso.get("tareas") or [None])[0]
+    if not primera:
+        return {"verificado": False, "motivo": "el curso no tiene actividades cargadas"}
+    async with sem:
+        try:
+            r = await datos.server.entregas_tarea(primera["assign_id"], com["group_id"])
+        except Exception as exc:
+            return {"verificado": False, "motivo": str(exc)[:160]}
+    padron = r.get("padron")
+    if not padron:
+        return {"verificado": False, "motivo": "la tarea no devolvió el cuadre del padrón"}
+    return padron
+
+
 async def relevar() -> dict:
     """Relevamiento completo. Tarda: es una llamada por actividad y comisión."""
     crudo = await datos.mis_datos()
@@ -137,9 +161,20 @@ async def relevar() -> dict:
             for assign in tareas:
                 trabajos.append((curso, com, assign))
 
-    resultados = await asyncio.gather(
-        *(_sumario_seguro(sem, assign, com) for _, com, assign in trabajos)
+    # Los sumarios y, en paralelo, el cuadre del padrón de cada comisión.
+    pares_comision = [
+        (curso, com)
+        for curso in cursos
+        for com in curso.get("comisiones_del_tutor", [])
+    ]
+    resultados, padrones = await asyncio.gather(
+        asyncio.gather(*(_sumario_seguro(sem, assign, com) for _, com, assign in trabajos)),
+        asyncio.gather(*(_padron_de(sem, curso, com) for curso, com in pares_comision)),
     )
+    cuadres = {
+        (curso["course_id"], com["group_id"]): p
+        for (curso, com), p in zip(pares_comision, padrones)
+    }
 
     comisiones: dict[tuple[int, int], dict] = {}
     for (curso, com, _), res in zip(trabajos, resultados):
@@ -206,7 +241,13 @@ async def relevar() -> dict:
 
     filas = list(comisiones.values())
     for f in filas:
-        f["degradado"] = bool(f["fallaron"])
+        cuadre = cuadres.get((f["course_id"], f["group_id"])) or {}
+        f["padron_cuadre"] = cuadre
+        # Un alumno que las tareas no listan NO figura en ningún conteo de esta fila. El
+        # número de participantes se lee como el padrón entero y no lo es.
+        f["invisibles"] = cuadre.get("invisibles") or []
+        f["degradado"] = bool(f["fallaron"]) or bool(f["invisibles"]) or (
+            cuadre.get("verificado") is False)
         f["donde"].sort(key=lambda d: -d["pendientes"])
 
     total_fallas = sum(len(f["fallaron"]) for f in filas)

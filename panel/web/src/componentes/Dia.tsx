@@ -74,6 +74,17 @@ export function Dia({ onPreguntar }: { onPreguntar: (texto: string) => void }) {
         />
       </header>
 
+      {filas.some((f) => (f.invisibles?.length ?? 0) > 0) && (
+        <p className="aviso">
+          Hay alumnos matriculados y activos que las tareas no listan, así que{' '}
+          <strong>no figuran en ningún conteo de esta tabla</strong>:{' '}
+          {filas
+            .flatMap((f) => (f.invisibles ?? []).map((a) => `${a.nombre} (${f.comision})`))
+            .join(' · ')}
+          . La causa no se ve por la API — hay que mirarlos en el campus.
+        </p>
+      )}
+
       {foto?.procedencia.degradado && (
         <p className="aviso">
           {foto.procedencia.fallaron} de {foto.procedencia.consultas} consultas fallaron. Los
@@ -111,7 +122,21 @@ export function Dia({ onPreguntar }: { onPreguntar: (texto: string) => void }) {
             >
               <td className="dia__com">{f.comision}</td>
               <td className="dia__curso">{f.curso}</td>
-              <td className="num">{f.participantes ?? <span className="sin-dato">—</span>}</td>
+              <td className="num">
+                {f.participantes ?? <span className="sin-dato">—</span>}
+                {f.invisibles && f.invisibles.length > 0 && (
+                  <span
+                    className="dia__hueco"
+                    title={
+                      'Matriculados y activos que las tareas NO listan, así que no figuran ' +
+                      'en ningún conteo:\n' +
+                      f.invisibles.map((a) => `${a.nombre} (${a.userid})`).join('\n')
+                    }
+                  >
+                    {' '}+{f.invisibles.length}?
+                  </span>
+                )}
+              </td>
               <td className="num">
                 {relevando ? (
                   <span className="sin-dato">—</span>

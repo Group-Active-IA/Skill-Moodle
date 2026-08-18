@@ -1535,3 +1535,58 @@ class TestSoloAlumnosActivos(unittest.TestCase):
         `onlyactive:1` en origen. Si la ausencia del campo se leyera como suspendido, este
         filtro vaciaría medio informe."""
         self.assertTrue(ws_api._es_estudiante({"roles": [{"shortname": "student"}]}))
+
+
+class TestAlumnosFueraDeLaTarea(unittest.TestCase):
+    """`alumnos_fuera_de_la_tarea` — quién está matriculado y la tarea no lista.
+
+    Este hueco no lo delata nada: el conteo de la tarea es internamente consistente y se lee
+    como completo. Medido el 2026-08-18, dos alumnos en las cuatro comisiones de un tutor, uno
+    de ellos ausente de las ONCE actividades de su curso — o sea, invisible para todos los
+    informes de corrección a la vez.
+    """
+
+    def _correr(self, respuestas, ids_en_tarea):
+        import asyncio
+        cli = ClienteFalso(respuestas)
+        return asyncio.run(
+            ws_api.alumnos_fuera_de_la_tarea(cli, 74, 7740, set(ids_en_tarea)))
+
+    def _alumno(self, uid, nombre):
+        return {"id": uid, "fullname": nombre, "email": f"{uid}@x.com",
+                "roles": [{"shortname": "student"}]}
+
+    def test_detecta_al_que_la_tarea_no_lista(self):
+        us = [self._alumno(1, "A"), self._alumno(2, "B"), self._alumno(3, "INVISIBLE")]
+        r = self._correr({"core_enrol_get_enrolled_users": us}, {1, 2})
+        self.assertEqual([a["userid"] for a in r["invisibles"]], [3])
+        self.assertTrue(r["_meta"]["verificado"])
+
+    def test_cuando_cuadra_no_inventa_a_nadie(self):
+        us = [self._alumno(1, "A"), self._alumno(2, "B")]
+        r = self._correr({"core_enrol_get_enrolled_users": us}, {1, 2})
+        self.assertEqual(r["invisibles"], [])
+
+    def test_los_docentes_no_cuentan_de_ninguno_de_los_dos_lados(self):
+        """El padrón de la tarea son ALUMNOS. Comparar contra los matriculados totales mete
+        al tutor en la cuenta y da una diferencia falsa: en com6 daba «36 de 38» cuando los
+        alumnos son 37 y el 38 era el propio tutor."""
+        us = [self._alumno(1, "A"), self._alumno(2, "B"),
+              {"id": 99, "fullname": "TUTOR", "roles": [{"shortname": "editingteacher"}]}]
+        r = self._correr({"core_enrol_get_enrolled_users": us}, {1, 2})
+        self.assertEqual(r["invisibles"], [])
+        self.assertEqual(r["_meta"]["alumnos_matriculados"], 2)
+        self.assertEqual(r["_meta"]["matriculados_totales"], 3)
+
+    def test_si_falla_la_consulta_NO_dice_que_esta_todo_bien(self):
+        """«No encontré a nadie afuera» y «no pude chequear» son opuestos. Sin
+        `verificado: False`, un fallo de red se leería como padrón cuadrado."""
+        r = self._correr(
+            {"core_enrol_get_enrolled_users": MoodleWSError("sin permiso", {})}, {1, 2})
+        self.assertEqual(r["invisibles"], [])
+        self.assertFalse(r["_meta"]["verificado"])
+        self.assertIn("motivo", r["_meta"])
+
+    def test_respuesta_con_forma_inesperada_tampoco_tranquiliza(self):
+        r = self._correr({"core_enrol_get_enrolled_users": {"exception": "x"}}, {1})
+        self.assertFalse(r["_meta"]["verificado"])

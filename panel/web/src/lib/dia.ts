@@ -34,6 +34,15 @@ export type Comision = {
   fallaron: { titulo: string; motivo: string }[]
   degradado: boolean
   detalle: Celda[]
+  /** Matriculados y activos que las tareas NO listan: no entran en ningún conteo. */
+  invisibles?: { nombre: string; userid: number }[]
+  padron_cuadre?: {
+    verificado?: boolean
+    cuadra?: boolean | null
+    en_la_tarea?: number
+    alumnos_matriculados?: number
+    motivo?: string
+  }
 }
 
 export type Procedencia = {
