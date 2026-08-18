@@ -1695,3 +1695,63 @@ class TestDiagnosticoDeErrorActiveIA(unittest.TestCase):
         r = self._diag({"error": "algo", "error_code": "X", "entrega_id": 99}, reusada=False)
         self.assertEqual(r["entrega_id"], 99)
         self.assertEqual(r["error"], "algo")
+
+
+class TestSubmissionsMap(unittest.TestCase):
+    """`submissions_map` — la vía por la que se recupera el trabajo de un alumno que la
+    tarea no lista.
+
+    `mod_assign_list_participants` y `mod_assign_get_submissions` NO coinciden: hay alumnos
+    matriculados y activos que no salen en la lista pero cuya entrega sí está acá, intacta.
+    Verificado en vivo: `ver_entrega` abre sin problema los 8 `.java` de un alumno que no
+    figura en ningún padrón.
+    """
+
+    def _map(self, subs):
+        import asyncio
+        cli = ClienteFalso({"mod_assign_get_submissions":
+                            {"assignments": [{"submissions": subs}]}})
+        return asyncio.run(ws_api.submissions_map(cli, 1))
+
+    def test_devuelve_el_status_por_userid(self):
+        r = self._map([{"userid": 1, "status": "submitted"},
+                       {"userid": 2, "status": "new"}])
+        self.assertEqual(r, {1: "submitted", 2: "new"})
+
+    def test_guarda_el_status_en_vez_de_contar_todo_como_entrega(self):
+        """`status: new` es "abrió la tarea y no entregó". Contarlo como entrega infla el
+        trabajo casi al doble: 46 registros donde el conteo oficial decía 25."""
+        r = self._map([{"userid": 1, "status": "new"}])
+        self.assertEqual(r[1], "new")
+        self.assertNotEqual(r[1], "submitted")
+
+    def test_error_devuelve_vacio_y_no_rompe(self):
+        import asyncio
+        cli = ClienteFalso({"mod_assign_get_submissions": MoodleWSError("x", {})})
+        self.assertEqual(asyncio.run(ws_api.submissions_map(cli, 1)), {})
+
+    def test_respuesta_sin_assignments_no_rompe(self):
+        import asyncio
+        cli = ClienteFalso({"mod_assign_get_submissions": {"assignments": []}})
+        self.assertEqual(asyncio.run(ws_api.submissions_map(cli, 1)), {})
+
+
+class TestClasificarGrupo(unittest.TestCase):
+    """Los grupos de un curso NO son todos comisiones.
+
+    Prog II devuelve 32 y sólo 15 lo son: las otras 17 son regionales. Contarlos juntos
+    produjo un conteo de alumnos «invisibles» inflado al doble, hecho por una herramienta
+    que hacía exactamente lo que decía el nombre de la tool.
+    """
+
+    def test_comisiones(self):
+        for n in ("A26 C1-06", "M26 C2-14", "M25 C4-08", "A26 C1-6"):
+            self.assertEqual(ws_api.clasificar_grupo(n), "comision", n)
+
+    def test_regionales(self):
+        for n in ("R-Avellaneda", "R-San Nicolás", "r-córdoba"):
+            self.assertEqual(ws_api.clasificar_grupo(n), "regional", n)
+
+    def test_auxiliares_no_son_ni_una_cosa_ni_la_otra(self):
+        for n in ("Grupo_2", "Entrego_1er_examen", "", "Docentes"):
+            self.assertEqual(ws_api.clasificar_grupo(n), "otro", n)

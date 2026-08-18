@@ -504,10 +504,15 @@ async def descubrir_cursos() -> list[dict]:
 
 @mcp.tool()
 async def descubrir_comisiones(course_id: int) -> list[dict]:
-    """Descubre EN VIVO los grupos de un curso (group_id + nombre). OJO: incluye grupos
-    auxiliares que NO son comisiones (Grupo_2, Entrego_1er_examen…); quedate con los del
-    patrón de comisión de tu cohorte (Prog I/II/III). Paso 2 del mapeo. Los group_id que devuelve son
-    los ÚNICOS válidos para guardar_mis_datos (no inventes números). (API REST.)"""
+    """Descubre EN VIVO los grupos de un curso, con su TIPO: `comision`, `regional` u `otro`.
+
+    ⚠️ **Los grupos de un curso NO son todas comisiones.** Prog II devuelve 32 y sólo 15 lo
+    son: las otras 17 son las regionales `R-*`, y además hay auxiliares (Grupo_2,
+    Entrego_1er_examen…). Contarlos juntos da un número que parece del padrón y no lo es.
+    Para trabajar con comisiones, filtrá `tipo == "comision"`.
+
+    Paso 2 del mapeo. Los group_id que devuelve son los ÚNICOS válidos para
+    guardar_mis_datos (no inventes números). (API REST.)"""
     return await ws_api.descubrir_comisiones(_cli(), course_id)
 
 

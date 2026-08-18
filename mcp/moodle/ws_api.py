@@ -157,6 +157,26 @@ async def _participantes(client, cmid: str, group_id: int) -> list[dict] | dict:
         return {"error": f"list_participants falló: {e.errorcode}"}
 
 
+# Nombre de comisión de este campus: cohorte + comisión ("A26 C1-06", "M26 C2-14").
+_RE_COMISION = re.compile(r"^\s*[AM]\d{2}\s+C\d+\s*-\s*\d+\s*$")
+
+
+def clasificar_grupo(nombre: str) -> str:
+    """Qué es un grupo del curso: `comision`, `regional` u `otro`.
+
+    Los grupos de un curso NO son todos comisiones: conviven con las 17 regionales `R-*` y
+    con grupos auxiliares. Contarlos juntos da números que parecen del padrón y no lo son —
+    en Prog II, 32 grupos de los que sólo 15 son comisiones, y cruzar los otros 17 contra una
+    tarea produjo un conteo de alumnos «invisibles» inflado al doble.
+    """
+    n = (nombre or "").strip()
+    if _RE_COMISION.match(n):
+        return "comision"
+    if n.upper().startswith("R-") or n.upper().startswith("R "):
+        return "regional"
+    return "otro"
+
+
 def _es_estudiante(p: dict) -> bool:
     """El filtro compartido de "esta persona cuenta en los informes".
 
@@ -261,6 +281,33 @@ async def pendientes_tarea(client, cmid: str, group_id: int = 0) -> dict:
             "cola, así que hay que cargarles la nota a mano."
         )
     return out
+
+
+async def submissions_map(client, inst: int) -> dict:
+    """{userid: status} de las entregas de una tarea. `{}` ante error.
+
+    Sirve para lo que `mod_assign_list_participants` no puede: **ver la entrega de un alumno
+    que la tarea no lista**. Los dos web services no coinciden — hay alumnos matriculados y
+    activos que no salen en la lista de participantes pero cuya entrega SÍ está acá, intacta
+    y legible. Sin este cruce, ese trabajo no aparece en ninguna cola y nadie lo corrige.
+
+    Ojo con el conteo: `get_submissions` devuelve también los `status: "new"` (el alumno
+    abrió la tarea y no entregó). Contarlos como entregas infla el trabajo casi al doble
+    —46 registros donde el conteo oficial decía 25—, así que acá se guarda el status y el
+    caller decide.
+    """
+    try:
+        r = await client.ws("mod_assign_get_submissions", {"assignmentids": [inst]})
+    except MoodleWSError:
+        return {}
+    asigs = (r or {}).get("assignments") or []
+    if not asigs:
+        return {}
+    return {
+        s.get("userid"): s.get("status")
+        for s in (asigs[0].get("submissions") or [])
+        if s.get("userid")
+    }
 
 
 async def grades_map(client, inst: int) -> dict:
@@ -434,19 +481,66 @@ async def entregas_tarea(client, cmid: str, group_id: int = 0) -> dict:
             "cuadra": (not fuera["invisibles"]) if fuera["_meta"]["verificado"] else None,
             "verificado": fuera["_meta"]["verificado"],
         }
+        # Los invisibles que SÍ entregaron se recuperan: su trabajo existe y se puede
+        # corregir (verificado — `ver_entrega` los abre sin problema). Dejarlos afuera de
+        # la lista es lo que hace que ese TP no aparezca en ninguna cola y nadie lo espere.
+        if fuera["invisibles"]:
+            smap = await submissions_map(client, cfg["id"])
+            for a in fuera["invisibles"]:
+                estado_sub = smap.get(a["userid"])
+                if estado_sub != "submitted":
+                    continue  # no entregó: no hay trabajo que rescatar
+                nota_rec = nota_display(cfg.get("grade"), gmap.get(a["userid"]))
+                alumnos.append({
+                    "nombre": a["nombre"],
+                    "email": a["email"],
+                    "userid": a["userid"],
+                    "estado": "Enviado para calificar" if nota_rec is None else "Calificado",
+                    "nota": nota_rec,
+                    "entregado": True,
+                    "pendiente": nota_rec is None,
+                    # La marca importa: este alumno NO está en el padrón de la tarea, así
+                    # que su presencia acá es un rescate y no el flujo normal.
+                    "fuera_del_padron": True,
+                })
+            recuperados = [a for a in alumnos if a.get("fuera_del_padron")]
+            if recuperados:
+                alumnos.sort(key=lambda a: (_orden[a["estado"]], _norm(a["nombre"] or "")))
+                out["entregados"] = sum(1 for a in alumnos if a["entregado"])
+                out["pendientes_por_corregir"] = sum(
+                    1 for a in alumnos if a["estado"] == "Enviado para calificar")
+                out["alumnos"] = alumnos
+                out["recuperados_fuera_del_padron"] = [
+                    {"nombre": a["nombre"], "userid": a["userid"], "estado": a["estado"]}
+                    for a in recuperados]
+                avisos.append(
+                    f"✅ {len(recuperados)} alumno(s) que la tarea no lista SÍ entregaron y "
+                    "su trabajo se pudo rescatar: van en la lista marcados con "
+                    "`fuera_del_padron`. Se pueden ver y corregir normalmente.")
+
         if not fuera["_meta"]["verificado"]:
             avisos.append(
                 "No se pudo cuadrar el padrón contra la matrícula "
                 f"({fuera['_meta'].get('motivo')}): puede haber alumnos que esta tarea no "
                 "lista y este informe no ve.")
         elif fuera["invisibles"]:
-            quienes = ", ".join(f"{a['nombre']} ({a['userid']})" for a in fuera["invisibles"])
+            # Dos avisos distintos, no uno: decir "no figuran en ninguna cola" sobre alguien
+            # que acaba de ser rescatado se contradice con la línea de arriba, y dos avisos
+            # que se pisan hacen dudar de los dos.
+            rescatados_ids = {a["userid"] for a in alumnos if a.get("fuera_del_padron")}
+            sin_rescatar = [a for a in fuera["invisibles"]
+                            if a["userid"] not in rescatados_ids]
+            if sin_rescatar:
+                quienes = ", ".join(f"{a['nombre']} ({a['userid']})" for a in sin_rescatar)
+                avisos.append(
+                    f"⚠️ {len(sin_rescatar)} alumno(s) están matriculados y ACTIVOS pero la "
+                    f"tarea no los lista y NO tienen entrega, así que no aparecen en ninguna "
+                    f"lista —ni siquiera como «sin entrega», que es de donde salen los "
+                    f"recordatorios—: {quienes}. La causa no se ve por API: hay que mirarlos "
+                    "en el campus.")
             avisos.append(
-                f"⚠️ {len(fuera['invisibles'])} alumno(s) están matriculados y ACTIVOS en el "
-                f"grupo pero la tarea no los lista, así que NO figuran en este informe ni en "
-                f"ninguna cola: {quienes}. Los conteos de arriba son sobre {len(est)} de "
-                f"{fuera['_meta']['alumnos_matriculados']}. La causa no se ve por API — hay "
-                "que mirarlos en el campus.")
+                f"El padrón de esta tarea son {len(est)} de {fuera['_meta']['alumnos_matriculados']} "
+                "alumnos matriculados y activos del grupo.")
 
     if avisos:
         out["aviso"] = " · ".join(avisos)
@@ -2160,13 +2254,27 @@ async def descubrir_cursos(client) -> list[dict]:
 
 
 async def descubrir_comisiones(client, course_id: int) -> list[dict]:
-    """Grupos del curso (core_group_get_course_groups). Incluye auxiliares (Grupo_NNN,
-    Entrego_*); el caller filtra por el patrón de comisión (ej. 'M26 C1-')."""
+    """Grupos del curso, CLASIFICADOS (core_group_get_course_groups).
+
+    Devuelve todos los grupos, pero cada uno con su `tipo`: `comision`, `regional` u `otro`.
+    Antes venían mezclados y sin distinguir, y eso hace contar mal: Prog II tiene **32
+    grupos y sólo 15 son comisiones** — las otras 17 son las regionales `R-*`. Cruzar esos
+    17 contra el padrón de una tarea produjo un conteo de alumnos «invisibles» inflado al
+    doble, hecho por una herramienta que hizo exactamente lo que decía el nombre de la tool.
+
+    Se devuelven todos y no sólo las comisiones a propósito: el mapeo necesita ver los
+    auxiliares para reconocerlos, y esconder un grupo es peor que etiquetarlo. Para contar
+    comisiones, filtrá `tipo == "comision"`.
+    """
     try:
         gs = await client.ws("core_group_get_course_groups", {"courseid": course_id})
     except MoodleWSError as e:
         return [{"error": f"No pude descubrir comisiones: {e.errorcode}"}]
-    return [{"group_id": g.get("id"), "nombre": g.get("name")} for g in (gs or [])]
+    return [
+        {"group_id": g.get("id"), "nombre": g.get("name"),
+         "tipo": clasificar_grupo(g.get("name") or "")}
+        for g in (gs or [])
+    ]
 
 
 # ---------- ENTREGAS (descarga por token) ----------
