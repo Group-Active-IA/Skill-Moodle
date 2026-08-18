@@ -1269,6 +1269,50 @@ def nexos_por_regional() -> tuple[dict, str | None]:
     return regs, None
 
 
+def asignar_nexos(bloques: list[dict], catalogo: dict) -> tuple[list[str], int]:
+    """Le pega a cada bloque de regional su Tutor Nexo. PURA. Muta `bloques`.
+    -> (regionales_sin_nexo, alumnos_sin_regional).
+
+    Existía suelta dentro de `informes_nexos` y **no existía**: la función usaba
+    `sin_nexo`, `sin_regional` y `catalogo` sin haberlos definido nunca, así que el informe
+    reventaba con un `NameError` en el 100% de las corridas. Vivió así en una versión
+    publicada y un tutor se comió el error en medio de su circuito diario.
+
+    La lección no es "faltó una línea": es que un informe entero se puede romper del todo sin
+    que ningún test lo note, porque los 139 que había no tocan esta función — necesita red. Por
+    eso el cruce vive acá, puro y testeable, en vez de suelto adentro del flujo con red.
+
+    La clave del catálogo es el nombre del grupo del campus SIN el prefijo `R-`, que es lo que
+    ya devuelve `_regional_de`. Una regional que no está en el catálogo NO inventa un
+    responsable: queda con `nexo: None` y se declara arriba, igual que el par comisión→tutor se
+    resuelve en vivo en vez de leerse de un JSON. Adjudicarle a alguien alumnos que no son suyos
+    es peor que no nombrar a nadie.
+    """
+    sin_nexo: list[str] = []
+    sin_regional = 0
+
+    for bloque in bloques:
+        reg = bloque.get("regional")
+        if reg == _SIN_REGIONAL:
+            # No es una regional que falta en el catálogo: son alumnos que no están en
+            # ningún grupo `R-*`. No hay nexo a quién derivarlos, y es otro problema.
+            sin_regional += bloque.get("desenganchados") or 0
+            bloque["nexo"] = None
+            continue
+        datos = catalogo.get(reg)
+        if not datos:
+            sin_nexo.append(reg)
+            bloque["nexo"] = None
+            continue
+        bloque["nexo"] = {
+            "facultad": datos.get("facultad"),
+            "nexos": list(datos.get("nexos") or []),
+            "mails": list(datos.get("mails") or []),
+        }
+
+    return sin_nexo, sin_regional
+
+
 async def anotar_retraso(client, meta: dict, unidades, filas: list[dict],
                          err_meta: str | None = None) -> tuple[dict | None, str | None]:
     """Marca a cada alumno de `filas` con su RETRASO. -> (resumen, aviso). Muta `filas`.
@@ -1382,6 +1426,12 @@ async def informe_nexos(client, course_id: int,
     if res_ret:
         deseng["retraso"] = res_ret
     cierres = cierres_por_unidad(meta_n)
+
+    # El cruce con el catálogo de nexos. Esto FALTABA y por eso el informe reventaba con
+    # `NameError: aviso_cat` en todas sus corridas.
+    catalogo, aviso_cat = nexos_por_regional()
+    sin_nexo, sin_regional = asignar_nexos(
+        deseng.get("por_regional_bloques") or [], catalogo)
 
     huecos = list(deseng["sin_dato"]) + list(avisos_padron)
     if aviso_retraso:

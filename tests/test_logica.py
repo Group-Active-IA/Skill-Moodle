@@ -1391,3 +1391,105 @@ class TestDegradadoSaleDeTodosLosHuecos(unittest.TestCase):
         self.assertEqual(m["sin_dato"], ["x"])
         self.assertEqual(m["fuente"], "vivo")
 
+
+
+# --------------------------------------------------------------------------------------
+# El informe de nexos: el cruce con el catálogo de regionales
+# --------------------------------------------------------------------------------------
+
+class TestAsignarNexos(unittest.TestCase):
+    """`asignar_nexos` — le pega a cada bloque de regional su Tutor Nexo.
+
+    Estos tests existen por un bug que llegó a una versión publicada: `informe_nexos` usaba
+    `aviso_cat`, `sin_nexo`, `sin_regional` y `catalogo` sin haberlos definido nunca, así que
+    reventaba con `NameError` en el 100% de las corridas. Un tutor se lo comió en medio de su
+    circuito diario y quedó sin poder derivar a sus alumnos.
+
+    Los 139 tests que había no lo tocaban porque la función necesita red. Por eso el cruce se
+    extrajo a esta función pura: para que se pueda probar sin campus.
+    """
+
+    CATALOGO = {
+        "Avellaneda": {
+            "facultad": "Facultad Regional Avellaneda",
+            "nexos": ["Paula Garaventa"],
+            "mails": ["tutoriatup@fra.utn.edu.ar"],
+        },
+        "Mendoza": {"facultad": "Facultad Regional Mendoza", "nexos": ["Nombre Ap"], "mails": []},
+    }
+
+    def test_regional_con_nexo_lo_recibe_completo(self):
+        bloques = [{"regional": "Avellaneda", "desenganchados": 3}]
+        sin_nexo, sin_regional = panorama.asignar_nexos(bloques, self.CATALOGO)
+        self.assertEqual(sin_nexo, [])
+        self.assertEqual(sin_regional, 0)
+        self.assertEqual(bloques[0]["nexo"]["nexos"], ["Paula Garaventa"])
+        self.assertEqual(bloques[0]["nexo"]["facultad"], "Facultad Regional Avellaneda")
+
+    def test_regional_que_no_esta_en_el_catalogo_no_inventa_responsable(self):
+        """Una regional sin nexo queda en None y SE DECLARA. Adjudicarle esos alumnos a
+        cualquier otro nexo sería peor que no nombrar a nadie."""
+        bloques = [{"regional": "Regional Que No Existe", "desenganchados": 2}]
+        sin_nexo, _ = panorama.asignar_nexos(bloques, self.CATALOGO)
+        self.assertEqual(sin_nexo, ["Regional Que No Existe"])
+        self.assertIsNone(bloques[0]["nexo"])
+
+    def test_los_sin_regional_se_cuentan_aparte_y_no_son_una_regional_faltante(self):
+        """No estar en ningún grupo `R-*` es OTRO problema que una regional sin nexo: no hay
+        a quién derivarlos, y mezclarlos haría creer que falta cargar una sede."""
+        bloques = [{"regional": panorama._SIN_REGIONAL, "desenganchados": 5}]
+        sin_nexo, sin_regional = panorama.asignar_nexos(bloques, self.CATALOGO)
+        self.assertEqual(sin_nexo, [])
+        self.assertEqual(sin_regional, 5)
+        self.assertIsNone(bloques[0]["nexo"])
+
+    def test_catalogo_vacio_no_rompe_y_declara_todas(self):
+        """Si el catálogo no se pudo leer, el informe sale igual pero sin contactos y
+        diciéndolo. Un catálogo que falla no puede inventar un responsable."""
+        bloques = [{"regional": "Avellaneda", "desenganchados": 1},
+                   {"regional": "Mendoza", "desenganchados": 2}]
+        sin_nexo, _ = panorama.asignar_nexos(bloques, {})
+        self.assertEqual(sorted(sin_nexo), ["Avellaneda", "Mendoza"])
+        self.assertTrue(all(b["nexo"] is None for b in bloques))
+
+    def test_el_catalogo_real_del_repo_se_lee_y_tiene_las_17_regionales(self):
+        """`nexos.json` viaja en el repo A PROPÓSITO: si queda ignorado, la skill anda en la
+        máquina del que lo escribió y ningún otro tutor recibe los contactos."""
+        catalogo, aviso = panorama.nexos_por_regional()
+        self.assertIsNone(aviso, f"el catálogo del repo no se pudo leer: {aviso}")
+        self.assertEqual(len(catalogo), 17)
+
+
+class TestSinNombresIndefinidos(unittest.TestCase):
+    """Ningún módulo usa un nombre que no existe.
+
+    Es el test que hubiera cazado el `NameError` de `informe_nexos` el día que se escribió,
+    en vez de que lo encontrara un tutor con el informe roto adelante. Cubre TODO el paquete,
+    incluidos los caminos que ningún otro test ejercita porque necesitan red — que son
+    justamente donde se esconden estos.
+
+    `pyflakes` es una dependencia de DESARROLLO: si no está, el test se saltea en vez de
+    fallar. El tutor no tiene por qué instalarla para verificar su propia herramienta.
+    """
+
+    def test_pyflakes_no_encuentra_nombres_indefinidos(self):
+        try:
+            from pyflakes.api import checkPath
+            from pyflakes.reporter import Reporter
+        except ImportError:
+            self.skipTest("pyflakes no instalado (dependencia de desarrollo)")
+
+        import io
+
+        raiz = Path(__file__).resolve().parent.parent / "mcp"
+        salida, errores = io.StringIO(), io.StringIO()
+        reporter = Reporter(salida, errores)
+        for py in sorted(raiz.rglob("*.py")):
+            if "__pycache__" in str(py):
+                continue
+            checkPath(str(py), reporter)
+
+        indefinidos = [l for l in salida.getvalue().splitlines() if "undefined name" in l]
+        self.assertEqual(
+            indefinidos, [],
+            "hay nombres usados y nunca definidos:\n  " + "\n  ".join(indefinidos))
