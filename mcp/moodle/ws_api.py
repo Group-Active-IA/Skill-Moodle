@@ -1209,7 +1209,9 @@ async def traza_alumno(client, alumno: dict, tareas: list[dict]) -> dict:
                 None,
             )
             if fila is None:
-                return None  # no figura en esa tarea (no está habilitado): no es un dato
+                # No figura en el padrón de esa tarea. NO es "no entregó": es que no está
+                # en la lista, y son cosas distintas. Se marca para poder contarlo.
+                return {"no_figura": True, "tarea": t.get("titulo", "")}
             return {
                 "tarea": res.get("tarea") or t.get("titulo", ""),
                 "assign_id": str(t.get("assign_id")),
@@ -1220,25 +1222,49 @@ async def traza_alumno(client, alumno: dict, tareas: list[dict]) -> dict:
 
     crudos = await asyncio.gather(*(_una(t) for t in tareas), return_exceptions=True)
 
-    entregas, avisos = [], []
+    entregas, avisos, no_figura = [], [], []
     for r in crudos:
         if isinstance(r, BaseException):
             avisos.append(f"Una tarea falló: {type(r).__name__}: {r}")
         elif r is None:
             continue
+        elif r.get("no_figura"):
+            no_figura.append(r["tarea"])
         elif r.get("error"):
             avisos.append(f"{r['titulo']}: {r['error']}")
         else:
             entregas.append(r)
 
+    # El caso que se leía como "no entregó nada" y era "no sé nada de él": el alumno no
+    # figura en NINGUNA tarea. Antes daba `entregas: []` con `degradado: False`, o sea el
+    # relevamiento se afirmaba completo habiendo revisado cero. Un tutor lo interpretó como
+    # una tarea rota que degradaba la traza entera; es el agujero del padrón, y esta traza
+    # lo estaba escondiendo en vez de mostrarlo.
+    if tareas and not entregas and len(no_figura) == len(tareas):
+        avisos.append(
+            f"Este alumno no figura en el padrón de NINGUNA de las {len(tareas)} tareas de "
+            "su comisión, aunque esté matriculado y activo. Esto NO es «no entregó nada»: es "
+            "que las vistas de tarea no lo listan, así que no aparece en ninguna cola ni en "
+            "ningún informe de corrección. Hay que mirarlo en el campus.")
+    elif no_figura:
+        avisos.append(
+            f"No figura en el padrón de {len(no_figura)} tarea(s) de las {len(tareas)}: "
+            + ", ".join(no_figura[:5])
+            + ("…" if len(no_figura) > 5 else "")
+            + ". Esas no se pudieron revisar, no es que no haya entregado.")
+
     return {
         "entregas": entregas,
         "sin_entrega": [e["tarea"] for e in entregas if e["estado"] == "Sin entrega"],
         "pendientes_de_correccion": [e["tarea"] for e in entregas if e.get("pendiente")],
+        "no_figura_en": no_figura,
         "_meta": {
             "fuente": "vivo",
             "tareas_revisadas": len(entregas),
             "tareas_pedidas": len(tareas),
+            "tareas_donde_no_figura": len(no_figura),
+            # `degradado` ahora también cubre el alumno que no está en ningún padrón: era
+            # el único camino por el que una traza vacía se afirmaba completa.
             "degradado": bool(avisos),
             "avisos": avisos,
         },

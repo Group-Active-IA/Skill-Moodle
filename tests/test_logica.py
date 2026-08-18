@@ -1590,3 +1590,61 @@ class TestAlumnosFueraDeLaTarea(unittest.TestCase):
     def test_respuesta_con_forma_inesperada_tampoco_tranquiliza(self):
         r = self._correr({"core_enrol_get_enrolled_users": {"exception": "x"}}, {1})
         self.assertFalse(r["_meta"]["verificado"])
+
+
+class TestTrazaVaciaNoSeAfirmaCompleta(unittest.TestCase):
+    """Una traza que no revisó nada NO puede decir `degradado: False`.
+
+    Antes, un alumno que no figuraba en el padrón de ninguna tarea devolvía `entregas: []`
+    con `degradado: False` y cero avisos: el relevamiento se afirmaba completo habiendo
+    revisado cero. Se lee como «no entregó nada» y la verdad es «no sé nada de él».
+
+    Lo reportó un tutor como «una tarea rota degrada la traza entera». El diagnóstico era
+    otro —el código sí saltea la tarea rota— pero el instinto era correcto: ese 0 estaba mal.
+    """
+
+    def _traza(self, filas_por_tarea, tareas):
+        """filas_por_tarea: por assign_id, la fila del alumno o None si no figura."""
+        import asyncio
+
+        async def falsa_entregas_tarea(client, cmid, group_id=0):
+            fila = filas_por_tarea.get(str(cmid))
+            alumnos = [fila] if fila else []
+            return {"tarea": f"T{cmid}", "alumnos": alumnos}
+
+        original = ws_api.entregas_tarea
+        ws_api.entregas_tarea = falsa_entregas_tarea
+        try:
+            return asyncio.run(ws_api.traza_alumno(
+                None, {"email": "a@x.com", "group_id": 1}, tareas))
+        finally:
+            ws_api.entregas_tarea = original
+
+    def _fila(self, estado="Sin entrega"):
+        return {"email": "a@x.com", "estado": estado, "nota": None, "pendiente": False}
+
+    def test_alumno_que_no_figura_en_ninguna_tarea_se_declara(self):
+        tareas = [{"assign_id": "1", "titulo": "T1"}, {"assign_id": "2", "titulo": "T2"}]
+        r = self._traza({}, tareas)
+        self.assertEqual(r["entregas"], [])
+        self.assertEqual(r["_meta"]["tareas_revisadas"], 0)
+        self.assertEqual(r["_meta"]["tareas_donde_no_figura"], 2)
+        self.assertTrue(r["_meta"]["degradado"], "una traza que revisó 0 no puede ir sin marca")
+        self.assertIn("NINGUNA", r["_meta"]["avisos"][0])
+
+    def test_no_figurar_en_algunas_tambien_se_declara(self):
+        tareas = [{"assign_id": "1", "titulo": "T1"}, {"assign_id": "2", "titulo": "T2"}]
+        r = self._traza({"1": self._fila()}, tareas)
+        self.assertEqual(r["_meta"]["tareas_revisadas"], 1)
+        self.assertEqual(r["_meta"]["tareas_donde_no_figura"], 1)
+        self.assertTrue(r["_meta"]["degradado"])
+
+    def test_alumno_normal_no_dispara_ninguna_alarma(self):
+        """Con el padrón sano la traza va limpia: si esto marcara degradado, la señal se
+        volvería ruido y nadie la miraría."""
+        tareas = [{"assign_id": "1", "titulo": "T1"}, {"assign_id": "2", "titulo": "T2"}]
+        r = self._traza({"1": self._fila(), "2": self._fila("Calificado")}, tareas)
+        self.assertEqual(r["_meta"]["tareas_revisadas"], 2)
+        self.assertEqual(r["_meta"]["tareas_donde_no_figura"], 0)
+        self.assertFalse(r["_meta"]["degradado"])
+        self.assertEqual(r["_meta"]["avisos"], [])
