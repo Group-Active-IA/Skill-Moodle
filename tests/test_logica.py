@@ -34,6 +34,7 @@ from moodle.ws_api import (  # noqa: E402
     sin_entrar_al_aula,
 )
 from moodle import panorama  # noqa: E402
+from moodle import ws_api  # noqa: E402
 from moodle import informes  # noqa: E402
 from moodle.active_ia import _nota_de_entrega  # noqa: E402
 from moodle.version import _tupla, hay_novedad  # noqa: E402
@@ -1493,3 +1494,44 @@ class TestSinNombresIndefinidos(unittest.TestCase):
         self.assertEqual(
             indefinidos, [],
             "hay nombres usados y nunca definidos:\n  " + "\n  ".join(indefinidos))
+
+
+class TestSoloAlumnosActivos(unittest.TestCase):
+    """`_es_estudiante` — el filtro compartido de quién cuenta en los informes.
+
+    Aporte de un tutor del equipo (2026-08-17). Una matrícula suspendida es una BAJA del aula:
+    el alumno sigue figurando en la lista de participantes, así que sin filtrarlo aparece como
+    deudor, pendiente, retrasado y desenganchado a la vez. Infla cuatro informes con gente que
+    ya no cursa, y lo hace en silencio — los números quedan plausibles.
+    """
+
+    def _p(self, **kw):
+        base = {"roles": [{"shortname": "student"}]}
+        base.update(kw)
+        return base
+
+    def test_alumno_activo_cuenta(self):
+        self.assertTrue(ws_api._es_estudiante(self._p(suspended=False)))
+
+    def test_alumno_suspendido_no_cuenta(self):
+        self.assertFalse(ws_api._es_estudiante(self._p(suspended=True)))
+
+    def test_suspendido_manda_sobre_el_rol(self):
+        """Un suspendido con rol de estudiante sigue siendo una baja."""
+        self.assertFalse(
+            ws_api._es_estudiante({"suspended": True, "roles": [{"shortname": "student"}]}))
+
+    def test_docente_no_cuenta_como_alumno(self):
+        self.assertFalse(
+            ws_api._es_estudiante({"roles": [{"shortname": "editingteacher"}]}))
+
+    def test_sin_roles_cuenta(self):
+        """El campus a veces devuelve la fila sin roles; se asume alumno, como antes."""
+        self.assertTrue(ws_api._es_estudiante({"roles": []}))
+        self.assertTrue(ws_api._es_estudiante({}))
+
+    def test_sin_el_campo_suspended_no_se_descarta_a_nadie(self):
+        """`core_enrol_get_enrolled_users` NO trae `suspended` — ya viene filtrado con
+        `onlyactive:1` en origen. Si la ausencia del campo se leyera como suspendido, este
+        filtro vaciaría medio informe."""
+        self.assertTrue(ws_api._es_estudiante({"roles": [{"shortname": "student"}]}))

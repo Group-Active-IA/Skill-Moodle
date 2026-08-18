@@ -158,6 +158,25 @@ async def _participantes(client, cmid: str, group_id: int) -> list[dict] | dict:
 
 
 def _es_estudiante(p: dict) -> bool:
+    """El filtro compartido de "esta persona cuenta en los informes".
+
+    **Una matrícula SUSPENDIDA es una baja del aula, no un alumno con problemas.** El
+    suspendido sigue figurando en la lista de participantes, así que sin este filtro aparece
+    como deudor, como pendiente, como retrasado y como desenganchado — infla los cuatro
+    informes con gente que ya no cursa. Y lo hace en silencio: los números quedan plausibles.
+
+    El flag `suspended` lo trae **sólo** `mod_assign_list_participants`. Los usuarios de
+    `core_enrol_get_enrolled_users` no lo traen, pero esos ya vienen filtrados con
+    `onlyactive: 1` en origen, así que acá `.get` devuelve `None` y no los toca. Por eso este
+    es EL interruptor de "solo activos" para todo lo que sale de las vistas de tarea:
+    `sumario`, `pendientes_por_corregir`, `entregas_tarea`, el snapshot y el panorama.
+
+    Aporte de un tutor del equipo (2026-08-17), verificado antes de aplicarlo: el campo existe
+    en la respuesta real y hoy da 0 suspendidos en las comisiones medidas, así que no cambia
+    ningún número — es una garantía para cuando alguien se dé de baja a mitad de cuatrimestre.
+    """
+    if p.get("suspended"):
+        return False
     roles = p.get("roles") or []
     return any(r.get("shortname") == "student" for r in roles) or not roles
 
@@ -1482,11 +1501,18 @@ async def _contar_alumnos(client, course_id: int, group_id: int | None = None) -
 
     NO se usa `core_group_get_group_members`: en este campus el rol de tutor no lo tiene
     habilitado y tira `accessexception`. La lista de matriculados sí está permitida y
-    además trae los roles, así que el conteo son alumnos y no incluye al propio tutor."""
+    además trae los roles, así que el conteo son alumnos y no incluye al propio tutor.
+
+    Va con `onlyactive: 1` como el resto de los caminos de matrícula: era el único que
+    contaba también a los suspendidos. Importa porque este número decide el ALCANCE que se le
+    muestra al tutor antes de publicar en un foro — decirle "esto lo van a ver 37 personas"
+    cuando son 35 activas es prometer de más sobre una escritura que no se deshace."""
     params: dict = {"courseid": course_id}
+    params["options[0][name]"] = "onlyactive"
+    params["options[0][value]"] = 1
     if group_id:
-        params["options[0][name]"] = "groupid"
-        params["options[0][value]"] = group_id
+        params["options[1][name]"] = "groupid"
+        params["options[1][value]"] = group_id
     try:
         us = await client.ws("core_enrol_get_enrolled_users", params)
     except MoodleWSError:
