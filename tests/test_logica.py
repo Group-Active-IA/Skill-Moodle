@@ -33,6 +33,7 @@ from moodle.ws_api import (  # noqa: E402
     nota_display,
     sin_entrar_al_aula,
 )
+from moodle import active_ia  # noqa: E402
 from moodle import panorama  # noqa: E402
 from moodle import ws_api  # noqa: E402
 from moodle import informes  # noqa: E402
@@ -1648,3 +1649,49 @@ class TestTrazaVaciaNoSeAfirmaCompleta(unittest.TestCase):
         self.assertEqual(r["_meta"]["tareas_donde_no_figura"], 0)
         self.assertFalse(r["_meta"]["degradado"])
         self.assertEqual(r["_meta"]["avisos"], [])
+
+
+class TestDiagnosticoDeErrorActiveIA(unittest.TestCase):
+    """`GEMINI_OVERLOADED` significa dos cosas OPUESTAS con el mismo texto.
+
+    Reportado por un tutor con caso control (2026-08-17): 8 correcciones limpias en el mismo
+    rato en que 4 entregas viejas seguían fallando. El servicio nunca estuvo caído — lo que
+    estaba roto era la entrega, y ésa no se destraba sola nunca.
+
+    Confundirlos cuesta días de reintentos que no pueden funcionar: la tool RETOMA la entrega
+    ya subida, así que cada intento vuelve a chocar contra el mismo registro en ERROR.
+    """
+
+    _diag = staticmethod(active_ia.diagnosticar_error)
+
+    def test_entrega_nueva_puede_ser_saturacion_y_reintentar_sirve(self):
+        r = self._diag({"error": "GEMINI_OVERLOADED", "error_code": "GEMINI_OVERLOADED"},
+                       reusada=False)
+        self.assertEqual(r["diagnostico"], "servicio_saturado")
+        self.assertTrue(r["reintentar_sirve"])
+
+    def test_entrega_retomada_esta_atascada_y_reintentar_NO_sirve(self):
+        """La señal que las separa: si vino de un 409 y encima está en ERROR, ese error es
+        viejo y persistido, no una saturación de este momento."""
+        r = self._diag({"error": "GEMINI_OVERLOADED", "error_code": "GEMINI_OVERLOADED"},
+                       reusada=True)
+        self.assertEqual(r["diagnostico"], "entrega_atascada")
+        self.assertFalse(r["reintentar_sirve"])
+        self.assertIn("BORRARLA", r["que_hacer"])
+
+    def test_zip_sobredimensionado_no_se_arregla_subiendo_el_timeout(self):
+        r = self._diag({"error": "se pasó", "error_code": "NBN_TIMEOUT"}, reusada=False)
+        self.assertEqual(r["diagnostico"], "zip_sobredimensionado")
+        self.assertFalse(r["reintentar_sirve"])
+        self.assertIn("timeout", r["que_hacer"].lower())
+
+    def test_el_zip_manda_aunque_la_entrega_venga_retomada(self):
+        """Un NBN_TIMEOUT sobre una entrega retomada sigue siendo un problema del archivo:
+        borrarla de Active-IA no alcanza si el alumno vuelve a subir el mismo ZIP."""
+        r = self._diag({"error": "x", "error_code": "NBN_TIMEOUT"}, reusada=True)
+        self.assertEqual(r["diagnostico"], "zip_sobredimensionado")
+
+    def test_conserva_los_campos_originales_del_error(self):
+        r = self._diag({"error": "algo", "error_code": "X", "entrega_id": 99}, reusada=False)
+        self.assertEqual(r["entrega_id"], 99)
+        self.assertEqual(r["error"], "algo")

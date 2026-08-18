@@ -148,7 +148,42 @@ globales: salen de la cuenta logueada. Nunca asumas un id de otra cuenta.
 4. Hace poll cada 5 s hasta `CORREGIDA`, `ERROR` o timeout (180 s por defecto).
 5. Descarga el PDF de devolución a `~/.moodle-skill/salidas/`.
 
-### `GEMINI_OVERLOADED`: no vuelvas a disparar
+### `GEMINI_OVERLOADED` significa DOS cosas opuestas
+
+Es el error más frecuente y el que más fácil se maneja mal, porque el mismo texto
+cubre dos situaciones que se resuelven al revés. Un tutor perdió dos días
+reintentando antes de separarlas, con caso control: **8 correcciones limpias en
+el mismo rato en que 4 entregas viejas seguían fallando.** El servicio nunca
+estuvo caído.
+
+| Modo | Cómo se reconoce | ¿Se destraba solo? | Qué hacer |
+|---|---|---|---|
+| **Servicio saturado** | Una o dos veces, sobre alumnos distintos, y después anda | **Sí** | Esperar y reintentar. Es el único caso donde esperar sirve |
+| **Entrega atascada** | Siempre el MISMO alumno, mientras otras se corrigen bien en el mismo minuto | **Nunca** | Borrar la entrega desde la app de Active-IA, o corregir a mano |
+| **ZIP sobredimensionado** | `NBN_TIMEOUT` repetido en el mismo alumno | **Nunca** | Pedir reentrega sólo con el código de `src/`. Subir el timeout no lo arregla |
+
+**El mecanismo de la entrega atascada:** `corregir_con_active_ia` no crea una
+entrega nueva cuando se la vuelve a disparar — **retoma la que ya está subida**,
+con el mismo `entrega_id`. Eso es casi siempre la virtud de la herramienta (evita
+duplicar correcciones y cobrar dos veces el mismo trabajo), pero si esa entrega
+quedó en `ERROR`, el retomado la reengancha una y otra vez. Por eso **el número de
+intentos no importa**: no se está reintentando la corrección, se está
+reintentando el error.
+
+Desde la v1.23.0 la skill lo diagnostica sola: el resultado trae `diagnostico`,
+`reintentar_sirve` y `que_hacer`. La señal que las separa es si la entrega vino
+retomada (409) y encima figura en ERROR — entonces ese error es viejo y
+persistido, no una saturación de este momento.
+
+**La confirmación directa** es `activeia_correcciones(comision_id,
+solo_corregidas=False)`: devuelve el estado que Active-IA tiene **persistido**. Si
+dice `ERROR`, no es un timeout que se evaporó, es un estado terminal guardado en
+la base — y el reintento lo va a reencontrar intacto.
+
+Y antes de redisparar cualquier cosa, esa misma tool primero: puede que ya esté
+corregida y sólo falte cargar la nota.
+
+### No vuelvas a disparar a ciegas
 
 Es el error más frecuente y el que más fácil se maneja mal. **No significa que la
 corrección se perdió**: significa que la respuesta no llegó a tiempo. La entrega

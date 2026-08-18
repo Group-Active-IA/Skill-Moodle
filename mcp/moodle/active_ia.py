@@ -493,6 +493,69 @@ async def _bajar_archivo_alumno(
 
 # ---------- FUNCIÓN 3: flujo completo de corrección ----------
 
+def diagnosticar_error(err: dict, reusada: bool) -> dict:
+    """Distingue los tres modos de falla de una corrección. PURA.
+
+    `GEMINI_OVERLOADED` significa dos cosas OPUESTAS con el mismo texto, y confundirlas costó
+    dos días de reintentos inútiles (informe de un tutor, 2026-08-17):
+
+    - **Servicio saturado**: Gemini está ocupado. Se destraba solo, esperar sirve.
+    - **Entrega atascada**: la entrega quedó en estado ERROR del lado de Active-IA. NO se
+      destraba nunca. `corregir_con_active_ia` no crea una entrega nueva cuando se la vuelve
+      a disparar: **retoma la que ya está subida**, así que cada reintento vuelve a chocar
+      contra el mismo registro roto. El número de intentos no importa: no se está
+      reintentando la corrección, se está reintentando el error.
+
+    La señal que las separa es la que ya estaba en el código sin usarse: si la entrega fue
+    RETOMADA (vino de un 409) y encima figura en ERROR, ese error es viejo y persistido, no
+    una saturación de este momento. Medido: 8 correcciones limpias en el mismo rato en que
+    4 entregas viejas seguían fallando — el servicio nunca estuvo caído.
+
+    El tercer modo es el ZIP sobredimensionado (`NBN_TIMEOUT`): tampoco se destraba, y subir
+    el timeout no lo arregla.
+    """
+    code = str(err.get("error_code") or "").upper()
+    mensaje = str(err.get("error") or "")
+
+    if "NBN_TIMEOUT" in code or "NBN_TIMEOUT" in mensaje.upper():
+        return {
+            **err,
+            "diagnostico": "zip_sobredimensionado",
+            "reintentar_sirve": False,
+            "que_hacer": (
+                "El ZIP es demasiado grande para procesar. Subir `timeout_s` NO lo arregla. "
+                "Pedile al alumno que reentregue SÓLO los archivos de código (los `.java` o "
+                "`.py` de `src/`), sin `build/`, `.gradle/` ni el proyecto entero."),
+        }
+
+    if reusada:
+        return {
+            **err,
+            "diagnostico": "entrega_atascada",
+            "reintentar_sirve": False,
+            "que_hacer": (
+                "Esta entrega ya estaba subida y quedó en ERROR del lado de Active-IA. "
+                "Reintentar NO la va a arreglar: la tool retoma la entrega existente, así que "
+                "cada intento vuelve a chocar contra el mismo registro roto. Hay que BORRARLA "
+                "desde la aplicación de Active-IA para que el retomado deje de engancharla, o "
+                "corregir ese trabajo a mano. Confirmalo con "
+                "`activeia_correcciones(comision_id, solo_corregidas=False)`: si figura en "
+                "ERROR, es este caso."),
+        }
+
+    return {
+        **err,
+        "diagnostico": "servicio_saturado",
+        "reintentar_sirve": True,
+        "que_hacer": (
+            "Puede ser saturación del servicio, que se destraba sola. Esperá y reintentá UNA "
+            "vez. **Si vuelve a fallar sobre el mismo alumno, dejá de reintentar**: ahí ya no "
+            "es el servicio, es la entrega, y no se destraba nunca. Antes de redisparar corré "
+            "`activeia_correcciones(comision_id, solo_corregidas=False)` — puede que ya esté "
+            "corregida y sólo falte cargar la nota."),
+    }
+
+
 async def corregir_con_active_ia(
     client_moodle: MobileWSClient,
     assign_id: str,
@@ -553,6 +616,11 @@ async def corregir_con_active_ia(
 
     # --- d. Polling hasta corregida / error / timeout ---
     resultado = await _poll_correccion(cli, entrega_id, comision_id, timeout_s)
+
+    # Un error sin diagnóstico manda a reintentar a ciegas, y hay un caso donde reintentar
+    # no sirve NUNCA. Se dice cuál de los tres es y qué hacer con cada uno.
+    if "error" in resultado and not resultado.get("ok"):
+        resultado = diagnosticar_error(resultado, reusada)
 
     # --- e. Descarga LOCAL del PDF de devolución (si hay correccion_id) ---
     correccion_id = resultado.get("correccion_id")
