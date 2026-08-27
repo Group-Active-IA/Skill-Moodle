@@ -535,7 +535,10 @@ async def guardar_mis_datos(datos: dict) -> dict:
     VALIDACIÓN (lección aprendida): cada group_id se coteja EN VIVO contra
     descubrir_comisiones del curso — así el modelo no puede inventar group_ids. Si alguno
     no existe en el curso real, NO se guarda nada y se devuelve el detalle de los inválidos
-    con la lista de grupos reales para que corrijas."""
+    con la lista de grupos reales para que corrijas.
+
+    Si el tutor ya tiene un ID de ClickUp guardado (`guardar_clickup_id`), se conserva
+    automáticamente al re-guardar Mis datos — esta tool nunca lo pisa."""
     if not isinstance(datos, dict) or not datos.get("cursos"):
         return {"error": "Estructura inválida: se espera un dict con al menos 'cursos'."}
 
@@ -563,8 +566,50 @@ async def guardar_mis_datos(datos: dict) -> dict:
             "aviso": "Corregí los group_id usando SOLO los que devuelve descubrir_comisiones.",
         }
 
+    # No pisar un link de ClickUp ya guardado: esta tool solo administra tutor/cursos,
+    # "clickup" lo administra guardar_clickup_id aparte.
+    if "clickup" not in datos:
+        existentes = await almacen.get_mis_datos()
+        if existentes and "clickup" in existentes:
+            datos["clickup"] = existentes["clickup"]
+
     await almacen.set_mis_datos(datos)
     return {"ok": True, "cursos": len(datos.get("cursos", []))}
+
+
+@mcp.tool()
+async def guardar_clickup_id(clickup_user_id: str, nombre_clickup: str, email: str = "") -> dict:
+    """Guarda el ID numérico de ClickUp del tutor dentro de "Mis datos", bajo la clave
+    "clickup". Llamala UNA VEZ, después de resolver quién es y de que el TUTOR CONFIRME
+    que es él/ella (nunca lo des por sentado por el nombre solo: puede haber tocayos en
+    el workspace, y el nombre de cátedra no siempre coincide con el de ClickUp — ej.
+    "Neyén Bianchi Medina" en comisiones.json vs. "Neyén Bianchi" en ClickUp).
+
+    Para resolver: `mcp__clickup__clickup_find_member_by_name` NO hace matching difuso
+    (verificado: "Neyén Bianchi Medina" devuelve null, solo el nombre EXACTO de ClickUp
+    encuentra algo) — si devuelve null, caé a `mcp__clickup__clickup_get_workspace_members`
+    y buscá la coincidencia parcial vos mismo antes de confirmar con el tutor.
+
+    Requiere que ya exista "Mis datos" (Paso 0 de Moodle corrido antes): si no hay
+    nada guardado todavía, no hay dónde anexar el ID y devuelve error.
+
+    A diferencia de `guardar_mis_datos`, esta tool NO valida nada contra Moodle —
+    el ID de ClickUp no tiene relación con group_id ni curso. Solo agrega/actualiza
+    la clave "clickup" sin tocar "tutor" ni "cursos"."""
+    import datetime
+
+    datos = await almacen.get_mis_datos()
+    if not datos:
+        return {"error": "Todavía no hay 'Mis datos' guardado. Corré primero el Paso 0 "
+                          "de Moodle (mi_comision o el mapeo manual)."}
+    datos["clickup"] = {
+        "user_id": str(clickup_user_id),
+        "nombre_clickup": nombre_clickup,
+        "email": email,
+        "resuelto_at": datetime.datetime.now().isoformat(),
+    }
+    await almacen.set_mis_datos(datos)
+    return {"ok": True, "clickup": datos["clickup"]}
 
 
 # ---------- REFRESCO DE TABLEROS (snapshot on-demand) ----------

@@ -182,9 +182,10 @@ Skill-Moodle/
 ├── VERSION                   # Versión publicada (la compara `version_skill`)
 ├── LICENSE                   # Apache-2.0
 ├── mcp/                      # MCP server liviano (API REST)
-│   ├── server.py             # 45 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, panorama del curso, Active-IA…)
+│   ├── server.py             # 46 tools (comisiones, riesgo, corrección suelta y en lote, foros, mensajes, informes, auditoría, panorama del curso, Active-IA, link con ClickUp…)
 │   ├── aulas.json            # Catálogo materia→curso de la cohorte vigente
 │   ├── comisiones.json       # Catálogo tutor→comisión y cmid de actividades por materia
+│   ├── clickup.json          # Catálogo materia→folder/lista de Tareas en ClickUp
 │   ├── requirements.txt
 │   ├── config.example.json   # Bloque mcpServers para Claude Code
 │   └── moodle/
@@ -212,7 +213,8 @@ Skill-Moodle/
 │   └── requirements.txt      # fastapi · uvicorn · claude-agent-sdk
 ├── install.sh               # Instalador de un comando (venv + claude mcp add)
 └── references/
-    └── active-ia.md          # Pipeline de corrección automática con Active-IA
+    ├── active-ia.md          # Pipeline de corrección automática con Active-IA
+    └── clickup-tareas.md     # Apartado de Tareas del equipo sobre ClickUp
 ```
 
 ## Por qué esta estructura
