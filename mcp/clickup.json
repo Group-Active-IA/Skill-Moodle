@@ -1,0 +1,20 @@
+{
+  "_comentario": "Catálogo de folders/listas de ClickUp para el apartado de Tareas del equipo docente, por materia. Le ahorra al agente descubrir a mano folder_id/list_id cada vez: dice la materia y ya sabe en qué lista de ClickUp crear o filtrar. Los TASKS (título, asignado, estado, fecha) siguen SIEMPRE en vivo contra ClickUp — esto es solo el mapa del workspace.",
+  "_mantenimiento": "No vence por cohorte como comisiones.json (ClickUp no tiene noción de cuatrimestre): el árbol Space→Folder→List es fijo por cátedra. Tocar este archivo solo si se crea una materia nueva o se reorganiza el workspace — usar clickup_get_workspace_hierarchy para traer los IDs reales, nunca inventarlos.",
+  "_convencion": "Cada folder de materia tiene el triage 'Equipo docente' / 'Cronograma' / 'Tareas'. SOLO 'Tareas' es la lista de trabajo asignable. Hay, aparte, un folder con el MISMO nombre de materia que solo tiene una lista 'Material PROG N' — es de MATERIALES, no de tareas: nunca usar esa list_id acá.",
+  "workspace_id": "90171440963",
+  "space": {"nombre": "Tutorías TUPAD", "space_id": "90176760252"},
+  "estados": {
+    "abierto": "to do",
+    "en_curso": "in progress",
+    "hecho": "complete",
+    "_comentario": "Nombres EXACTOS, case-sensitive, verificados iguales en las 4 listas (muestra de 49 tareas vía clickup_filter_tasks, 2026-08-27). Si algún tutor renombra un status en una sola lista queda desincronizado: si clickup_update_task rechaza un status, chequeá con clickup_get_list antes de reintentar con otro nombre inventado."
+  },
+  "materias": [
+    {"materia": "Programación I",   "folder_id": "901710309789", "tareas_list_id": "901715787974"},
+    {"materia": "Programación II",  "folder_id": "901710324456", "tareas_list_id": "901715806386"},
+    {"materia": "Programación III", "folder_id": "901710324686", "tareas_list_id": "901715806698"},
+    {"materia": "Programación IV",  "folder_id": "901710325036", "tareas_list_id": "901715807181"}
+  ],
+  "_materias_sin_mapear": "'Programación I - Marzo 2026' (cohorte legacy en comisiones.json) no tiene folder propio en ClickUp: usa la lista de 'Programación I' hasta que se confirme si necesita la suya — no inventar un list_id."
+}

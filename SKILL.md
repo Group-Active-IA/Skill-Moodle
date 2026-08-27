@@ -15,6 +15,13 @@ description: >-
   comisiones", "qué comisión está atrasada", "quién tiene que corregir", "cuánto tardan
   en corregir", "panorama del curso". Esas vistas devuelven HECHOS por comisión y nombran
   al tutor a cargo como dato de ruteo — nunca un ranking ni un puntaje de personas.
+  Además cubre el **apartado de Tareas del equipo** sobre ClickUp (opcional): "conectá
+  ClickUp", "ayudame a conectar ClickUp", "quiero usar lo de tareas" (primera vez, sin
+  nada configurado todavía) tanto como el uso ya conectado — un tutor puede ver y
+  marcar como hechas sus tareas asignadas ("mis tareas", "qué tengo pendiente en
+  ClickUp"), y un profesor/coordinador puede crear y asignar tareas al equipo
+  ("asignale una tarea a X", "creá una tarea para revisar el parcial", "cómo viene la
+  carga de tareas del equipo").
   La skill habla con Moodle por peticiones REST (token moodle_mobile_app), NO por
   navegador. NO la uses para campus que no sean el de la TUP, ni para tareas de
   Moodle como administrador (crear cursos, matricular).
@@ -47,6 +54,9 @@ no HTML: por eso no se rompe cuando el campus cambia de diseño.
 - "Informe de la comisión X" / "PDF de pendientes"
 - "Cargá 8 al TP de tal alumno" (escritura → pide OK antes)
 - "Corregí los TPs con Active-IA" / "importá entregas" / "devolución automática"
+- "Conectá ClickUp" / "ayudame a conectar ClickUp" / "quiero ver mis tareas" — vale
+  aunque sea la primera vez que se usa la skill y todavía no haya nada configurado
+  (ni Moodle ni ClickUp): activá igual y arrancá por el bootstrap que corresponda.
 
 ## El menú — cómo guiar al tutor (hacé esto al activarte)
 
@@ -60,7 +70,10 @@ y llevalo de la mano. Un tutor no sabe qué tools existen; el menú es su interf
   `configurar`: pedile usuario y contraseña de Moodle. No sigas sin esto.
 - **Configurado pero `mis_datos` vacío** → primero el mapeo (Paso 0): descubrí y guardá
   sus comisiones. Sin mapeo no hay sobre qué trabajar.
-- **Todo listo** → mostrá el menú:
+- **Todo listo** → mostrá el menú. **El ítem 7 depende de si ClickUp está conectado**:
+  fijate si tenés alguna tool `mcp__clickup__*` en tu caja de herramientas (esto es
+  gratis, no pega a la red — es solo mirar qué tenés disponible) y elegí la línea que
+  corresponda:
 
 ```
 📚 Campus TUP — ¿qué querés hacer?
@@ -71,9 +84,18 @@ y llevalo de la mano. Un tutor no sabe qué tools existen; el menú es su interf
   4. 👤 Ver un alumno              — su avance, entregas y notas
   5. 📈 En qué falla la comisión   — los errores que más se repiten al corregir
   6. ⚙️  Mis datos / remapear      — ver o rehacer la configuración
+  7. 📋 Mis tareas (ClickUp)       — ver lo que te asignaron, marcar como hecha
 
 Decime el número, o contame con tus palabras qué necesitás.
 ```
+
+  Si NO tenés ninguna tool `mcp__clickup__*` (nunca se conectó en esta máquina),
+  cambiá esa última línea por esta, y ofrecé conectarlo ahí mismo si dice que sí —
+  **no esperes a que lo pida él**, es la única forma de que descubra que existe:
+
+  ```
+  7. 🔌 Tareas del equipo (ClickUp) — no conectado todavía, ¿lo conectamos? (2 min)
+  ```
 
 **Qué hace cada opción** (mapeo a tools; el tutor puede pedir por número o por palabras):
 
@@ -127,6 +149,18 @@ Decime el número, o contame con tus palabras qué necesitás.
 6. **Mis datos / remapear** → `mis_datos` para mostrar la config; si cambió la cohorte,
    bootstrap de nuevo (`aulas` → elegir materia → `descubrir_comisiones` → validar →
    `guardar_mis_datos`).
+7. **Mis tareas (ClickUp)** → antes de nada, comprobá la conexión (Paso 0-bis, más
+   abajo): si falla, explicá qué falta y NO muestres este ítem, seguí con Moodle
+   normalmente. Si el tutor todavía no tiene `user_id` de ClickUp guardado en "Mis
+   datos", resolvelo una vez: `clickup_find_member_by_name` (probablemente devuelva
+   `null`, no matchea nombres de cátedra tal cual — ver `references/clickup-tareas.md`)
+   → si falló, `clickup_get_workspace_members` y buscá la coincidencia a mano.
+   **Confirmá con el tutor que es él/ella** antes de guardarlo con
+   `guardar_clickup_id`. Después,
+   `clickup_filter_tasks` sobre la(s) `tareas_list_id` de SUS materias (cruzando
+   `mis_datos` con `mcp/clickup.json`), filtrando `assignees=[user_id]`. Para marcar
+   una como hecha: mostrá cuál vas a cerrar, pedí OK, `clickup_update_task(task_id,
+   status="complete")`. Detalle completo en `references/clickup-tareas.md`.
 
 Después de resolver una opción, ofrecé volver al menú ("¿algo más? volvemos al menú").
 El menú es una ayuda, no una jaula: si el tutor pide algo directo ("qué me falta en la
@@ -210,6 +244,65 @@ no sabe cuáles son las comisiones del tutor. El orden es obligatorio:
 
 Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes de nada.
 
+## Paso 0-bis — Conectar ClickUp (opcional, solo para el menú de Tareas)
+
+El apartado de Tareas (menú 7, y la sección del profesor más abajo) corre sobre el MCP
+oficial de ClickUp — es OTRO servidor MCP, aparte de esta skill. Es opcional: sin esto,
+el resto de la skill funciona igual.
+
+**Si el tutor pide conectar ClickUp de entrada, ANTES de tener Moodle configurado**
+(típico en una instalación nueva: "ayudame a conectar ClickUp" como primer mensaje,
+sin haber corrido nunca `configurar` ni el Paso 0): podés instalar y loguear el MCP de
+ClickUp igual (pasos 1-2 de abajo no dependen de Moodle para nada), pero
+`guardar_clickup_id` SÍ necesita que exista "Mis datos" — sin eso no tiene dónde
+anexar el ID y devuelve error. No lo trates como una falla: explicale en una línea que
+falta ese paso ("para guardar tu usuario de ClickUp primero necesito tus datos de
+Moodle") y ofrecele arrancar el Paso 0 ahí mismo, antes de seguir con ClickUp.
+
+**Antes de ofrecer el menú de Tareas, comprobá la conexión:**
+- Si no ves NINGUNA tool `mcp__clickup__*` en tu caja de herramientas, el MCP nunca se
+  agregó → seguí la instalación de abajo.
+- Si las tools SÍ están pero una prueba (`clickup_get_workspace_hierarchy` con
+  `max_depth="0"`) falla con error de autenticación, el MCP está agregado pero sin
+  sesión válida → solo hace falta repetir el paso 2 (login) de abajo.
+- **Nunca muestres el menú de Tareas si esto falla.** Explicá qué falta con el paso
+  exacto, sin tecnicismos, y seguí con Moodle normalmente.
+
+**Instalación, una sola vez por máquina — LA HACÉS VOS (el agente), no el tutor:**
+
+1. **Agregar el servidor.** Corré el comando **vos mismo, con tu propia herramienta de
+   Bash/shell** (no le pidas al tutor que lo tipee — este paso no necesita terminal
+   interactiva, así que no hay motivo para delegarlo):
+   ```
+   claude mcp add --transport http clickup https://mcp.clickup.com/mcp -s user
+   ```
+   El `-s user` importa: sin él el MCP queda pegado SOLO a la carpeta desde la que se
+   corrió el comando (scope "local"), y casi nunca el tutor va a abrir Claude Code
+   parado justo ahí. Mismo criterio que ya usa esta skill consigo misma en
+   `install.sh` (`claude mcp add moodle-tutor -s user`). Confirmá el resultado antes
+   de seguir (el comando devuelve "Added HTTP MCP server..." si salió bien).
+
+2. **Login — EL PASO QUE SE TRABA, y este SÍ lo tiene que correr el tutor.**
+   `claude mcp login clickup` abre un flujo OAuth que necesita una terminal
+   interactiva de verdad: tu Bash NO sirve acá (falla con `stdin isn't a terminal`,
+   verificado dos veces), así que explicaselo así de directo:
+   - "Abrí PowerShell (o cmd) desde el menú de Windows — **aparte de esta ventana de
+     Claude Code**, no adentro."
+   - "Ahí pegá: `claude mcp login clickup` y Enter."
+   - "Se te va a abrir el navegador para loguearte con tu cuenta de ClickUp — iniciá
+     sesión y autorizá."
+   - "Cuando termines, avisame acá."
+   No lo dejes ahí: cuando el tutor te confirme, **vos volvé a probar la conexión**
+   (paso 3) automáticamente — no le pidas que él mismo reintente el menú.
+
+3. **Confirmar — lo hacés vos.** Apenas el tutor te avise que terminó el login, corré
+   `clickup_get_workspace_hierarchy(max_depth="0")`. Si responde, seguí derecho con el
+   bootstrap de Tareas (resolver `user_id`, punto 7 del menú más arriba) sin pedirle
+   nada más. Si todavía falla, decíselo con claridad (a veces hace falta abrir una
+   sesión nueva de Claude Code para que tome la conexión) y ofrecé reintentar.
+
+Detalle completo de tools, catálogo y gotchas en `references/clickup-tareas.md`.
+
 ## Las herramientas (qué pedir al MCP)
 
 | Querés… | Tool |
@@ -245,6 +338,11 @@ Consultá el estado con `mis_datos`. Si viene vacío, corré el bootstrap antes 
 | **Qué corrigió Active-IA de verdad, con su nota** | `activeia_correcciones` |
 | Resolver comisión/rúbrica de Active-IA | `activeia_resolver` |
 | **Corregir con Active-IA + PDF de devolución** | `corregir_con_active_ia` |
+| **Ver mis tareas asignadas (ClickUp)** | `clickup_filter_tasks` |
+| Marcar una tarea como hecha (ClickUp, pide OK) | `clickup_update_task` |
+| **Crear/asignar una tarea al equipo (profesor, pide OK)** | `clickup_create_task` |
+| Resolver un tutor a su ID de ClickUp | `clickup_find_member_by_name` / `clickup_resolve_assignees` |
+| Guardar el ID de ClickUp resuelto del tutor | `guardar_clickup_id` |
 
 ## El panel (misma skill, en el navegador)
 
@@ -252,7 +350,7 @@ Si el tutor dice **«abrí el panel»**, **«quiero verlo en el navegador»** o 
 interfaz, es `abrir_panel`. Levanta un servidor local y abre
 `http://127.0.0.1:8787`.
 
-Adentro tiene lo mismo que acá: la conversación con las mismas 44 tools, y arriba
+Adentro tiene lo mismo que acá: la conversación con las mismas 46 tools, y arriba
 el estado de sus comisiones (padrón, pendientes y en qué unidad están), relevado
 con `sumario`.
 
@@ -294,6 +392,10 @@ Si responde que no está compilado, la instalación es vieja: `actualizar_skill`
    padrón y entregas siguen mostrando la corrida anterior.
 7. **Conteo confiable = `sumario`.** No cuentes filas a mano; el sumario oficial es la
    fuente.
+8. **Tareas de ClickUp con OK explícito.** Crear, reasignar, cambiar estado o borrar
+   una tarea sigue la misma regla que Moodle: mostrá exactamente qué vas a hacer y
+   esperá el OK antes de `clickup_create_task` / `clickup_update_task` /
+   `clickup_delete_task` o cualquier otra escritura de ClickUp.
 
 ## Gotchas de la API (ya resueltos en el código, no re-tropezar)
 
@@ -356,6 +458,13 @@ Si responde que no está compilado, la instalación es vieja: `actualizar_skill`
 - **Ordenar antes de cortar.** Al toparse la cantidad de discusiones, hay que ordenar
   por fecha primero: cortar en el orden que devuelve el campus escondía pendientes
   viejos sin avisar.
+- **ClickUp: `assignees` son IDs numéricos, no nombres.** Resolvé siempre primero con
+  `clickup_find_member_by_name` / `clickup_resolve_assignees` antes de filtrar, crear
+  o reasignar.
+- **ClickUp: pasá siempre `workspace_id`** (del catálogo, `90171440963`) en las
+  llamadas que lo aceptan. Un tutor puede tener OTROS workspaces de ClickUp
+  personales; sin el `workspace_id` explícito, una resolución de nombre puede buscar
+  en el equivocado.
 
 ## Cosas que NO hacer
 
@@ -363,6 +472,12 @@ Si responde que no está compilado, la instalación es vieja: `actualizar_skill`
 - No correr snapshots automáticos ni de otros tutores: solo el actual, a pedido.
 - No escribir en el campus sin el OK del tutor.
 - No dar por bueno un dato que no se pudo verificar en vivo.
+- No asignar una tarea de ClickUp por nombre en texto libre: resolvé siempre a un
+  `user_id` numérico primero, y confirmá con la persona si hay ambigüedad.
+- No confundir la lista "Material PROG N" (materiales) con la lista "Tareas" del
+  folder de la materia (trabajo asignable): usá siempre `tareas_list_id` del catálogo.
+- No armar ranking ni podio de tareas completadas por tutor (misma regla que
+  `panorama_comisiones`).
 
 ## Vista del profesor — el curso entero, por comisión (read-only)
 
@@ -440,6 +555,37 @@ deja la hoja EQUIPO vacía: un agente verifica trabajo, nunca califica personas.
   desenganchados" es un hecho del aula y sirve para ruteo; "el tutor de com4 no engancha a su
   gente" es un juicio sobre una persona y no va. Misma línea que el resto: la comisión es la
   unidad de medida, no el docente.
+
+## Tareas del equipo (ClickUp) — crear y asignar (profesor)
+
+Aparte de corregir, un profesor/coordinador puede necesitar repartir trabajo puntual
+entre tutores ("armá el parcial de la unidad 4", "revisá esto antes del viernes").
+Eso vive en ClickUp — un tablero por materia que el equipo ya usa activamente
+(`mcp/clickup.json` tiene el mapa materia → lista). Requiere ClickUp conectado
+(Paso 0-bis, más arriba).
+
+**Crear y asignar una tarea:**
+1. Preguntá la materia → resolvé `tareas_list_id` del catálogo.
+2. Preguntá a quién va. Cruzá el nombre con `comisiones.json` y resolvé el ID real de
+   ClickUp: probá `clickup_find_member_by_name` (**casi siempre devuelve `null`** — el
+   nombre de cátedra y el de ClickUp no suelen ser la misma cadena, no es matching
+   difuso) → si falló, `clickup_get_workspace_members` y resolvé a mano. Mostrale al
+   profesor el candidato (o candidatos) y que confirme antes de seguir.
+3. Armá el preview completo (título, descripción, `due_date`, `priority`, asignado) y
+   **esperá el OK** — misma regla que `cargar_nota`.
+4. `clickup_create_task(list_id=..., name=..., markdown_description=..., due_date=...,
+   priority=..., assignees=[user_id], workspace_id="90171440963")`.
+5. Devolvé el link/ID de la tarea creada.
+
+**Carga de tareas por tutor (read-only, MISMA doctrina que `panorama_comisiones` —
+NUNCA un ranking):** `clickup_filter_tasks(list_ids=[...], statuses=["to do","in
+progress"], include_closed=false, workspace_id="90171440963")`, agrupado por
+`assignees`. Es **dato de ruteo**: "Fulano tiene 4 tareas abiertas, 1 vencida" sirve
+para repartir mejor, no es una nota. No armes podio ni compares tutores entre sí como
+mérito.
+
+El detalle de catálogo, semántica de cada tool y gotchas completos está en
+`references/clickup-tareas.md`.
 
 ## Auditoría de aula virtual (read-only)
 
