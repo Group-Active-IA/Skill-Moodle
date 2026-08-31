@@ -967,3 +967,82 @@ async def _buscar_error_entrega(
     except httpx.HTTPError:
         return None
     return None
+
+
+# ---------- Editar a mano una corrección ya hecha (cuando Gemini se equivocó) ----------
+#
+# Nace de un incidente real (2026-08-31): Active-IA marcó como ausentes clases CSS que
+# SÍ estaban en la entrega real de un alumno (correccion_id 24794), sugiriendo 16/100
+# sobre una entrega que valía 100/100. Ninguna tool existente podía corregir la
+# corrección: activeia_pendientes/activeia_resolver/activeia_correcciones sólo LEEN o
+# DISPARAN, ninguna EDITA una ya hecha. Se resolvió a mano esa vez; esto lo deja
+# disponible como tool real.
+
+async def ver_correccion(correccion_id: int) -> dict:
+    """GET /correcciones/{id} -- estado actual de una corrección (para revisar ANTES de
+    editar, contra `ver_entrega`, nunca a ciegas). Devuelve el dict crudo de la API, o
+    {"error": ...} (nunca lanza, mismo contrato que el resto del módulo)."""
+    try:
+        resp = await _get_client().request("GET", f"/correcciones/{correccion_id}")
+    except httpx.HTTPError as e:
+        return {"error": f"No pude consultar la corrección {correccion_id}: {_detalle_error(e)}"}
+    if resp.status_code != 200:
+        return {"error": f"GET /correcciones/{correccion_id} devolvió {resp.status_code}",
+                 "body": resp.text[:300]}
+    return resp.json()
+
+
+async def actualizar_correccion(
+    correccion_id: int,
+    nota: float | None = None,
+    criterios: list[dict] | None = None,
+    fortalezas: list[str] | None = None,
+    recomendaciones: list[str] | None = None,
+    comentario_general: str | None = None,
+    regenerar_pdf: bool = True,
+    dest_dir: str | None = None,
+) -> dict:
+    """PUT /correcciones/{id} -- edita a mano una corrección de Active-IA (nota,
+    criterios, fortalezas, recomendaciones, comentario). Todos los campos de contenido
+    son opcionales (update parcial: sólo se manda lo que cambia). Marca
+    `editado_manualmente=True` del lado de Active-IA (auditoría propia).
+
+    NO carga la nota en Moodle -- eso sigue siendo `cargar_nota`, aparte.
+
+    Sin gate de confirmación acá adentro -- ese paso vive en el `@mcp.tool()` de
+    `server.py` (mismo patrón de capas que `corregir_con_active_ia`: la tool decide si
+    previsualiza o ejecuta, este módulo sólo sabe hablar con la API). Usar SIEMPRE que
+    la devolución de Gemini no coincida con lo entregado -- comparar contra `ver_entrega`
+    ANTES de tocar nada, nunca editar a ciegas."""
+    payload: dict = {}
+    if nota is not None:
+        payload["nota"] = nota
+    if criterios is not None:
+        payload["criterios"] = criterios
+    if fortalezas is not None:
+        payload["fortalezas"] = fortalezas
+    if recomendaciones is not None:
+        payload["recomendaciones"] = recomendaciones
+    if comentario_general is not None:
+        payload["comentario_general"] = comentario_general
+
+    if not payload:
+        return {"error": "No pasaste ningún campo para actualizar."}
+
+    try:
+        resp = await _get_client().request("PUT", f"/correcciones/{correccion_id}", json=payload)
+    except httpx.HTTPError as e:
+        return {"error": f"No pude editar la corrección {correccion_id}: {_detalle_error(e)}"}
+    if resp.status_code != 200:
+        return {"error": f"PUT /correcciones/{correccion_id} devolvió {resp.status_code}",
+                 "body": resp.text[:300]}
+
+    resultado = resp.json()
+
+    if regenerar_pdf:
+        pdf = await exportar_devolucion_pdf(_get_client(), correccion_id, dest_dir)
+        resultado["devolucion_pdf_local"] = pdf.get("path")
+        if "error" in pdf:
+            resultado["devolucion_pdf_aviso"] = pdf["error"]
+
+    return resultado

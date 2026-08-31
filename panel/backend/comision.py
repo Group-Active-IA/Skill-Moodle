@@ -133,6 +133,33 @@ async def ficha(course_id: int, group_id: int, refrescar: bool = False) -> dict:
     # El mismo orden que el mapa de Comisiones: las columnas de las dos vistas
     # tienen que significar lo mismo en la misma posición.
     tareas = sorted(curso.get("tareas", []), key=lambda t: orden_actividad(t["titulo"]))
+
+    if not tareas:
+        # Sin `tareas` en el snapshot no hay nada que pedir: la ficha saldría con
+        # `alumnos: []` y `degradado: False` (nada falló, no hubo nada que consultar) —
+        # indistinguible de una comisión real y vacía. Se corta acá con el aviso
+        # explícito en vez de dejar que el silencio se lea como "al día".
+        return {
+            "course_id": course_id,
+            "group_id": group_id,
+            "curso": curso["nombre"],
+            "alumnos": [],
+            "actividades": [],
+            "procedencia": {
+                "tools": [],
+                "consultas": 0,
+                "fallaron": 0,
+                "detalle_fallas": [],
+                "relevado_at": time.time(),
+                "mensajes": {"ok": False, "motivo": "no se llegó a pedir: sin tareas"},
+                "degradado": True,
+                "aviso": "El curso no tiene 'tareas' guardadas en \"Mis datos\" — corré "
+                         "'Mis datos / remapear' (listar_tareas + guardar_mis_datos) "
+                         "antes de confiar en esta ficha.",
+            },
+            "desde_cache": False,
+        }
+
     sem = asyncio.Semaphore(CONCURRENCIA)
 
     entregas, accesos = await asyncio.gather(

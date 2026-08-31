@@ -2,7 +2,7 @@
 El chat del panel.
 
 Levanta una sesión del Agent SDK con la skill y el MCP `moodle-tutor` conectados,
-así que conversar acá es lo mismo que conversar en la terminal: mismas 44 tools,
+así que conversar acá es lo mismo que conversar en la terminal: mismas 48 tools,
 mismas reglas, mismo criterio.
 
 Dos cosas importan más que el resto:
@@ -171,6 +171,22 @@ TOOLS_QUE_ESCRIBEN = {
 # Lo que la skill toca fuera del campus pero igual no debería pasar callado.
 TOOLS_SENSIBLES = {"configurar", "actualizar_skill", "guardar_mis_datos"}
 
+# ClickUp es un MCP AJENO de 60+ tools (Tareas del equipo, Fase 2 — ver
+# references/clickup-tareas.md), así que acá el criterio se invierte: para las
+# ~10 tools propias de arriba alcanza una lista negra (todo corre salvo lo
+# listado), pero una lista negra de un server de 60+ tools queda vieja apenas
+# ClickUp agregue una. Por eso `clickup_*` es default-DENY: sólo lo que está acá
+# adentro (todo lectura) corre solo; cualquier otra `clickup_*` (crear, editar,
+# borrar, cambiar estado) frena y pide OK, la conozca o no esta lista.
+CLICKUP_LECTURA = {
+    "clickup_filter_tasks",
+    "clickup_get_list",
+    "clickup_get_workspace_hierarchy",
+    "clickup_get_workspace_members",
+    "clickup_find_member_by_name",
+    "clickup_resolve_assignees",
+}
+
 
 def _nombre_corto(tool: str) -> str:
     """`mcp__moodle-tutor__cargar_nota` -> `cargar_nota`."""
@@ -179,6 +195,8 @@ def _nombre_corto(tool: str) -> str:
 
 def _es_escritura(tool: str, entrada: dict[str, Any]) -> bool:
     corto = _nombre_corto(tool)
+    if corto.startswith("clickup_"):
+        return corto not in CLICKUP_LECTURA
     if corto in TOOLS_QUE_ESCRIBEN or corto in TOOLS_SENSIBLES:
         return True
     # Red de seguridad: la skill marca sus escrituras con `confirmado`.
@@ -277,17 +295,23 @@ def _opciones(sesion_holder: dict[str, Sesion | None]) -> ClaudeAgentOptions:
                 "type": "stdio",
                 "command": str(PYTHON) if PYTHON.exists() else "python3",
                 "args": [str(SERVER_PY)],
-            }
+            },
+            # Tareas del equipo, Fase 2 (ver references/clickup-tareas.md). Se
+            # confirmó en vivo (2026-08-31) que esta sesión headless comparte el
+            # login OAuth de `claude mcp login clickup` con la sesión interactiva
+            # del tutor — no hace falta un login aparte para el panel.
+            "clickup": {"type": "http", "url": "https://mcp.clickup.com/mcp"},
         },
-        # SÓLO el MCP de arriba. Sin esto, la sesión hereda todos los servidores
+        # SÓLO los MCP de arriba. Sin esto, la sesión hereda todos los servidores
         # que el tutor tenga enchufados en su Claude Code — verificado en vivo:
         # aparecieron nueve, entre ellos Notion, Linear, ClickUp y Drive.
         #
         # No es superficie de más y nada más: el gate de escritura de este panel
-        # frena las tools de Moodle, no las de Notion. Una tool de otro servidor
-        # escribiría sin que nadie la detenga, en un lugar que este producto ni
-        # siquiera sabe que existe. Y peor para un repo compartido: cada tutor
-        # tendría un panel distinto según lo que tenga instalado.
+        # frena las tools de Moodle (y, desde Fase 2, las de ClickUp — ver
+        # `CLICKUP_LECTURA`/`_es_escritura` arriba), no las de Notion. Una tool de
+        # otro servidor escribiría sin que nadie la detenga, en un lugar que este
+        # producto ni siquiera sabe que existe. Y peor para un repo compartido:
+        # cada tutor tendría un panel distinto según lo que tenga instalado.
         strict_mcp_config=True,
         permission_mode="default",
         can_use_tool=puede_usar,

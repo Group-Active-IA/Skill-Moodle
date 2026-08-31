@@ -168,13 +168,44 @@ async def actualizar_skill() -> dict:
 
 
 # ---------- MIS DATOS (config de la cohorte: la fuente de verdad de los IDs) ----------
+def _avisos_config_incompleta(cursos: list[dict]) -> list[str]:
+    """Huecos en "Mis datos" que NO son un archivo vacío pero igual dejan al tutor a
+    ciegas: un curso con comisiones pero sin `tareas` (el panel lo muestra vacío/
+    degradado sin que nadie lo note), o ninguna materia guardada que parezca ser
+    Programación (el alcance de esta skill). No bloquea nada — sólo avisos para que el
+    agente se los diga al tutor y ofrezca remapear. Reusada por `mis_datos` (al leer) y
+    `guardar_mis_datos` (al guardar, ahí la de `tareas` además rechaza el guardado)."""
+    avisos = []
+    for curso in cursos:
+        if curso.get("comisiones_del_tutor") and not curso.get("tareas"):
+            avisos.append(
+                f"El curso '{curso.get('nombre')}' (course_id {curso.get('course_id')}) "
+                "tiene comisiones pero no tiene 'tareas' guardadas — el panel lo va a "
+                "mostrar degradado. Corré listar_tareas(course_id) y volvé a guardar con "
+                "guardar_mis_datos."
+            )
+    nombres = [str(c.get("nombre") or "") for c in cursos]
+    if nombres and not any("program" in n.lower() for n in nombres):
+        avisos.append(
+            "Ningún curso guardado menciona 'Programación' (I/II/III), el alcance de "
+            f"esta skill. Cursos guardados: {', '.join(nombres)}. ¿Le faltó mapear su "
+            "materia real?"
+        )
+    return avisos
+
+
 @mcp.tool()
 async def mis_datos() -> dict:
     """Configuración vigente del tutor ("Mis datos"): cursos, comisiones (group_id) y
     tareas (assign_id) mapeadas. CONSULTALA PRIMERO para resolver IDs en vez de asumir
     valores. Si viene vacía o la cohorte cambió, corré el descubrimiento (descubrir_cursos
     -> descubrir_comisiones -> listar_tareas), mostrale el mapeo al tutor y guardá con
-    guardar_mis_datos."""
+    guardar_mis_datos.
+
+    Si la respuesta trae `config_incompleta`, la config NO está vacía pero tiene huecos
+    (un curso sin tareas, o ninguna materia que parezca Programación) — decíselo al
+    tutor ANTES de seguir como si todo estuviera bien, y ofrecé rehacer el mapeo de ese
+    curso puntual."""
     await almacen.init_db()
     datos = await almacen.get_mis_datos()
 
@@ -197,6 +228,9 @@ async def mis_datos() -> dict:
         }
     else:
         salida = {"actualizado_at": await almacen.mis_datos_actualizada(), "datos": datos}
+        avisos_config = _avisos_config_incompleta(datos.get("cursos", []))
+        if avisos_config:
+            salida["config_incompleta"] = avisos_config
     if aviso_version:
         salida["actualizacion_disponible"] = aviso_version
     return salida
@@ -537,6 +571,17 @@ async def guardar_mis_datos(datos: dict) -> dict:
     no existe en el curso real, NO se guarda nada y se devuelve el detalle de los inválidos
     con la lista de grupos reales para que corrijas.
 
+    VALIDACIÓN 2 (lección aprendida, 2026-08-31): un curso con `comisiones_del_tutor` pero
+    sin `tareas` se guarda igual pero deja al panel (dia.py/comision.py) mostrando esa
+    comisión completamente VACÍA y sin ningún aviso — indistinguible de "al día". Por eso
+    esta tool ahora EXIGE `tareas` no vacía en todo curso que tenga comisiones: si falta,
+    NO guarda nada y pide correr `listar_tareas` primero.
+
+    Si ningún curso guardado menciona "Programación" (el alcance de esta skill), se
+    guarda igual pero se devuelve un `aviso` — puede ser una materia nueva legítima, o
+    puede ser que al tutor se le haya escapado mapear su materia real (visto en vivo con
+    un tutor de Bases de Datos al que nunca se le guardó su comisión de Programación).
+
     Si el tutor ya tiene un ID de ClickUp guardado (`guardar_clickup_id`), se conserva
     automáticamente al re-guardar Mis datos — esta tool nunca lo pisa."""
     if not isinstance(datos, dict) or not datos.get("cursos"):
@@ -566,6 +611,21 @@ async def guardar_mis_datos(datos: dict) -> dict:
             "aviso": "Corregí los group_id usando SOLO los que devuelve descubrir_comisiones.",
         }
 
+    # Un curso con comisiones pero sin tareas rompe el panel en silencio (ver docstring).
+    sin_tareas = [
+        {"course_id": curso.get("course_id"), "nombre": curso.get("nombre")}
+        for curso in datos.get("cursos", [])
+        if curso.get("comisiones_del_tutor") and not curso.get("tareas")
+    ]
+    if sin_tareas:
+        return {
+            "error": "Hay cursos con comisiones pero sin 'tareas'; no guardé nada.",
+            "sin_tareas": sin_tareas,
+            "aviso": "Corré listar_tareas(course_id) para cada uno de estos cursos y "
+                     "sumá el resultado a 'tareas' antes de guardar — si no, esas "
+                     "comisiones van a aparecer vacías en el panel, sin ningún aviso.",
+        }
+
     # No pisar un link de ClickUp ya guardado: esta tool solo administra tutor/cursos,
     # "clickup" lo administra guardar_clickup_id aparte.
     if "clickup" not in datos:
@@ -574,7 +634,15 @@ async def guardar_mis_datos(datos: dict) -> dict:
             datos["clickup"] = existentes["clickup"]
 
     await almacen.set_mis_datos(datos)
-    return {"ok": True, "cursos": len(datos.get("cursos", []))}
+    salida = {"ok": True, "cursos": len(datos.get("cursos", []))}
+
+    # Aviso suave (no bloquea, ya se guardó): mismo chequeo de scope que usa `mis_datos`
+    # al leer. Puede ser legítimo (materia nueva); puede ser que falte mapear la materia
+    # real del tutor.
+    avisos_config = _avisos_config_incompleta(datos.get("cursos", []))
+    if avisos_config:
+        salida["aviso"] = " ".join(avisos_config)
+    return salida
 
 
 @mcp.tool()
@@ -1360,6 +1428,74 @@ async def corregir_con_active_ia(
     return await active_ia.corregir_con_active_ia(
         _cli(), assign_id, email, comision_id, rubrica_id,
         alumno_nombre=alumno_nombre, moodle_url=moodle_url, timeout_s=timeout_s,
+    )
+
+
+@mcp.tool()
+async def ver_correccion(correccion_id: int) -> dict:
+    """Estado ACTUAL de una corrección de Active-IA (nota, criterios, fortalezas,
+    recomendaciones, comentario). Read-only, sin gate.
+
+    Usala ANTES de `actualizar_correccion`, para tener el "antes" a mano y compararlo
+    contra `ver_entrega` — nunca edites una corrección sin haber mirado primero si la
+    devolución de Gemini coincide con lo que el alumno entregó de verdad. Caso real que
+    motivó esto (2026-08-31): Active-IA marcó como ausentes clases CSS que sí estaban en
+    el CSS real del alumno (correccion_id 24794), sugiriendo 16/100 sobre una entrega que
+    valía 100/100."""
+    return await active_ia.ver_correccion(correccion_id)
+
+
+@mcp.tool()
+async def actualizar_correccion(
+    correccion_id: int,
+    nota: float | None = None,
+    criterios: list[dict] | None = None,
+    fortalezas: list[str] | None = None,
+    recomendaciones: list[str] | None = None,
+    comentario_general: str | None = None,
+    confirmado: bool = False,
+    regenerar_pdf: bool = True,
+) -> dict:
+    """Edita a mano una corrección YA HECHA de Active-IA (nota, criterios, fortalezas,
+    recomendaciones, comentario general). Todos los campos de contenido son opcionales
+    (update parcial: mandá sólo lo que cambia).
+
+    NO carga la nota en Moodle -- eso sigue siendo `cargar_nota`, aparte. Es una
+    ESCRITURA: llamá primero con confirmado=false para previsualizar el cambio; recién
+    tras el OK del tutor, confirmado=true.
+
+    **Nunca la uses a ciegas.** Antes de llamarla: (1) `ver_correccion(correccion_id)`
+    para ver lo que Active-IA generó, (2) comparalo contra `ver_entrega` de lo que el
+    alumno mandó de verdad. Sólo si NO coinciden tiene sentido editar. Referencia: el
+    caso Molinari (correccion_id 24794, Prog III com2, "Práctica - Actividad III - CSS")
+    — Gemini dio 16/100 marcando ausentes clases CSS que sí estaban en el código real; la
+    nota corregida a mano fue 100/100.
+
+    Marca `editado_manualmente=True` del lado de Active-IA (auditoría). Por default
+    regenera el PDF de devolución con los datos corregidos (`regenerar_pdf=True`) para
+    que quede listo para `cargar_nota`, igual que deja el PDF `corregir_con_active_ia`."""
+    cambios = {
+        k: v for k, v in {
+            "nota": nota, "criterios": criterios, "fortalezas": fortalezas,
+            "recomendaciones": recomendaciones, "comentario_general": comentario_general,
+        }.items() if v is not None
+    }
+    if not confirmado:
+        return {
+            "preview": {
+                "accion": "actualizar_correccion",
+                "correccion_id": correccion_id,
+                "cambios_propuestos": cambios,
+            },
+            "aviso": "Esto edita a mano una corrección ya hecha de Active-IA y marca "
+                     "editado_manualmente=True. NO escribe la nota en Moodle: para eso "
+                     "hace falta después cargar_nota, que se confirma aparte. Revisalo y "
+                     "volvé a llamar con confirmado=true para ejecutar.",
+        }
+    return await active_ia.actualizar_correccion(
+        correccion_id, nota=nota, criterios=criterios, fortalezas=fortalezas,
+        recomendaciones=recomendaciones, comentario_general=comentario_general,
+        regenerar_pdf=regenerar_pdf,
     )
 
 

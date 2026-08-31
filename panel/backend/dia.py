@@ -151,6 +151,12 @@ async def relevar() -> dict:
 
     sem = asyncio.Semaphore(CONCURRENCIA)
     trabajos: list[tuple[dict, dict, dict]] = []
+    # Comisiones cuyo curso NO tiene `tareas` en el snapshot de "Mis datos". Antes esto
+    # las dejaba afuera del todo: una comisión real (con `comisiones_del_tutor`) que
+    # desaparecía sin ningún aviso, indistinguible de "al día" — el mismo blind spot que
+    # el propio DESIGN.md del panel dice que es el bug más caro del proyecto, en un
+    # estado que ni ahí está modelado. Detectado en vivo el 2026-08-31.
+    sin_tareas: list[tuple[dict, dict]] = []
 
     for curso in cursos:
         # El orden de las columnas se fija UNA vez, acá, y lo heredan la grilla
@@ -158,6 +164,9 @@ async def relevar() -> dict:
         # distinto orden se leen como datos distintos.
         tareas = sorted(curso.get("tareas", []), key=lambda t: orden_actividad(t["titulo"]))
         for com in curso.get("comisiones_del_tutor", []):
+            if not tareas:
+                sin_tareas.append((curso, com))
+                continue
             for assign in tareas:
                 trabajos.append((curso, com, assign))
 
@@ -177,10 +186,10 @@ async def relevar() -> dict:
     }
 
     comisiones: dict[tuple[int, int], dict] = {}
-    for (curso, com, _), res in zip(trabajos, resultados):
-        clave = (curso["course_id"], com["group_id"])
-        fila = comisiones.setdefault(
-            clave,
+
+    def _fila_base(curso: dict, com: dict) -> dict:
+        return comisiones.setdefault(
+            (curso["course_id"], com["group_id"]),
             {
                 "curso": curso["nombre"],
                 "course_id": curso["course_id"],
@@ -196,6 +205,20 @@ async def relevar() -> dict:
                 "detalle": [],
             },
         )
+
+    # Estas comisiones existen (tienen group_id real) pero no hay nada que consultar:
+    # se crea la fila igual, degradada desde ya, con el motivo explícito — no es una
+    # consulta que falló, es que "Mis datos" nunca guardó las tareas de este curso.
+    for curso, com in sin_tareas:
+        fila = _fila_base(curso, com)
+        fila["fallaron"].append({
+            "titulo": "(sin tareas en el snapshot)",
+            "motivo": "El curso no tiene 'tareas' guardadas en \"Mis datos\" — corré "
+                      "'Mis datos / remapear' (listar_tareas + guardar_mis_datos).",
+        })
+
+    for (curso, com, _), res in zip(trabajos, resultados):
+        fila = _fila_base(curso, com)
         fila["actividades"] += 1
 
         if not res["ok"]:
@@ -256,7 +279,10 @@ async def relevar() -> dict:
         "comisiones": filas,
         "procedencia": {
             "tool": "sumario",
-            "consultas": len(trabajos),
+            # + sin_tareas: cada comisión sin tareas cuenta como una consulta que no
+            # se pudo ni intentar, no como una que simplemente no existió. Sin esto,
+            # el aviso decía "4 de 0 consultas fallaron" — matemáticamente sin sentido.
+            "consultas": len(trabajos) + len(sin_tareas),
             "fallaron": total_fallas,
             # `mis_datos` sale de un snapshot local que puede tener semanas: si
             # una comisión se agregó después, no está en esta foto y el panel

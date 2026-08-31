@@ -148,7 +148,10 @@ Decime el número, o contame con tus palabras qué necesitás.
    los alumnos, es del material o de cómo se dio el tema. Decíselo así.
 6. **Mis datos / remapear** → `mis_datos` para mostrar la config; si cambió la cohorte,
    bootstrap de nuevo (`aulas` → elegir materia → `descubrir_comisiones` → validar →
-   `guardar_mis_datos`).
+   `guardar_mis_datos`). **Si `mis_datos` devuelve `config_incompleta`**, la config NO
+   está vacía pero tiene huecos que rompen el panel en silencio (un curso sin `tareas`,
+   o ninguna materia que parezca Programación) — decíselo al tutor ANTES de seguir como
+   si todo estuviera bien, y ofrecé rehacer el mapeo del curso puntual.
 7. **Mis tareas (ClickUp)** → antes de nada, comprobá la conexión (Paso 0-bis, más
    abajo): si falla, explicá qué falta y NO muestres este ítem, seguí con Moodle
    normalmente. Si el tutor todavía no tiene `user_id` de ClickUp guardado en "Mis
@@ -338,6 +341,8 @@ Detalle completo de tools, catálogo y gotchas en `references/clickup-tareas.md`
 | **Qué corrigió Active-IA de verdad, con su nota** | `activeia_correcciones` |
 | Resolver comisión/rúbrica de Active-IA | `activeia_resolver` |
 | **Corregir con Active-IA + PDF de devolución** | `corregir_con_active_ia` |
+| Ver el estado actual de una corrección (antes de editarla) | `ver_correccion` |
+| **Editar a mano una corrección de Active-IA cuando Gemini se equivoca** (pide OK) | `actualizar_correccion` |
 | **Ver mis tareas asignadas (ClickUp)** | `clickup_filter_tasks` |
 | Marcar una tarea como hecha (ClickUp, pide OK) | `clickup_update_task` |
 | **Crear/asignar una tarea al equipo (profesor, pide OK)** | `clickup_create_task` |
@@ -350,7 +355,7 @@ Si el tutor dice **«abrí el panel»**, **«quiero verlo en el navegador»** o 
 interfaz, es `abrir_panel`. Levanta un servidor local y abre
 `http://127.0.0.1:8787`.
 
-Adentro tiene lo mismo que acá: la conversación con las mismas 46 tools, y arriba
+Adentro tiene lo mismo que acá: la conversación con las mismas 48 tools, y arriba
 el estado de sus comisiones (padrón, pendientes y en qué unidad están), relevado
 con `sumario`.
 
@@ -672,5 +677,15 @@ Active-IA. La nota del campus NO la toca ninguna rama de esta tool; eso es `carg
 aparte y con su propia confirmación. Con `confirmado=false` devuelve un preview de lo que
 va a hacer SIN ejecutar. Mostráselo al tutor y volvé a llamar con `confirmado=true` solo
 tras su OK explícito.
+
+**Si la devolución de Gemini no coincide con lo entregado, no la cargues igual.** Caso
+real (2026-08-31, Molinari, correccion_id 24794, Prog III com2): Active-IA marcó como
+ausentes clases CSS que SÍ estaban en el código real del alumno, sugiriendo 16/100 sobre
+una entrega que valía 100/100. Antes de confiar en la nota sugerida, comparala contra
+`ver_entrega` (lo que el alumno mandó de verdad). Si no coincide: `ver_correccion`
+(estado actual) → `actualizar_correccion(..., confirmado=...)` (edita nota/criterios/
+fortalezas/recomendaciones/comentario, marca `editado_manualmente=True` del lado de
+Active-IA, regenera el PDF). Misma regla de oro que el resto de la skill: **nunca editar
+a ciegas, nunca sin haber leído el código real primero.**
 
 El detalle de estados y modo híbrido está en **`references/active-ia.md`**.
