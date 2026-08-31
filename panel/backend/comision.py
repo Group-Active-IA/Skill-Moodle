@@ -147,9 +147,16 @@ async def ficha(course_id: int, group_id: int, refrescar: bool = False) -> dict:
             "actividades": [],
             "procedencia": {
                 "tools": [],
-                "consultas": 0,
-                "fallaron": 0,
-                "detalle_fallas": [],
+                # +1, no 0: el número tiene que ser coherente con `degradado=True` (el
+                # frontend arma la frase "N actividad(es) no se pudieron relevar" a
+                # partir de este campo — un 0 ahí, con el aviso de degradado prendido al
+                # lado, se lee como una contradicción).
+                "consultas": 1,
+                "fallaron": 1,
+                "detalle_fallas": [{
+                    "titulo": "(sin tareas en el snapshot)",
+                    "motivo": "El curso no tiene 'tareas' guardadas en \"Mis datos\".",
+                }],
                 "relevado_at": time.time(),
                 "mensajes": {"ok": False, "motivo": "no se llegó a pedir: sin tareas"},
                 "degradado": True,

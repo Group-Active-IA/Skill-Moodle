@@ -236,6 +236,18 @@ export function Informes() {
         />
       </header>
 
+      {/* Mismo aviso que la Conversación (Dia.tsx). Sin esto, una materia sin
+          tareas en el snapshot muestra "0 entregas en total" sin ninguna marca —
+          el blanco tranquilizador que este producto tiene documentado como el
+          bug más caro de su historia. */}
+      {foto.procedencia.degradado && (
+        <p className="aviso">
+          {foto.procedencia.fallaron} de {foto.procedencia.consultas} consultas fallaron.
+          Los gráficos de abajo pueden estar incompletos: un 0 acá puede ser «no hay» o
+          «no se pudo».
+        </p>
+      )}
+
       {[...materias].map(([curso, coms]) => {
         // Se suman las comisiones propias de esa materia, no el curso entero:
         // el panel muestra lo que el tutor tiene a cargo.
