@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,7 +41,33 @@ from claude_agent_sdk import (
 
 SKILL_DIR = Path(__file__).resolve().parents[2]
 SERVER_PY = SKILL_DIR / "mcp" / "server.py"
-PYTHON = SKILL_DIR / ".venv" / "bin" / "python"
+
+
+def _python_del_venv() -> str:
+    """El Python que hay que usar para levantar el MCP `moodle-tutor` como subproceso.
+
+    Mismo criterio que `abrir_panel` en `mcp/server.py`: no se ramifica por sistema
+    operativo (Git Bash sobre Windows reporta `msys`, WSL reporta `linux`, y ambos
+    corren esta skill con layouts de venv distintos) — se le pregunta al filesystem
+    cuál existe, que no se equivoca nunca.
+
+    Antes esto caía a la cadena literal `"python3"` si `.venv/bin/python` no existía.
+    En Windows eso resuelve al *stub* de la Microsoft Store (`AppData/Local/Microsoft/
+    WindowsApps/python3.exe`), que no es un intérprete real: imprime "no se encontró
+    Python..." y sale con código 49. El resultado, para el tutor, era un MCP
+    `moodle-tutor` que se caía apenas el chat del panel intentaba usarlo
+    (`CONNECTION_CLOSED`) — verificado en vivo, 2026-09-01. El fallback correcto es
+    `sys.executable`: el mismo intérprete que ya está corriendo este proceso, que por
+    definición tiene las dependencias instaladas."""
+    candidatos = (
+        SKILL_DIR / ".venv" / "bin" / "python",
+        SKILL_DIR / ".venv" / "Scripts" / "python.exe",
+        SKILL_DIR / ".venv" / "Scripts" / "python",
+    )
+    return next((str(c) for c in candidatos if c.exists()), sys.executable)
+
+
+PYTHON = _python_del_venv()
 
 # Configuración propia del tutor. Vive en su carpeta personal y NO en el repo:
 # es un repo compartido por ~25 personas y las rutas de uno no son las de otro.
@@ -293,7 +320,7 @@ def _opciones(sesion_holder: dict[str, Sesion | None]) -> ClaudeAgentOptions:
         mcp_servers={
             "moodle-tutor": {
                 "type": "stdio",
-                "command": str(PYTHON) if PYTHON.exists() else "python3",
+                "command": PYTHON,
                 "args": [str(SERVER_PY)],
             },
             # Tareas del equipo, Fase 2 (ver references/clickup-tareas.md). Se
