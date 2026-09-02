@@ -322,6 +322,131 @@ async def aulas() -> dict:
     return out
 
 
+_APRENDIZAJES_PATH = Path(__file__).parent / "aprendizajes.json"
+_ESTADOS_APRENDIZAJE = ("confirmado", "dicho", "descartado")
+
+
+def _leer_aprendizajes() -> dict:
+    try:
+        return json.loads(_APRENDIZAJES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+@mcp.tool()
+async def aprendizajes_materia(course_id: int = 0) -> dict:
+    """Lo que los DOCENTES de una materia le enseñaron a la skill sobre cómo funciona
+    su materia de verdad. Viaja en el repo: lo que un profesor corrige una vez le sirve
+    a los otros docentes y a quien toque el código dentro de seis meses.
+
+    **LEELA AL EMPEZAR a trabajar en una materia, no cuando algo ya salió mal.** Sobre
+    todo en las que no son Programación: ahí es donde la skill sabe menos y donde el
+    docente sabe más.
+
+    Cada entrada trae `estado` y los tres valores NO se pueden mezclar al hablarle al
+    usuario:
+      - `confirmado`  → se corroboró contra el campus, y `verificacion` dice cómo.
+      - `dicho`       → lo afirmó un docente y NADIE lo verificó todavía.
+      - `descartado`  → se verificó y era falso (queda escrito: saber qué se probó y no
+                        era ahorra probarlo de nuevo).
+    Presentar un `dicho` como hecho es exactamente el error que esta skill existe para no
+    cometer. Decí siempre de cuál de los tres viene lo que estás afirmando.
+
+    Y si una entrada `confirmado` contradice lo que ves EN VIVO hoy, **gana lo que ves en
+    vivo**: estas reglas envejecen igual que un catálogo. Volvé a anotar con la fecha nueva.
+
+    `course_id=0` devuelve todas las materias. READ-ONLY."""
+    cat = _leer_aprendizajes()
+    if not cat:
+        return {"error": "No pude leer mcp/aprendizajes.json.", "materias": []}
+    mats = cat.get("materias", [])
+    if course_id:
+        mats = [m for m in mats if m.get("course_id") == course_id]
+        if not mats:
+            return {"course_id": course_id, "aprendizajes": [], "aviso":
+                    "Todavía nadie le enseñó nada a la skill sobre esta materia. Si el "
+                    "docente te corrige algo, anotalo con `anotar_aprendizaje`."}
+    return {"materias": mats, "lectura": cat.get("_regla_dura", "")}
+
+
+@mcp.tool()
+async def anotar_aprendizaje(course_id: int, regla: str, quien: str,
+                             estado: str = "dicho", verificacion: str = "",
+                             afecta: list[str] | None = None) -> dict:
+    """Anota algo que un DOCENTE le enseñó a la skill sobre su materia. Escribe en
+    `mcp/aprendizajes.json`, que **viaja en el repo compartido**.
+
+    CUÁNDO: cuando el docente corrige un supuesto ("esa entrega no cuenta", "el TP2 se
+    califica distinto", "la U5 tiene tres semanas porque la partimos"). NO para guardar
+    la conversación: el log crudo no lo relee nadie y envejece sin avisar. Lo que se
+    guarda es la REGLA, en una frase que se entienda sola dentro de seis meses.
+
+    **DECÍSELO ANTES DE ANOTAR, no después.** El docente tiene que saber que queda
+    registrado y que el archivo lo ven los demás docentes de la materia. No se graba a
+    nadie sin que lo sepa.
+
+    NUNCA anotes acá datos de alumnos (nombres, mails, notas), credenciales, ni nada que
+    no sea sobre cómo funciona la materia.
+
+    `estado`:
+      - `dicho` (por defecto)  → lo afirmó el docente y todavía no se verificó. Es el
+        valor honesto cuando acabás de escucharlo. **No pongas `confirmado` porque suene
+        creíble**: ponelo sólo si lo corroboraste contra el campus en esta misma sesión.
+      - `confirmado`  → verificado en vivo. `verificacion` es OBLIGATORIA y tiene que
+        decir CÓMO (qué tool, qué campo, qué devolvió).
+      - `descartado`  → se verificó y era falso. También se guarda.
+
+    `afecta`: qué tools o módulos cambian de comportamiento si esta regla es cierta.
+    Sirve para saber qué hay que revisar cuando alguien la confirme o la tire abajo."""
+    import datetime
+
+    estado = (estado or "dicho").strip().lower()
+    if estado not in _ESTADOS_APRENDIZAJE:
+        return {"error": f"`estado` tiene que ser uno de {_ESTADOS_APRENDIZAJE}. "
+                         f"Recibí {estado!r}."}
+    if estado == "confirmado" and not verificacion.strip():
+        return {"error": "Para `confirmado` hace falta `verificacion`: con qué tool y "
+                         "contra qué campo se corroboró. Sin eso no es confirmado, es "
+                         "`dicho` — y la diferencia es todo el punto de este archivo."}
+    if not regla.strip() or not quien.strip():
+        return {"error": "`regla` y `quien` no pueden ir vacíos."}
+
+    cat = _leer_aprendizajes()
+    if not cat:
+        return {"error": "No pude leer mcp/aprendizajes.json — no piso el archivo a "
+                         "ciegas. Revisá que exista y sea JSON válido."}
+
+    materia = next((m for m in cat.get("materias", []) if m.get("course_id") == course_id), None)
+    if materia is None:
+        cat_aulas = json.loads(_AULAS_PATH.read_text(encoding="utf-8"))
+        nombre = next((a["materia"] for a in cat_aulas.get("materias", [])
+                       if a.get("course_id") == course_id), f"(course {course_id})")
+        materia = {"materia": nombre, "course_id": course_id, "aprendizajes": []}
+        cat.setdefault("materias", []).append(materia)
+
+    entrada = {
+        "fecha": datetime.date.today().isoformat(),
+        "quien": quien.strip(),
+        "regla": regla.strip(),
+        "estado": estado,
+        "verificacion": verificacion.strip(),
+        "afecta": afecta or [],
+    }
+    materia.setdefault("aprendizajes", []).append(entrada)
+    _APRENDIZAJES_PATH.write_text(
+        json.dumps(cat, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    return {
+        "ok": True,
+        "materia": materia["materia"],
+        "anotado": entrada,
+        "total_de_la_materia": len(materia["aprendizajes"]),
+        "aviso": ("Queda en mcp/aprendizajes.json, que viaja en el repo compartido. "
+                  "Decile al docente que quedó registrado si todavía no se lo dijiste. "
+                  "Para que le llegue a los demás hay que commitear y pushear."),
+    }
+
+
 _COMISIONES_PATH = Path(__file__).parent / "comisiones.json"
 
 

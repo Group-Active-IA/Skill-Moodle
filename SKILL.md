@@ -510,6 +510,42 @@ ninguna actividad de cierre tiene `duedate` y por eso marcaba 94 de 94 en rojo.
 > Matemática son **falsos positivos** — decilo al presentar el resultado, no lo reportes
 > como hallazgo.
 
+## Cuando un docente te está enseñando su materia
+
+**Leé `aprendizajes_materia(course_id)` ANTES de empezar a trabajar en una materia**, no
+cuando algo ya salió mal. Es lo que otros docentes ya corrigieron. En las materias que no
+son Programación importa más, porque ahí la skill sabe menos y el docente sabe más.
+
+Y al revés: **cuando el docente te corrige un supuesto, anotalo con
+`anotar_aprendizaje`.** No la charla — la REGLA, en una frase que se entienda sola dentro
+de seis meses. Corregir un supuesto suena así:
+
+> *"Esa entrega no cuenta para la cursada"* · *"El TP2 lo calificamos distinto"* ·
+> *"La U5 tiene tres semanas porque la partimos a mitad de cuatrimestre"* ·
+> *"Ese cuestionario es obligatorio aunque no diga nada"*
+
+Tres reglas, y las tres importan:
+
+1. **Avisale ANTES de anotar, no después.** Queda registrado en un archivo que viaja en
+   el repo y que ven los demás docentes de su materia. No se graba a nadie sin que lo
+   sepa. Una línea alcanza: *"esto lo anoto para que le sirva a los otros docentes, ¿va?"*.
+2. **`estado="dicho"` es el valor honesto** cuando acabás de escucharlo. Poné
+   `confirmado` **sólo** si lo corroboraste contra el campus en esa misma sesión, y
+   escribí en `verificacion` con qué tool y qué devolvió. Que lo diga un profesor lo hace
+   creíble, no verificado — y la diferencia entre esas dos cosas es toda esta skill.
+3. **Nunca anotes datos de alumnos** (nombres, mails, notas) ni credenciales. Lo que se
+   guarda es cómo funciona la materia, no quién cursa.
+
+Si lo que el docente dice **contradice** lo que ves en vivo, no elijas por tu cuenta:
+mostrale las dos cosas y preguntale. Puede ser un aula mal configurada —y entonces el
+hallazgo es para la cátedra— o un criterio que el campus no expresa. Las dos pasan.
+
+> **Matemática, ahora mismo**: las 6 entradas que hay salieron de leer el campus, **sin
+> ningún docente presente**. Dos están en `dicho` y son preguntas abiertas para
+> **Cristian Mut** (profesor, com5), que es quien va a probar la materia: (a) si la
+> actividad que CIERRA una unidad es la de mayor semana, y (b) si "Entrega trabajo 1 y 2"
+> cuentan para la cursada o no. Si hablás con él, esas dos van primero.
+
 ## Cosas que NO hacer
 
 - No mapear a mano ni hardcodear IDs de cohortes viejas.
