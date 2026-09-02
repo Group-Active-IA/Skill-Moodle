@@ -1,14 +1,9 @@
 {
   "_comentario": "Lo que los DOCENTES de cada materia le enseñan a la skill sobre cómo funciona su materia de verdad. Viaja en el repo a propósito: lo que un profesor corrige una vez tiene que servirle a los otros docentes de esa materia, y a quien toque el código dentro de seis meses. No reemplaza al campus — el campus siempre gana.",
-
   "_regla_dura": "Lo que dice un docente es una AFIRMACIÓN, no un hecho verificado. Es la misma regla de toda la skill ('verificar en vivo, nunca inventar') aplicada a una fuente nueva: una persona que sabe. Por eso cada entrada lleva `estado`, y los tres valores significan cosas distintas que NO se pueden mezclar: `confirmado` = se corroboró contra el campus y se dice cómo; `dicho` = lo afirmó el docente y NADIE lo verificó todavía; `descartado` = se verificó y resultó falso (se deja escrito, no se borra: saber qué se probó y no era ahorra probarlo de nuevo). Al presentarle algo al usuario a partir de acá, decí siempre de cuál de los tres viene. Un `dicho` presentado como hecho es exactamente el error que esta skill existe para no cometer.",
-
   "_como_se_escribe": "Con la tool `anotar_aprendizaje`. NO se edita a mano salvo para corregir algo mal cargado. El docente tiene que SABER que queda registrado y que el archivo es compartido: decíselo antes de anotar, no después. Nunca guardes acá datos de alumnos (nombres, mails, notas), credenciales ni nada que no sea sobre cómo funciona la materia.",
-
   "_como_se_lee": "Con `aprendizajes_materia(course_id)`, y hay que leerlo AL EMPEZAR a trabajar en una materia, no cuando algo ya salió mal. Un archivo que se escribe y nadie lee no sirve para nada — es el mismo motivo por el que las notas de sesión se dejaron de escribir.",
-
   "_vencimiento": "Estas reglas envejecen igual que un catálogo: una cátedra cambia el criterio entre cuatrimestres y nadie avisa. Si una entrada `confirmado` contradice lo que ves en vivo HOY, gana lo que ves en vivo — y volvé a anotar con la fecha nueva.",
-
   "materias": [
     {
       "materia": "Matemática",
@@ -21,7 +16,11 @@
           "regla": "Matemática califica con nota NUMÉRICA: /100 en las 13 actividades de cadencia y /10 en 'Entrega trabajo 1' y 'Entrega trabajo 2'. NO usa la escala invertida scaleid 5 de Programación.",
           "estado": "confirmado",
           "verificacion": "mod_assign_get_assignments: campo `grade` >= 0 en las 15 tareas del course 77, contra `grade < 0` (-5) en las de Programación.",
-          "afecta": ["cargar_nota", "entregas_tarea", "nota_display"]
+          "afecta": [
+            "cargar_nota",
+            "entregas_tarea",
+            "nota_display"
+          ]
         },
         {
           "fecha": "2026-09-02",
@@ -29,7 +28,12 @@
           "regla": "La cadencia de Matemática se nombra 'ENTREGA U{unidad}S{semana}' y tiene DOS ejes: una unidad puede tener dos entregas y la U5 tiene tres. La palabra 'unidad' y la palabra 'cierre' no aparecen en ningún título.",
           "estado": "confirmado",
           "verificacion": "Los 15 títulos del course 77, leídos con listar_tareas y parseados con moodle/titulos.py.",
-          "afecta": ["titulos.py", "alumnos_en_riesgo", "reporte_coordinacion", "panel"]
+          "afecta": [
+            "titulos.py",
+            "alumnos_en_riesgo",
+            "reporte_coordinacion",
+            "panel"
+          ]
         },
         {
           "fecha": "2026-09-02",
@@ -37,7 +41,10 @@
           "regla": "Los alumnos entregan PDF, no código. `ver_entrega` baja el archivo y devuelve 0 texto legible: eso no es una entrega vacía ni un error, es un binario que hay que abrir desde `ruta`.",
           "estado": "confirmado",
           "verificacion": "ver_entrega sobre cmid 18511 devolvió un .pdf de 94 KB y `0 legible(s) como texto`.",
-          "afecta": ["ver_entrega", "corregir_con_active_ia"]
+          "afecta": [
+            "ver_entrega",
+            "corregir_con_active_ia"
+          ]
         },
         {
           "fecha": "2026-09-02",
@@ -45,7 +52,10 @@
           "regla": "Cuando una unidad de Matemática tiene varias semanas, la que CIERRA la unidad es la de mayor semana, y es contra ésa que se mide el retraso.",
           "estado": "dicho",
           "verificacion": "NO confirmado con la cátedra. Es una interpretación razonable tomada al implementar `cierres_por_unidad` (medir contra la primera daría por atrasado a quien viene al día en la semana que corre), pero nadie de Matemática lo validó. PREGUNTÁSELO A MUT.",
-          "afecta": ["cierres_por_unidad", "reporte_coordinacion"]
+          "afecta": [
+            "cierres_por_unidad",
+            "reporte_coordinacion"
+          ]
         },
         {
           "fecha": "2026-09-02",
@@ -53,7 +63,10 @@
           "regla": "'Entrega trabajo 1' y 'Entrega trabajo 2' no declaran unidad y quedan fuera de la cadencia: no cuentan para la racha de abandono ni para el retraso.",
           "estado": "dicho",
           "verificacion": "Es lo que hace el código hoy, por no inventar una unidad que el título no dice. Si para la cátedra son entregas obligatorias de la cursada, esto está midiendo de menos. PREGUNTÁSELO A MUT.",
-          "afecta": ["titulos.py", "alumnos_en_riesgo"]
+          "afecta": [
+            "titulos.py",
+            "alumnos_en_riesgo"
+          ]
         },
         {
           "fecha": "2026-09-02",
@@ -61,7 +74,50 @@
           "regla": "La matriz de `auditar_aula` (9 componentes) es la doctrina de Programación: en Matemática marca como faltantes 'Ejemplos de código (Colab)' y 'Mini cuestionarios' en las 6 unidades. Son falsos positivos.",
           "estado": "confirmado",
           "verificacion": "auditar_aula(77) devolvió esos 2 hallazgos en rojo alta; Matemática no usa Colab porque no es programación.",
-          "afecta": ["auditar_aula"]
+          "afecta": [
+            "auditar_aula"
+          ]
+        },
+        {
+          "fecha": "2026-09-02",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "La cursada de Matemática NO pasa por las entregas: pasa por el LIBRO DE CALIFICACIONES. `mod_assign` está en cero absoluto en todo el curso, así que `sumario`, `entregas_tarea`, `pendientes_por_corregir`, `demora_correccion` y `reporte_coordinacion` devuelven CERO — y ese cero es real pero se lee al revés ('la comisión no arrancó'). Lo que el alumno hace son videos interactivos H5P (`hvp`), lecciones (`lesson`) y autoevaluaciones (`quiz`). Para saber cómo viene un alumno de Matemática usá `informe_alumnos`, que lee el calificador.",
+          "estado": "confirmado",
+          "verificacion": "`mod_assign_get_submissions` vía sumario en los cmid 18437, 18519, 18592 y 18634: 549 participantes y 0 enviados en las cuatro, y `entregas_tarea` en com1 (group 7720) da 40 participantes / 0 entregados. En cambio `gradereport_user_get_grade_items` (courseid 77, groupid 7720) devuelve en esos mismos 40 alumnos 240 notas de hvp, 89 de lesson, 99 de quiz y 0 de assign, con 34 de 40 alumnos con actividad.",
+          "afecta": [
+            "informe_alumnos",
+            "sumario",
+            "entregas_tarea",
+            "pendientes_por_corregir",
+            "demora_correccion",
+            "reporte_coordinacion",
+            "alumnos_en_riesgo"
+          ]
+        },
+        {
+          "fecha": "2026-09-02",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "El TUTOR de cada comisión de Matemática está en el padrón del campus y NO hay que escribirlo en ningún catálogo: cada comisión tiene dos docentes matriculados, el tutor de la comisión y el profesor de cátedra. El tutor es el que aparece en MENOS comisiones del curso (una); la cátedra cubre cuatro o cinco. Casi siempre el tutor tiene rol `teacher` y la cátedra `editingteacher`, pero el rol solo NO alcanza: hay cuatro tutores que son `editingteacher` (com5, com8, com14 y com15).",
+          "estado": "confirmado",
+          "verificacion": "`core_enrol_get_enrolled_users` con groupid en las 15 comisiones del course 77, cruzado contra el reparto oficial de la cátedra: 15 de 15. Incluye com13, que tiene TRES docentes (Wallace en 4 comisiones, Brizzi en 2, Castro en 1) y donde la regla acierta con Castro. Antes se tomaba `docentes[0]` y el web service ordena por userid, así que devolvía la cuenta más vieja —la de cátedra— en 13 de las 15 filas.",
+          "afecta": [
+            "elegir_tutor",
+            "reporte_coordinacion",
+            "demora_correccion",
+            "informe_alumnos"
+          ]
+        },
+        {
+          "fecha": "2026-09-02",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "Las actividades del calificador de Matemática (videos, lecciones, autoevaluaciones) NO declaran la unidad en el título: dicen 'Video 2 Semana 1 SN'. La unidad sale de la ESTRUCTURA del curso — la sección numerada ('2- Sistema binario') abre la unidad y los bloques que le siguen (Videos, Lecciones, Trabajo Práctico, Autoevaluaciones) la heredan. Una sección con nombre propio CORTA la herencia, y por eso los 7 cuestionarios de COLOQUIOS, los dos Trabajos Integradores y el video de bienvenida quedan sin unidad en vez de recibir la de al lado. No armes un mapa tema->unidad a mano.",
+          "estado": "confirmado",
+          "verificacion": "`core_course_get_contents` (courseid 77): 51 secciones, 6 encabezados numerados. Verificación cruzada: las 13 tareas `ENTREGA U{n}S{m}`, que sí declaran su unidad en el título, caen 13 de 13 en la unidad que les asigna la sección.",
+          "afecta": [
+            "calificador.catalogo_de_actividades",
+            "informe_alumnos",
+            "titulos"
+          ]
         }
       ]
     }
