@@ -1086,6 +1086,192 @@
           "unidad": 11
         }
       ]
+    },
+    {
+      "materia": "Matemática",
+      "course_id": 77,
+      "patron_comision": "A26 C1-NN",
+      "comisiones": [
+        {
+          "comision": "com1",
+          "nombre_campus": "A26 C1-01",
+          "group_id": 7720
+        },
+        {
+          "comision": "com2",
+          "nombre_campus": "A26 C1-02",
+          "group_id": 8320
+        },
+        {
+          "comision": "com3",
+          "nombre_campus": "A26 C1-03",
+          "group_id": 7729
+        },
+        {
+          "comision": "com4",
+          "nombre_campus": "A26 C1-04",
+          "group_id": 7732
+        },
+        {
+          "comision": "com5",
+          "nombre_campus": "A26 C1-05",
+          "group_id": 7736
+        },
+        {
+          "comision": "com6",
+          "nombre_campus": "A26 C1-06",
+          "group_id": 7741
+        },
+        {
+          "comision": "com7",
+          "nombre_campus": "A26 C1-07",
+          "group_id": 7744
+        },
+        {
+          "comision": "com8",
+          "nombre_campus": "A26 C1-08",
+          "group_id": 7748
+        },
+        {
+          "comision": "com9",
+          "nombre_campus": "A26 C1-09",
+          "group_id": 7753
+        },
+        {
+          "comision": "com10",
+          "nombre_campus": "A26 C1-10",
+          "group_id": 7757
+        },
+        {
+          "comision": "com11",
+          "nombre_campus": "A26 C1-11",
+          "group_id": 7761
+        },
+        {
+          "comision": "com12",
+          "nombre_campus": "A26 C1-12",
+          "group_id": 7765
+        },
+        {
+          "comision": "com13",
+          "nombre_campus": "A26 C1-13",
+          "group_id": 7768
+        },
+        {
+          "comision": "com14",
+          "nombre_campus": "A26 C1-14",
+          "group_id": 7773
+        },
+        {
+          "comision": "com15",
+          "nombre_campus": "A26 C1-15",
+          "group_id": 7777
+        }
+      ],
+      "_dato": "SIN campo `tutor`, a diferencia de las materias de Programación y a propósito: el par comisión→tutor se resuelve EN VIVO (demora_correccion / reporte_coordinacion lo traen del campus). Un reparto escrito acá vence sin avisar, y equivocarse en ese campo no es errar un ID: es adjudicarle a un docente el atraso de otro. Verificado en vivo el 2026-09-02: 15 comisiones, 552 participantes, 7 docentes con rol editingteacher. Los 12 grupos de horario ('Miercoles 19:00 Hs.') y las 17 regionales R-* NO son comisiones y la skill ya las descarta sola.",
+      "_dato_calificacion": "Matemática califica con NOTA NUMÉRICA (/100; 'Entrega trabajo 1 y 2' van /10), NO con la escala invertida scaleid 5 de Programación. `cargar_nota` lee el tipo de la tarea en vivo y no hay que decírselo — pero quien mire una nota de Mate no debe traducirla a Aprobado/Desaprobado.",
+      "actividades_cursada": [
+        {
+          "cmid": "18437",
+          "titulo": "ENTREGA U1S1: Ejercicio 8 de la Práctica 1",
+          "unidad": 1,
+          "semana": 1
+        },
+        {
+          "cmid": "18438",
+          "titulo": "ENTREGA U1S2: Ejercicio 2 de la Práctica 2",
+          "unidad": 1,
+          "semana": 2
+        },
+        {
+          "cmid": "18469",
+          "titulo": "ENTREGA U2S1: Ejercicio 8 de la Práctica 1",
+          "unidad": 2,
+          "semana": 1
+        },
+        {
+          "cmid": "18470",
+          "titulo": "ENTREGA U2S2: Ejercicio 7 de la Práctica 2",
+          "unidad": 2,
+          "semana": 2
+        },
+        {
+          "cmid": "18511",
+          "titulo": "ENTREGA U3S1: Ejercicio 3, 4 y 12 de la Práctica 1",
+          "unidad": 3,
+          "semana": 1
+        },
+        {
+          "cmid": "18512",
+          "titulo": "ENTREGA U3S2: Ejercicio 3 y 5 de la Práctica 2",
+          "unidad": 3,
+          "semana": 2
+        },
+        {
+          "cmid": "18550",
+          "titulo": "ENTREGA U4S1: Ejercicio 9) - Semana 1- Conjuntos",
+          "unidad": 4,
+          "semana": 1
+        },
+        {
+          "cmid": "18551",
+          "titulo": "ENTREGA U4S2: Ejercicio 9) - Semana 2- Conjuntos",
+          "unidad": 4,
+          "semana": 2
+        },
+        {
+          "cmid": "18592",
+          "titulo": "ENTREGA U5S1: Ejercicio 9 semana 1 de Matrices",
+          "unidad": 5,
+          "semana": 1
+        },
+        {
+          "cmid": "18593",
+          "titulo": "ENTREGA U5S2: Ejercicio semana 2 de Matrices",
+          "unidad": 5,
+          "semana": 2
+        },
+        {
+          "cmid": "18595",
+          "titulo": "ENTREGA U5S3: Ejercicio semana 3 - Funciones y Rectas",
+          "unidad": 5,
+          "semana": 3
+        },
+        {
+          "cmid": "18634",
+          "titulo": "ENTREGA U6S1: Ejercicio 4 de la Práctica 1",
+          "unidad": 6,
+          "semana": 1
+        },
+        {
+          "cmid": "18635",
+          "titulo": "ENTREGA U6S2: Ejercicio 4 de la Práctica 2",
+          "unidad": 6,
+          "semana": 2
+        },
+        {
+          "cmid": "18519",
+          "titulo": "Entrega trabajo 1"
+        },
+        {
+          "cmid": "18602",
+          "titulo": "Entrega trabajo 2"
+        }
+      ],
+      "foros": [
+        {
+          "forum_id": 1748,
+          "nombre": "Foro social - Avisos",
+          "cmid": 18399,
+          "tipo": "news"
+        },
+        {
+          "forum_id": 1751,
+          "nombre": "Foro de consultas academicas",
+          "cmid": 18684,
+          "tipo": "general"
+        }
+      ]
     }
   ],
   "_foros_criterio": "Foros del aula con forum_id (el que usa leer_foro/responder_foro) y cmid (el modulo en el curso). Los DOS: no son intercambiables. El tipo news/social/general viene del campus; \"Avisos de la comision\" es el foro por comision.",

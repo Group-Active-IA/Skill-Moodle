@@ -1,9 +1,9 @@
 ---
 name: tup-campus-navigator
 description: >-
-  Operar el campus Moodle de la TUP (UTN) — Programación I, II y III — por la API
+  Operar el campus Moodle de la TUP (UTN) — Programación I a IV y Matemática — por la API
   REST oficial, desde Claude Code. Usá esta skill cuando el usuario mencione "campus
-  TUP", "moodle TUP", "tup.sied", "Programación 1/2/3", una "comisión" (C1/C2/C3),
+  TUP", "moodle TUP", "tup.sied", "Programación 1/2/3", "Matemática", una "comisión" (C1/C2/C3),
   "informe de seguimiento", "qué me falta corregir", "quién no entregó", "cargar
   nota", "pendientes", "mapeá mis comisiones", "actualizá mis datos", o pida revisar
   entregas / calificaciones / parciales por comisión. También cubre **auditoría de aula
@@ -470,6 +470,45 @@ Si responde que no está compilado, la instalación es vieja: `actualizar_skill`
   llamadas que lo aceptan. Un tutor puede tener OTROS workspaces de ClickUp
   personales; sin el `workspace_id` explícito, una resolución de nombre puede buscar
   en el equivocado.
+
+## Matemática — en qué NO se parece a Programación
+
+Todo lo verificado en vivo el 2026-09-02 contra el course 77 (15 comisiones, 552
+participantes). La skill la cubre igual que a Programación, pero **cuatro cosas cambian y
+las cuatro se pueden decir mal sin que salte ningún error**:
+
+1. **Califica con NOTA NUMÉRICA, no con la escala invertida.** Las 13 actividades de
+   cadencia van `/100` y "Entrega trabajo 1 y 2" van `/10`. Programación usa `scaleid 5`
+   (Aprobado=1, Desaprobado=2). `cargar_nota` lee el tipo de la tarea en vivo y no hay que
+   decírselo — pero **no traduzcas una nota de Matemática a Aprobado/Desaprobado**: ahí un
+   68 no significa nada parecido a lo que significa un 1 en Programación.
+
+2. **La cadencia tiene DOS ejes: unidad y semana.** Se llama `ENTREGA U3S1: …` y una unidad
+   puede tener dos entregas (la U5 tiene tres). Nunca acortes la etiqueta a `U5`: tres
+   columnas que digan lo mismo son tres columnas que el lector no puede distinguir. Lo
+   resuelve `moodle/titulos.py` — no vuelvas a parsear el título a mano.
+
+3. **Los alumnos entregan PDF, no código.** `ver_entrega` baja el archivo y devuelve
+   `"0 legible(s) como texto"` con la `ruta` local: eso NO es un error ni una entrega
+   vacía, es un binario. Abrilo desde `ruta` con la herramienta de lectura antes de
+   calificar. En Programación llegaba un `.zip` con texto y se leía solo.
+
+4. **Active-IA no tiene rúbricas de Matemática.** `activeia_resolver` devuelve "no
+   existe" para sus cmid. Corregir con IA no está disponible acá hasta que la cátedra las
+   cargue; la corrección es a mano, con `ver_entrega` + `cargar_nota`.
+
+Lo que **sí** funciona igual y no hay que tocar: `descubrir_comisiones` (descarta solo los
+12 grupos de horario "Miercoles 19:00 Hs." y las 17 regionales), `entregas_tarea`,
+`sumario`, `demora_correccion`, `reporte_coordinacion`, `auditar_aula`, `foros_pendientes`.
+
+Y una ventaja sobre Programación: **Matemática SÍ tiene fechas de entrega** (13 de 15).
+`alumnos_en_riesgo` mide la racha bien desde el día uno, sin el problema de Prog I —donde
+ninguna actividad de cierre tiene `duedate` y por eso marcaba 94 de 94 en rojo.
+
+> Al auditar el aula, `auditar_aula` va a marcar como faltantes "Ejemplos de código
+> (Colab)" y "Mini cuestionarios": esa matriz es la doctrina de Programación. En
+> Matemática son **falsos positivos** — decilo al presentar el resultado, no lo reportes
+> como hallazgo.
 
 ## Cosas que NO hacer
 

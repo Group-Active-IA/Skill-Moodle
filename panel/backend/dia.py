@@ -19,10 +19,15 @@ Dos cosas que hacen la diferencia entre esto y un tablero cualquiera:
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
-from . import datos
+from . import datos  # noqa: F401  (pone `mcp/` en sys.path — dejalo antes de `moodle`)
+from moodle import titulos  # noqa: E402
+
+# Etiqueta de columna que trae unidad y, si la materia la usa, semana: `U4` / `U4S2`.
+_RE_ETIQUETA = re.compile(r"^U(\d{1,2})(?:S(\d{1,2}))?$")
 
 # El campus no tiene rate limiting declarado y la skill lo tiene anotado como
 # pendiente. Seis en paralelo baja el relevamiento de un minuto a unos segundos
@@ -81,7 +86,20 @@ def _unidad(titulo: str) -> str:
     if "parcial" in bajo:
         return "PAR"
 
-    for palabra in ("unidad", "práctico", "practico", "práctica", "practica"):
+    # QUÉ dice el título lo resuelve `titulos.py`, que es el mismo criterio que usan
+    # la racha de abandono y la columna RETRASO del informe. Acá vivía una CUARTA
+    # copia que buscaba "práctica" y se quedaba con SU número: en Matemática eso
+    # devolvía el número del cuadernillo y no el de la unidad, y daba mal 13 de 15
+    # ("ENTREGA U2S1: ... de la Práctica 1" -> U1). No era un blanco sospechoso:
+    # la grilla mostraba cuatro columnas "U1·n" que se leían como cuatro
+    # actividades de la unidad 1.
+    etiqueta = titulos.etiqueta(titulo)
+    if etiqueta:
+        return etiqueta
+
+    # El caso que ya no cubre nada: "práctico 3" sin la palabra unidad. Se mantiene
+    # porque es como Prog III nombra parte de sus actividades.
+    for palabra in ("práctico", "practico", "práctica", "practica"):
         if palabra in bajo:
             resto = bajo.split(palabra, 1)[1].strip()
             numero = "".join(c for c in resto[:3] if c.isdigit())
@@ -110,13 +128,18 @@ def orden_actividad(titulo: str) -> tuple[int, int, str]:
     menos sea estable entre corridas).
     """
     etiqueta = _unidad(titulo)
-    if etiqueta.startswith("U") and etiqueta[1:].isdigit():
-        return (0, int(etiqueta[1:]), titulo)
     if etiqueta == "TI":
-        return (1, 0, titulo)
+        return (1, 0, 0, titulo)
     if etiqueta in ("PAR", "REC"):
-        return (2, 0, titulo)
-    return (3, 0, titulo)
+        return (2, 0, 0, titulo)
+
+    # `U4` y también `U4S2`: la SEMANA es un segundo eje de orden, no ruido. Sin ella
+    # las tres entregas de la U5 de Matemática quedaban ordenadas por el texto del
+    # título, o sea al azar respecto de la cursada.
+    m = _RE_ETIQUETA.match(etiqueta)
+    if m:
+        return (0, int(m.group(1)), int(m.group(2) or 0), titulo)
+    return (3, 0, 0, titulo)
 
 
 async def _padron_de(sem: asyncio.Semaphore, curso: dict, com: dict) -> dict:

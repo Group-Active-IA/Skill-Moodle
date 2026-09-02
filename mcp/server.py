@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import unicodedata
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -168,11 +169,39 @@ async def actualizar_skill() -> dict:
 
 
 # ---------- MIS DATOS (config de la cohorte: la fuente de verdad de los IDs) ----------
+def _sin_acentos(txt: str) -> str:
+    """Minúsculas y sin tildes: 'Matemática-Agosto 2026' -> 'matematica-agosto 2026'.
+    El catálogo y el nombre del curso en el campus no siempre acentúan igual."""
+    s = unicodedata.normalize("NFKD", str(txt or ""))
+    return "".join(c for c in s if not unicodedata.combining(c)).lower()
+
+
+def _raices_de_materias() -> list[str]:
+    """Raíz de cada materia del catálogo ('Programación I' -> 'programac'), para
+    reconocer el curso sin depender de cómo lo tituló la cátedra ese cuatrimestre
+    ('Programación I - Agosto 2026', 'Matemática-Agosto 2026').
+
+    Lista vacía si el catálogo no se puede leer. El que llama NO debe avisar nada en
+    ese caso: no sabemos, y un aviso disparado por una lectura fallida afirma algo
+    que nadie verificó.
+    """
+    try:
+        cat = json.loads(_AULAS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    raices = []
+    for m in cat.get("materias", []):
+        primera = _sin_acentos(m.get("materia", "")).split()
+        if primera and len(primera[0]) >= 5:
+            raices.append(primera[0][:9])
+    return sorted(set(raices))
+
+
 def _avisos_config_incompleta(cursos: list[dict]) -> list[str]:
     """Huecos en "Mis datos" que NO son un archivo vacío pero igual dejan al tutor a
     ciegas: un curso con comisiones pero sin `tareas` (el panel lo muestra vacío/
-    degradado sin que nadie lo note), o ninguna materia guardada que parezca ser
-    Programación (el alcance de esta skill). No bloquea nada — sólo avisos para que el
+    degradado sin que nadie lo note), o ninguna materia guardada que figure en el
+    catálogo de aulas. No bloquea nada — sólo avisos para que el
     agente se los diga al tutor y ofrezca remapear. Reusada por `mis_datos` (al leer) y
     `guardar_mis_datos` (al guardar, ahí la de `tareas` además rechaza el guardado)."""
     avisos = []
@@ -184,12 +213,21 @@ def _avisos_config_incompleta(cursos: list[dict]) -> list[str]:
                 "mostrar degradado. Corré listar_tareas(course_id) y volvé a guardar con "
                 "guardar_mis_datos."
             )
+    # Las materias que cubre la skill salen del CATÁLOGO, no de una palabra clavada.
+    # Cuando esto preguntaba sólo por "program", un docente de Matemática —materia
+    # mapeada, catálogo al día, todo funcionando— recibía en cada arranque un aviso
+    # diciéndole que su materia no era el alcance de la skill. El aviso existe para
+    # el que se equivocó de curso, no para el que sumó una materia nueva.
+    # Si el catálogo no se puede leer NO se avisa nada: un aviso que se dispara
+    # porque falló la lectura es peor que no avisar (afirma algo que nadie verificó).
+    raices = _raices_de_materias()
     nombres = [str(c.get("nombre") or "") for c in cursos]
-    if nombres and not any("program" in n.lower() for n in nombres):
+    if nombres and raices and not any(
+        any(r in _sin_acentos(n) for r in raices) for n in nombres
+    ):
         avisos.append(
-            "Ningún curso guardado menciona 'Programación' (I/II/III), el alcance de "
-            f"esta skill. Cursos guardados: {', '.join(nombres)}. ¿Le faltó mapear su "
-            "materia real?"
+            "Ningún curso guardado coincide con las materias que cubre esta skill. "
+            f"Cursos guardados: {', '.join(nombres)}. ¿Le faltó mapear su materia real?"
         )
     return avisos
 

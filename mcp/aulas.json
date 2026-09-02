@@ -4,9 +4,25 @@
   "cohorte": "Agosto 2026",
   "vigente_hasta": "2027-03",
   "materias": [
-    { "materia": "Programación I", "course_id": 74 },
-    { "materia": "Programación II", "course_id": 81 },
-    { "materia": "Programación III", "course_id": 82 },
-    { "materia": "Programación IV", "course_id": 57 }
+    {
+      "materia": "Programación I",
+      "course_id": 74
+    },
+    {
+      "materia": "Programación II",
+      "course_id": 81
+    },
+    {
+      "materia": "Programación III",
+      "course_id": 82
+    },
+    {
+      "materia": "Programación IV",
+      "course_id": 57
+    },
+    {
+      "materia": "Matemática",
+      "course_id": 77
+    }
   ]
 }

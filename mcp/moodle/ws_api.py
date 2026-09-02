@@ -12,6 +12,7 @@ import html as _html
 import logging
 import re
 
+from . import titulos
 from .cliente import MoodleWSError
 
 log = logging.getLogger("skill.ws_api")
@@ -776,15 +777,15 @@ _RIESGO_DIAS_AVISO = 7
 # comisión no habían entregado el Integrador, así que contarlo en la racha marcaba en
 # amarillo a gente que venía entrando y entregando todo al día. Ruido que hace que después
 # nadie mire el tablero.
-_RE_CIERRE_UNIDAD = re.compile(r"actividad\s+de\s+cierre|unidad\s*\d+", re.I)
+#
+# QUÉ dice el título vive en `titulos.py`, no acá: este mismo criterio estaba escrito tres
+# veces (también en `panorama._nro_unidad` y en el panel) y las tres daban CERO en
+# Matemática, que nombra su cadencia "ENTREGA U3S1: ..." y no usa la palabra "cierre".
 
 
 def es_actividad_de_cierre(titulo: str) -> bool:
     """Si una tarea es de la cadencia semanal (cuenta para la racha) o no."""
-    t = _norm(titulo)
-    if any(p in t for p in ("integrador", "parcial", "recuperatorio", "tio", "extraordinari")):
-        return False
-    return bool(_RE_CIERRE_UNIDAD.search(t))
+    return titulos.es_actividad_de_cierre(titulo)
 
 
 def _vencidas(orden: list[str], duedates: dict, ahora: int) -> tuple[list[str], list[str]]:

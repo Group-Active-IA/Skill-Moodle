@@ -43,6 +43,7 @@ import statistics
 import time
 from pathlib import Path
 
+from . import titulos
 from .cliente import MoodleWSError
 from .ws_api import (
     _AULA_DESENGANCHE_DIAS,
@@ -148,18 +149,18 @@ _CAMPOS_ACCESO = ("id", "fullname", "email", "lastaccess", "lastcourseaccess", "
 # `grupos_ignorados`: lo que para una mitad del módulo es ruido, para ésta es el dato.
 _RE_REGIONAL = re.compile(r"^\s*R\s*-\s*(.+?)\s*$")
 
-# Número de unidad del título ("Actividad de cierre de la unidad 4 - Git" -> 4). Es la
-# única forma de saber qué actividad corresponde a qué unidad: el campus no lo expone como
-# campo. Si un aula nombra distinto sus actividades, acá no matchea nada y se declara.
-_RE_UNIDAD = re.compile(r"unidad\s*(\d+)", re.I)
+# Número de unidad del título. Es la única forma de saber qué actividad corresponde a qué
+# unidad: el campus no lo expone como campo. QUÉ dice el título vive en `titulos.py` — acá
+# estaba escrito por tercera vez, con la regex `unidad\s*(\d+)`, que en Matemática ("ENTREGA
+# U3S1: ...") no reconocía NINGUNA de sus 15 actividades y dejaba la columna RETRASO vacía
+# sin que se notara por qué.
 # Sólo las de CIERRE cuentan para el retraso. Las "Práctica - Actividad N" de Prog III son
 # optativas y sumarlas marcaría retrasado a medio curso por no hacer ejercicios sueltos.
 _RE_CIERRE = re.compile(r"cierre", re.I)
 
 
 def _nro_unidad(titulo: str) -> int | None:
-    m = _RE_UNIDAD.search(titulo or "")
-    return int(m.group(1)) if m else None
+    return titulos.nro_unidad(titulo)
 
 
 def parsear_unidades(txt) -> list[int] | None:
@@ -181,14 +182,26 @@ def parsear_unidades(txt) -> list[int] | None:
 
 
 def cierres_por_unidad(meta: dict) -> dict[int, dict]:
-    """{nro_unidad: {cmid, titulo}} de las actividades de CIERRE. PURA."""
+    """{nro_unidad: {cmid, titulo}} de las actividades de CIERRE. PURA.
+
+    Una entrada por unidad, y cuando la unidad tiene VARIAS entregas se queda con la
+    de mayor semana. Programación tiene una sola por unidad y el caso no existía;
+    Matemática tiene dos (la U5, tres), y la que cierra la unidad es la última —
+    medir el retraso contra la primera daría por atrasado a quien viene al día en la
+    semana que corre.
+    """
     out: dict[int, dict] = {}
     for cmid, m in (meta or {}).items():
         tit = m.get("titulo") or ""
-        n = _nro_unidad(tit)
-        if n is None or not _RE_CIERRE.search(tit):
+        act = titulos.leer(tit)
+        # `es_actividad_de_cierre` y no la palabra "cierre": Matemática nombra su
+        # cadencia "ENTREGA U3S1" y nunca dice "cierre". Las "Práctica - Actividad N"
+        # de Prog III siguen quedando afuera — no declaran unidad.
+        if act.unidad is None or not titulos.es_actividad_de_cierre(tit):
             continue
-        out.setdefault(n, {"cmid": str(cmid), "titulo": tit})
+        previa = out.get(act.unidad)
+        if previa is None or (act.semana or 0) > (previa["semana"] or 0):
+            out[act.unidad] = {"cmid": str(cmid), "titulo": tit, "semana": act.semana}
     return out
 
 
