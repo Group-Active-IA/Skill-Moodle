@@ -22,7 +22,7 @@ coordinación (`reporte_coordinacion`) — y separarlos es lo que deja hablar de
 import os
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import (
@@ -1202,3 +1202,242 @@ def _bloque_focos(focos: list[tuple], body, small, ancho_total: float = 17.0) ->
         est.append(("BACKGROUND", (0, i), (0, i), colores[i % len(colores)]))
     t.setStyle(TableStyle(est))
     return t
+
+
+# ---------------------------------------------------------------------------
+# PDF POR COMISIÓN — render PURO del dict de `calificador.informe`
+# ---------------------------------------------------------------------------
+#
+# Un documento por TUTOR y no uno del curso, y la razón es de destinatario, no de
+# formato: es el informe que se le manda a cada tutor con sus alumnos, y un PDF donde
+# su comisión aparece al lado de las otras catorce se lee como una comparación entre
+# personas. La misma separación que ya hay entre `informes_nexos` (alumnos, va a los
+# nexos) y `reporte_coordinacion` (trabajo docente, va a coordinación).
+#
+# Va APAISADO porque el contenido lo pide: la matriz de videos son 29 columnas. En A4
+# vertical no entran, y la alternativa —resumirla en un promedio— es justamente lo que
+# este proyecto ya probó y descartó tres veces. Una matriz no resume: MUESTRA. Deja ver
+# de un vistazo lo que ningún agregado deja: la unidad que está vacía en toda la
+# comisión, el alumno que hizo la 4 sin haber hecho la 1, el que arrancó y paró.
+
+_TIPO_TITULO = {"video": "Videos", "leccion": "Lecciones",
+                "autoevaluacion": "Autoevaluaciones", "entrega": "Entregas"}
+# Cuántos alumnos entran por página en la matriz antes de partirla a mano. reportlab
+# parte solo, pero acá se parte con título propio para que la página 2 diga a qué tanda
+# de alumnos corresponde: 29 columnas de números sin ese rótulo no se leen. Con 34 la
+# tanda desbordaba UNA fila y esa fila caía sola en una página sin título ni leyenda —
+# se ve como una tabla huérfana. 30 entra con aire.
+_ALUMNOS_POR_PAGINA = 30
+
+
+def _nota_celda(n) -> str:
+    """La nota como se escribe en una celda: coma decimal y sin ceros de más. PURA.
+
+    `None` -> cadena vacía a propósito. Un cero y un "no la hizo" son cosas distintas y
+    la celda vacía es la única forma de que no se confundan de un vistazo.
+    """
+    if n is None:
+        return ""
+    return f"{round(float(n), 1):g}".replace(".", ",")
+
+
+def _acceso_txt(fila: dict) -> str:
+    """Última vez que el alumno abrió LA MATERIA, como se muestra. PURA.
+
+    Los tres estados salen distintos a propósito: "Nunca abrió" es un hecho del campus,
+    "sin dato" es que no se pudo leer, y confundirlos manda a llamar a alguien por algo
+    que no pasó. Va la fecha además de los días porque son para cosas distintas: los días
+    ordenan, la fecha es lo que se le nombra al alumno cuando se lo contacta.
+    """
+    estado = fila.get("estado_aula")
+    if estado == "sin_dato":
+        return "sin dato"
+    if estado == "nunca_abrio":
+        return "Nunca abrió"
+    d = fila.get("dias_sin_abrir_la_materia")
+    dias = "hoy" if d == 0 else f"hace {d} d"
+    return f"{dias} - {_fecha_txt(fila.get('ultimo_acceso_aula_ts'))}"
+
+
+def _matriz_de_tipo(catalogo: dict, tipo: str, alumnos: list[dict],
+                    ancho_total: float):
+    """Matriz alumnos x actividades de UN tipo. -> (tabla, leyenda) o (None, []).
+
+    Las columnas se numeran y el título completo va en la leyenda de abajo. Ponerlo en la
+    cabecera obligaba a rotarlo o a truncarlo a cuatro letras, y "Video 1 Semana 1 SN" y
+    "Video 1 Semana 2 SN" truncados son la misma columna.
+    """
+    items = [it for it in catalogo["items"] if it["tipo"] == tipo]
+    if not items:
+        return None, []
+
+    # Cabecera de dos filas: la unidad arriba (con SPAN) y el número de columna abajo.
+    fila_u, fila_n, spans, ini = [""], ["Alumno"], [], 1
+    ult = object()
+    for i, it in enumerate(items):
+        u = it["unidad"]
+        if u != ult:
+            if i:
+                spans.append((ini, i))
+            ini, ult = i + 1, u
+            fila_u.append(f"U{u}" if u is not None else "s/u")
+        else:
+            fila_u.append("")
+        fila_n.append(str(it["nro"]))
+    spans.append((ini, len(items)))
+
+    filas = [fila_u, fila_n]
+    for a in alumnos:
+        fila = [sin_emoji(a["nombre"])[:30]]
+        for it in items:
+            n = a["notas"].get(it["cmid"])
+            fila.append(_nota_celda(n["nota"]) if n else "")
+        filas.append(fila)
+
+    ancho_nombre = 4.6
+    ancho_col = max((ancho_total - ancho_nombre) / len(items), 0.42)
+    t = Table(filas, colWidths=[ancho_nombre * cm] + [ancho_col * cm] * len(items),
+              repeatRows=2)
+    est = [("BACKGROUND", (0, 0), (-1, 1), NAVY),
+           ("TEXTCOLOR", (0, 0), (-1, 1), colors.white),
+           ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
+           ("FONTSIZE", (0, 0), (-1, -1), 5.6),
+           ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+           ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+           ("GRID", (0, 0), (-1, -1), 0.25, GREY),
+           ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, LT]),
+           ("TOPPADDING", (0, 0), (-1, -1), 1.2),
+           ("BOTTOMPADDING", (0, 0), (-1, -1), 1.2)]
+    for a, b in spans:
+        if b > a:
+            est.append(("SPAN", (a, 0), (b, 0)))
+    t.setStyle(TableStyle(est))
+
+    leyenda = [f"{it['nro']} = {sin_emoji(it['titulo'])}" for it in items]
+    return t, leyenda
+
+
+def informe_comision_pdf(bloque: dict, catalogo: dict, dest_dir: str,
+                         materia: str = "", fecha: str = "",
+                         tipos: tuple = ("video", "leccion", "autoevaluacion")) -> dict:
+    """PDF de UNA comisión: su tutor, sus alumnos, qué hizo cada uno y con qué nota.
+
+    PURO en lo que importa: recibe el dict ya armado por `calificador.informe`, no el
+    cliente. Se puede testear sin red y sin credenciales, que es donde este proyecto
+    encuentra los bugs.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    com = bloque.get("comision") or "comision"
+    path = os.path.join(dest_dir, f"informe_{com}_curso{bloque.get('course_id', '')}.pdf")
+
+    ss = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1c", parent=ss["Heading1"], fontSize=14, leading=16,
+                        textColor=NAVY, spaceAfter=2)
+    h2 = ParagraphStyle("h2c", parent=ss["Heading2"], fontSize=10, leading=12,
+                        textColor=colors.HexColor("#1c5a7a"), spaceBefore=8, spaceAfter=3)
+    small = ParagraphStyle("sc", parent=ss["Normal"], fontSize=7, leading=9,
+                           textColor=colors.grey)
+    mini = ParagraphStyle("mc", parent=ss["Normal"], fontSize=5.8, leading=7.2,
+                          textColor=colors.HexColor("#555555"))
+
+    ancho_total = 27.0
+    doc = SimpleDocTemplate(path, pagesize=landscape(A4),
+                            leftMargin=1.1 * cm, rightMargin=1.1 * cm,
+                            topMargin=1.0 * cm, bottomMargin=1.0 * cm)
+
+    alumnos = bloque.get("alumnos") or []
+    res = bloque.get("resumen") or {}
+    tutor = (bloque.get("tutor") or {}).get("nombre") or "SIN DOCENTE ASIGNADO"
+    nombre_campus = bloque.get("nombre") or com
+
+    E = [Paragraph(f"{sin_emoji(materia) or 'Curso'} - {com.upper()} ({nombre_campus})", h1),
+         Paragraph(f"Tutor/a: <b>{sin_emoji(tutor)}</b> &nbsp;·&nbsp; {len(alumnos)} alumnos"
+                   + (f" &nbsp;·&nbsp; {fecha}" if fecha else ""), small),
+         Spacer(1, 6)]
+
+    if bloque.get("error"):
+        E.append(Paragraph(f"<b>No se pudo leer esta comisión:</b> {bloque['error']}", small))
+        doc.build(E)
+        return {"ok": False, "archivo": path, "error": bloque["error"]}
+
+    E.append(_tiles([
+        (res.get("alumnos", 0), "ALUMNOS", NAVY),
+        (res.get("con_actividad", 0), "CON ACTIVIDAD REGISTRADA", TEAL),
+        (res.get("sin_actividad", 0), "SIN NINGUNA ACTIVIDAD", AMBER),
+        (res.get("nunca_abrieron_la_materia", 0), "NUNCA ABRIERON LA MATERIA", RED),
+    ], ancho_total))
+    E.append(Spacer(1, 8))
+
+    # --- Panorama: una fila por alumno ---
+    unidades = catalogo.get("unidades") or []
+    cab = (["Alumno"] + [f"U{u}" for u in unidades]
+           + ["Videos", "Lecc.", "Autoev.", "Última vez que abrió la materia"])
+    filas = [cab]
+    # La celda por unidad cuenta EXACTAMENTE los tipos que muestra el informe. Sumar
+    # también las entregas metía en el denominador 15 tareas que en Matemática no tienen
+    # una sola entrega en todo el curso: el alumno que hizo todo lo que podía hacer salía
+    # "7/9" y se leía como si le faltara algo. Un denominador inalcanzable no mide nada.
+    for a in alumnos:
+        f = [sin_emoji(a["nombre"])[:34]]
+        for u in unidades:
+            b = a["por_unidad"].get(u) or {}
+            hechas = sum(b.get(t, {}).get("hechas", 0) for t in tipos)
+            total = sum(b.get(t, {}).get("total", 0) for t in tipos)
+            f.append(f"{hechas}/{total}" if total else "-")
+        for t in ("video", "leccion", "autoevaluacion"):
+            pt = a["por_tipo"][t]
+            f.append(f"{pt['hechas']}/{pt['total']}")
+        f.append(_acceso_txt(a))
+        filas.append(f)
+
+    anchos = ([6.4] + [1.05] * len(unidades) + [1.35, 1.15, 1.35]
+              + [ancho_total - 6.4 - 1.05 * len(unidades) - 3.85])
+    E.append(Paragraph("Panorama de la comisión — actividades hechas sobre el total del curso", h2))
+    E.append(_tabla(filas, anchos, font=6.4, compacta=True))
+    E.append(Paragraph(
+        "«hechas/total» cuenta videos, lecciones y autoevaluaciones con nota cargada. Un «0/12» "
+        "es que no hizo ninguna, NO que las hizo mal. La columna de acceso usa el reloj de ESTA "
+        "materia y no el del campus: quien entra todos los días para otra materia y no abre ésta "
+        "figura al día si se mira el reloj equivocado.", mini))
+    n_entregas = (res.get("actividades_del_curso") or {}).get("entrega") or 0
+    if n_entregas and not (res.get("notas_cargadas") or {}).get("entrega"):
+        # No es una omisión: es el hallazgo que motivó todo este informe. Decirlo acá
+        # evita que alguien lea el documento y concluya que las entregas no se miraron.
+        E.append(Paragraph(
+            f"Las {n_entregas} tareas de ENTREGA del aula quedan fuera de este informe "
+            "porque no tienen una sola entrega registrada en TODO el curso — no es que "
+            "no se miraron. La cursada de esta materia pasa por los videos, las "
+            "lecciones y las autoevaluaciones.", mini))
+
+    # --- Una matriz por tipo de actividad ---
+    for tipo in tipos:
+        for i in range(0, max(len(alumnos), 1), _ALUMNOS_POR_PAGINA):
+            tanda = alumnos[i:i + _ALUMNOS_POR_PAGINA]
+            if not tanda:
+                break
+            t, leyenda = _matriz_de_tipo(catalogo, tipo, tanda, ancho_total)
+            if t is None:
+                break
+            E.append(PageBreak())
+            sufijo = ("" if len(alumnos) <= _ALUMNOS_POR_PAGINA else
+                      f" - alumnos {i + 1} a {min(i + _ALUMNOS_POR_PAGINA, len(alumnos))}")
+            E.append(Paragraph(f"{_TIPO_TITULO.get(tipo, tipo)}: la nota de cada alumno, "
+                               f"actividad por actividad{sufijo}", h2))
+            E.append(t)
+            E.append(Spacer(1, 4))
+            E.append(Paragraph("<b>Columnas:</b> " + " &nbsp;·&nbsp; ".join(leyenda), mini))
+            E.append(Paragraph(
+                "Celda vacía = sin nota cargada. La nota va en la escala de SU actividad: los "
+                "videos y las autoevaluaciones son sobre 10, las lecciones sobre 100 salvo donde "
+                "el aula diga otra cosa.", mini))
+
+    avisos = list(bloque.get("avisos") or [])
+    if avisos:
+        E.append(PageBreak())
+        E.append(Paragraph("Lo que este informe NO pudo relevar", h2))
+        for a in avisos:
+            E.append(Paragraph(f"- {sin_emoji(a)}", small))
+
+    doc.build(E)
+    return {"ok": True, "archivo": path, "alumnos": len(alumnos),
+            "comision": com, "tutor": tutor}

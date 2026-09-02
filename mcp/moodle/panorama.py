@@ -339,6 +339,92 @@ async def _comisiones_del_curso(client, course_id: int) -> tuple[list[dict], lis
 
 
 # ---------------------------------------------------------------------------
+# Quién es el TUTOR de una comisión.
+# ---------------------------------------------------------------------------
+
+# El padrón de una comisión trae a TODOS los docentes matriculados en ese grupo, y en
+# Matemática son dos: el tutor de la comisión y el profesor del curso. Quedarse con el
+# primero —lo que se hacía— devuelve sistemáticamente al profesor, porque el web service
+# los ordena por `userid` y las cuentas de cátedra son más viejas. Relevado en vivo el
+# 2026-09-02 sobre las 15 comisiones de Matemática: el informe nombraba a Jovanovich,
+# Klimovsky y Wallace en 13 de 15, y ninguno de los tres lleva una comisión — cubren 5, 4
+# y 4 respectivamente. Los tutores reales estaban en la misma respuesta, una línea abajo.
+#
+# No es un error cosmético: en un informe que mide colas de corrección, poner el nombre
+# equivocado al lado de una espera de tres semanas es adjudicarle a un docente el atraso
+# de otro. Es la misma razón por la que la entrada de Matemática en `comisiones.json` NO
+# lleva un reparto escrito.
+#
+# **La regla sale del propio dato y no hay que mantenerla**: el docente que aparece en UNA
+# comisión del curso es el tutor de esa comisión; el que aparece en cinco es el profesor.
+# Verificada contra el reparto oficial de Matemática: 15 de 15, incluida com13, donde hay
+# tres docentes (Wallace en 4 comisiones, Brizzi en 2, Castro en 1) y gana Castro. En
+# Programación no cambia una sola fila: ahí hay un docente por comisión y no hay nada que
+# desempatar.
+#
+# El rol entra sólo a desempatar, y en ese orden: `teacher` a secas es un rol de comisión,
+# mientras que un `editingteacher` que aparece una vez sigue siendo ambiguo. Nunca decide
+# solo — en Programación los tutores son `editingteacher` y ahí filtrar por rol los
+# borraría a todos.
+
+
+def _prioridad_rol(rol: str) -> int:
+    """0 para el rol que es de comisión, 1 para el resto. Sólo desempata."""
+    r = (rol or "").lower()
+    return 0 if ("teacher" in r and "editingteacher" not in r) else 1
+
+
+def elegir_tutor(padrones: dict, comisiones: list[dict]) -> dict:
+    """{group_id: {"tutor": docente|None, "avisos": [...]}}. PURA.
+
+    `padrones` es {group_id: {"docentes": [...]}} tal como lo arma `_padrones`.
+    """
+    # En cuántas comisiones del curso aparece cada docente.
+    alcance: dict[int, int] = {}
+    for c in comisiones:
+        for d in (padrones.get(c["group_id"], {}) or {}).get("docentes") or []:
+            alcance[d["userid"]] = alcance.get(d["userid"], 0) + 1
+
+    salida = {}
+    for c in comisiones:
+        docentes = (padrones.get(c["group_id"], {}) or {}).get("docentes") or []
+        avisos: list[str] = []
+        if not docentes:
+            # No es una falla de lectura: la comisión existe y no tiene docente. Es un
+            # HALLAZGO y el que lee lo tiene que ver como tal, no como un blanco.
+            salida[c["group_id"]] = {"tutor": None, "avisos": [
+                "Comisión SIN DOCENTE asignado en el campus (hallazgo, no una falla de "
+                "lectura)."]}
+            continue
+        orden = sorted(docentes, key=lambda d: (alcance.get(d["userid"], 1),
+                                                _prioridad_rol(d.get("rol", "")),
+                                                d["userid"]))
+        tutor = orden[0]
+        if len(docentes) > 1:
+            plantel = ", ".join(
+                f"{d['nombre']} [{d.get('rol') or '?'}, en {alcance.get(d['userid'], 1)} "
+                f"comisión/es]" for d in orden)
+            empatan = (alcance.get(tutor["userid"], 1)
+                       == alcance.get(orden[1]["userid"], 1))
+            if empatan:
+                # Sin diferencia de alcance la regla buena no puede opinar y decide el
+                # rol, que es más débil. Se dice con todas las letras: nombrar mal al
+                # responsable de una comisión no es errar un ID.
+                avisos.append(
+                    f"En esta comisión hay {len(docentes)} docentes y NINGUNO cubre más "
+                    f"comisiones que el otro ({plantel}). Se toma a {tutor['nombre']} "
+                    "sólo por el rol, que es un criterio más débil: verificalo antes de "
+                    "usar este nombre para atribuir trabajo.")
+            else:
+                avisos.append(
+                    f"En esta comisión hay {len(docentes)} docentes: {plantel}. Se toma a "
+                    f"{tutor['nombre']} como tutor porque es el que aparece en menos "
+                    "comisiones del curso; el resto cubre varias y es la cátedra.")
+        salida[c["group_id"]] = {"tutor": tutor, "avisos": avisos}
+    return salida
+
+
+# ---------------------------------------------------------------------------
 # Desenganche del CURSO entero (una fila por alumno, no por comisión).
 # ---------------------------------------------------------------------------
 
@@ -857,6 +943,11 @@ async def reporte_coordinacion(client, course_id: int, cmids: list[str] | None =
     else:
         avisos = list(avisos_padron or [])
 
+    # Quién es el tutor de cada comisión. Se resuelve una vez para el curso entero
+    # porque la regla es de curso: hace falta ver TODAS las comisiones para saber cuál
+    # docente lleva una y cuál cubre cinco.
+    tutores = elegir_tutor(padrones, comisiones)
+
     # Padrón COMPLETO del curso, para poder poner "566 de 566" y no un número suelto. Cuesta una
     # consulta más y no es gratis (~11 s en 604 matriculados), pero sin el denominador el KPI de
     # alumnos no se puede leer: nadie sabe si 566 son todos o son los que se pudieron ver. De
@@ -948,20 +1039,9 @@ async def reporte_coordinacion(client, course_id: int, cmids: list[str] | None =
             continue
 
         alumnos = padron.get("alumnos") or {}
-        docentes = padron.get("docentes") or []
-        if not docentes:
-            # No es un error de lectura: la comisión existe y no tiene docente asignado.
-            # Es un HALLAZGO y el profesor lo tiene que ver como tal, no como un blanco.
-            tutor = None
-            sin_dato.append("Comisión SIN DOCENTE asignado en el campus (hallazgo, no una "
-                            "falla de lectura).")
-        elif len(docentes) == 1:
-            tutor = docentes[0]
-        else:
-            tutor = docentes[0]
-            sin_dato.append("Hay más de un docente en esta comisión: "
-                            + ", ".join(f"{d['nombre']} [{d['rol']}]" for d in docentes)
-                            + ". Se muestra el primero.")
+        elegido = tutores.get(c["group_id"]) or {"tutor": None, "avisos": []}
+        tutor = elegido["tutor"]
+        sin_dato.extend(elegido["avisos"])
 
         entregados = corregidos = sin_nota_n = pendientes = sin_clasificar = 0
         esperas: list[float] = []
@@ -1155,6 +1235,7 @@ async def demora_correccion(client, course_id: int, cmids: list[str]) -> dict:
         return {"error": "Necesito al menos un cmid de tarea para medir la demora."}
 
     padrones, avisos = await _padrones(client, course_id, comisiones)
+    tutores = elegir_tutor(padrones, comisiones)
     uid_a_comision: dict[int, str] = {}
     for c in comisiones:
         for uid in (padrones.get(c["group_id"], {}).get("alumnos") or {}):
@@ -1196,11 +1277,10 @@ async def demora_correccion(client, course_id: int, cmids: list[str]) -> dict:
     for c in comisiones:
         acum = por_comision[c["comision"]]
         dems, esps = acum["demoras"], acum["esperas"]
-        docentes = (padrones.get(c["group_id"], {}) or {}).get("docentes") or []
         filas.append({
             "comision": c["comision"],
             "group_id": c["group_id"],
-            "tutor": docentes[0] if docentes else None,
+            "tutor": (tutores.get(c["group_id"]) or {}).get("tutor"),
             "corregidas": len(dems),
             "demora_mediana_dias": round(statistics.median(dems), 1) if dems else None,
             "demora_max_dias": max(dems) if dems else None,

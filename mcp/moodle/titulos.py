@@ -14,9 +14,19 @@ verificados en vivo el 2026-09-02:
 
   Programación   "Actividad de cierre unidad 4 - Git 🎯🏁"      -> unidad 4
   Matemática     "ENTREGA U3S1: Ejercicio 3, 4 y 12 de la ..."  -> unidad 3, semana 1
+  Calificador    "Video 2 Semana 1 SN"                          -> semana 1, sin unidad
 
 El de Matemática trae un eje que Programación no tiene: la SEMANA. Una unidad
 puede tener dos o tres entregas (U5 tiene tres) y no son la misma actividad.
+
+El tercero es el del LIBRO DE CALIFICACIONES de Matemática, y es el que obliga a
+que `semana` pueda venir sola. Los videos, lecciones y autoevaluaciones dicen la
+semana ("Video 2 Semana 1 SN") pero NO la unidad: la unidad la nombra la sección
+del curso que los contiene ("2- Sistema binario"), no el título. Devolver
+`semana=None` ahí sería tirar el único eje que el título sí declara — y ordenar
+los 8 videos de Lógica alfabéticamente pone el 4 de la semana 1 después del 1 de
+la semana 2. Quién resuelve la unidad por sección es `calificador.py`; acá se lee
+lo que el título dice y nada más.
 
 Regla de precedencia, y es la que arregla el bug: **el código estructurado
 `U{n}S{m}` gana sobre las palabras sueltas.** Sin eso, "ENTREGA U2S1: Ejercicio 8
@@ -41,6 +51,9 @@ _RE_UNIDAD_SEMANA = re.compile(r"\bu\s*(\d{1,2})\s*s\s*(\d{1,2})\b", re.I)
 _RE_UNIDAD_PALABRA = re.compile(r"unidad\s*(\d+)", re.I)
 # "Actividad de cierre ..." — la cadencia semanal de Programación.
 _RE_CIERRE_PALABRA = re.compile(r"actividad\s+de\s+cierre|cierre", re.I)
+# La SEMANA sola, sin unidad: "Video 2 Semana 1 SN", "Sistema Binario Lección semana 2".
+# Se prueba ÚLTIMA y sólo cuando no hubo código `U{n}S{m}`: ahí la semana ya vino.
+_RE_SEMANA_PALABRA = re.compile(r"semana\s*(\d{1,2})", re.I)
 
 # Instancias que NO son la cadencia semanal: tienen calendario y dinámica propios.
 # El Integrador es grupal y de una sola entrega al final; medido en vivo, 13 de 16
@@ -103,11 +116,17 @@ def leer(titulo: str) -> Actividad:
     if m:
         return Actividad(int(m.group(1)), int(m.group(2)), fuera)
 
+    # La semana suelta es un dato de segunda: no dice qué unidad es, así que no
+    # puede cambiar `unidad` ni `es_cadencia`. Sólo rellena el eje que el título
+    # sí declara, para poder ORDENAR los videos de una unidad como se cursan.
+    ms = _RE_SEMANA_PALABRA.search(t)
+    semana = int(ms.group(1)) if ms else None
+
     m = _RE_UNIDAD_PALABRA.search(t)
     if m:
-        return Actividad(int(m.group(1)), None, fuera)
+        return Actividad(int(m.group(1)), semana, fuera)
 
-    return Actividad(None, None, fuera)
+    return Actividad(None, semana, fuera)
 
 
 def es_actividad_de_cierre(titulo: str) -> bool:

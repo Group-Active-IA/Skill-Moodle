@@ -29,6 +29,7 @@ from moodle import (
     active_ia,
     almacen,
     auditoria,
+    calificador,
     informes,
     panorama,
     snapshot,
@@ -1504,6 +1505,163 @@ async def armar_informe(course_id: int | None = None, group_id: int = 0) -> dict
         return {"error": True, "mensaje": "No sé de qué curso armar el informe: pasá "
                 "course_id o mapeá tus datos primero (descubrir_cursos -> guardar_mis_datos)."}
     return await informes.informe_pendientes(_cli(), cid, almacen.SALIDAS_DIR, group_id=group_id)
+
+
+@mcp.tool()
+async def informe_alumnos(course_id: int, group_id: int = 0, pdf: bool = True,
+                          detalle: bool | None = None) -> dict:
+    """Qué hizo CADA ALUMNO y con qué nota, comisión por comisión y con el tutor a cargo.
+    Con `pdf=True` (por defecto) escribe **un PDF por comisión** —el que se le manda a
+    cada tutor— y devuelve las rutas en `pdf`.
+
+    Lee el LIBRO DE CALIFICACIONES, no las entregas, y por eso ve lo que el resto de la
+    skill no ve. En Matemática `mod_assign` está en CERO ABSOLUTO (549 participantes, 0
+    enviados en las 15 actividades, verificado en vivo): la cursada pasa por videos
+    interactivos H5P, lecciones y autoevaluaciones. Con la vista de entregas el padrón
+    entero sale en blanco y eso se lee como "esta comisión no arrancó", que es falso.
+
+    Devuelve, por comisión: el TUTOR a cargo, sus alumnos, y de cada alumno cuántas
+    actividades hizo por tipo (`video` / `leccion` / `autoevaluacion` / `entrega`) y por
+    unidad, más **la última vez que abrió LA MATERIA** — no el campus: el que entra todos
+    los días para otra materia y hace un mes que no abre ésta figura al día si se mira el
+    reloj equivocado. `detalle` agrega la nota actividad por actividad; por defecto se
+    prende sola cuando pedís UNA comisión (`group_id`) y se apaga cuando pedís el curso
+    entero, donde 550 alumnos x 81 actividades no entran en una respuesta.
+
+    **De dónde sale la unidad de cada video.** De la ESTRUCTURA del curso, no del título:
+    los títulos del calificador dicen "Video 2 Semana 1 SN" y nunca la unidad. La sección
+    numerada ("2- Sistema binario") abre la unidad y los bloques que siguen (Videos,
+    Lecciones, Trabajo Práctico, Autoevaluaciones) la heredan. Se verifica solo: las 13
+    tareas `ENTREGA U{n}S{m}` de Matemática caen 13 de 13 en la unidad que dice su propio
+    título. Lo que queda fuera de un bloque de unidad (coloquios, integradores, video de
+    bienvenida) sale agrupado aparte y NO se le adjudica una unidad inventada.
+
+    **El tutor se resuelve en vivo y no de un reparto escrito.** El padrón de cada
+    comisión trae al tutor Y al profesor del curso; se toma al que aparece en MENOS
+    comisiones, porque el que cubre cinco es la cátedra. Contrastado contra el reparto
+    oficial de Matemática: 15 de 15.
+
+    `sin_dato_de_acceso` y `avisos` antes de concluir nada: un 0 porque nadie hizo nada y
+    un 0 porque no se pudo leer el calificador son cosas distintas. READ-ONLY sobre el
+    campus: lo único que escribe son los PDF, locales, en `salidas/informes/`.
+    """
+    from datetime import date
+
+    comisiones, ignorados, err = await panorama._comisiones_del_curso(_cli(), course_id)
+    if err:
+        return {"error": err}
+    if not comisiones:
+        return {"error": f"El curso {course_id} no tiene comisiones de tutoría "
+                         f"reconocibles. Grupos que se ignoraron: {ignorados[:10]}"}
+    if group_id and not any(c["group_id"] == group_id for c in comisiones):
+        return {"error": f"El group_id {group_id} no es una comisión de tutoría del "
+                         f"curso {course_id}."}
+
+    # El padrón se baja para TODAS las comisiones aunque se haya pedido una sola, y no es
+    # desperdicio: "quién es el tutor de esta comisión" se contesta contando en cuántas
+    # comisiones del CURSO aparece cada docente, así que con una sola comisión a la vista
+    # todos aparecen una vez y la regla no puede opinar. Pedir una comisión devolvería el
+    # nombre del profesor de cátedra con la misma cara de dato bueno.
+    padrones, avisos_padron = await panorama._padrones(_cli(), course_id, comisiones)
+    tutores = panorama.elegir_tutor(padrones, comisiones)
+
+    if group_id:
+        comisiones = [c for c in comisiones if c["group_id"] == group_id]
+    if detalle is None:
+        detalle = len(comisiones) == 1
+
+    for c in comisiones:
+        elegido = tutores.get(c["group_id"]) or {}
+        c["tutor"] = elegido.get("tutor")
+        c["avisos"] = list(elegido.get("avisos") or [])
+        c["course_id"] = course_id
+
+    datos = await calificador.informe(_cli(), course_id, comisiones, padrones)
+    if datos.get("error"):
+        return datos
+    datos["avisos"] = list(avisos_padron) + list(datos.get("avisos") or [])
+    if ignorados:
+        datos["grupos_ignorados"] = ignorados
+
+    if pdf:
+        try:
+            nombre = await panorama._nombre_del_curso(_cli(), course_id)
+        except Exception:  # noqa: BLE001
+            nombre = ""
+        destino = str(Path(almacen.SALIDAS_DIR) / "informes")
+        hechos, fallados = [], []
+        for b in datos["comisiones"]:
+            try:
+                hechos.append(informes.informe_comision_pdf(
+                    b, datos["catalogo"], destino, materia=nombre or "",
+                    fecha=date.today().isoformat()))
+            except Exception as e:  # noqa: BLE001
+                # Que falle un render no puede tirar el relevamiento del curso entero.
+                fallados.append({"comision": b.get("comision"),
+                                 "motivo": f"{type(e).__name__}: {e}"})
+        datos["pdf"] = {"archivos": hechos, "fallaron": fallados, "carpeta": destino}
+        if fallados:
+            datos["avisos"].append(
+                f"{len(fallados)} PDF no se pudieron escribir: los datos de esas "
+                "comisiones están igual en la respuesta, pero no hay documento.")
+
+    # La respuesta se poda ACÁ y no en `calificador`: el dict completo es el que alimenta
+    # los PDF y tiene que estar entero. Lo que se recorta es lo que viaja al chat, y hace
+    # falta: el curso entero con una fila por alumno son 325.000 caracteres — no entra en
+    # una respuesta y no lo lee nadie. Con varias comisiones se devuelve el índice (tutor,
+    # números y ruta del PDF) más los alumnos que no hicieron NADA, que son los únicos
+    # nombres accionables sin abrir el documento. El detalle sale pidiendo una comisión.
+    curso_entero = len(datos["comisiones"]) > 1
+    salida_com = []
+    for b in datos["comisiones"]:
+        alumnos = []
+        for a in ([] if curso_entero else (b.get("alumnos") or [])):
+            fila = {k: a[k] for k in ("userid", "nombre", "actividades_con_nota",
+                                      "sin_actividad", "estado_aula",
+                                      "dias_sin_abrir_la_materia",
+                                      "ultimo_acceso_aula_ts")}
+            fila["por_tipo"] = {t: {"hechas": v["hechas"], "total": v["total"],
+                                    "promedio_pct": v["promedio_pct"]}
+                                for t, v in a["por_tipo"].items()}
+            # Sólo las unidades donde hizo algo. La unidad ausente = no hizo nada
+            # ahí; cuáles existen en el curso está arriba, en `unidades`.
+            fila["por_unidad"] = {
+                u: hechas for u, b2 in a["por_unidad"].items()
+                if (hechas := {t: v["hechas"] for t, v in b2.items() if v["hechas"]})}
+            if detalle:
+                fila["notas"] = sorted(
+                    ({"nro": n["nro"], "actividad": n["titulo"], "tipo": n["tipo"],
+                      "unidad": n["unidad"], "nota": n["nota"], "sobre": n["sobre"]}
+                     for n in a["notas"].values()), key=lambda n: n["nro"])
+            alumnos.append(fila)
+        fila_com = ({k: b[k] for k in ("comision", "group_id", "nombre") if k in b}
+                    | {"tutor": b.get("tutor"), "resumen": b.get("resumen"),
+                       "avisos": b.get("avisos") or []}
+                    | ({"error": b["error"]} if b.get("error") else {}))
+        if curso_entero:
+            fila_com["alumnos_sin_ninguna_actividad"] = [
+                a["nombre"] for a in (b.get("alumnos") or []) if a["sin_actividad"]]
+        else:
+            fila_com["alumnos"] = alumnos
+        salida_com.append(fila_com)
+
+    return {
+        "ok": True, "course_id": course_id, "detalle": detalle,
+        "actividades_del_curso": [
+            {"nro": it["nro"], "actividad": it["titulo"], "tipo": it["tipo"],
+             "unidad": it["unidad"], "semana": it["semana"], "cmid": it["cmid"]}
+            for it in datos["catalogo"]["items"]],
+        "unidades": datos["catalogo"]["unidades"],
+        "comisiones": salida_com,
+        **({"como_ver_el_detalle":
+            "Esta respuesta trae el índice del curso: tutor, números y la ruta del PDF de "
+            "cada comisión, más los alumnos que no hicieron NADA. El alumno por alumno "
+            "está en el PDF; para tenerlo también acá pedí UNA comisión con su group_id."}
+           if curso_entero else {}),
+        "avisos": datos["avisos"],
+        "grupos_ignorados": datos.get("grupos_ignorados", []),
+        **({"pdf": datos["pdf"]} if pdf else {}),
+    }
 
 
 # ---------- CORRECCIÓN AUTOMÁTICA (Active-IA / Gemini) ----------

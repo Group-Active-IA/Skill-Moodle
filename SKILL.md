@@ -324,10 +324,10 @@ Detalle completo de tools, catálogo y gotchas en `references/clickup-tareas.md`
 | **Quién dejó de abrir ESTA materia** (reloj del curso, no del sitio) | `sin_entrar_al_aula` |
 | PDF de pendientes | `armar_informe` |
 | **Auditar cómo está armada un aula** (read-only) | `auditar_aula` |
-| **Vista del PROFESOR: todas las comisiones del curso a la vez** | `panorama_comisiones` |
+| **Vista del PROFESOR: todas las comisiones del curso a la vez** | `reporte_coordinacion` |
 | **Cuánto espera un alumno para que le corrijan, por comisión** | `demora_correccion` |
 | **Informe para los TUTORES NEXO (+ PDF): alumnos que no abren la materia, por regional** | `informes_nexos` |
-| **Cómo van los alumnos con las entregas y las notas, por comisión (+ PDF)** | `avance_alumnos` |
+| **Qué hizo cada ALUMNO y con qué nota, por comisión, con el tutor a cargo (+ 1 PDF por comisión)** | `informe_alumnos` |
 | Cargar una nota (con devolución, y `adjunto` si va un PDF) | `cargar_nota` |
 | **Mensajes privados que te faltan contestar** | `mensajes_pendientes` |
 | Bandeja de conversaciones · hilo completo | `leer_mensajes` · `leer_conversacion` |
@@ -411,7 +411,7 @@ Si responde que no está compilado, la instalación es vieja: `actualizar_skill`
 - **Existe un registro de nota en `-1` para lo que TODAVÍA no se corrigió.**
   `mod_assign_get_grades` devuelve fila igual, con `grade` = `-1.00000`. Tomar "hay
   registro de nota" como "está corregida" apagó las 22 pendientes del curso entero en la
-  primera corrida de `panorama_comisiones`: el tablero decía 0 pendientes en las 16
+  primera corrida de `reporte_coordinacion`: el tablero decía 0 pendientes en las 16
   comisiones. Quien decide es **`gradingstatus` de la ENTREGA** (`graded`/`released` =
   corregida), que viene en la misma request. Verificado: el cruce dio
   `('graded','1.00000')→13`, `('graded','2.00000')→2`, `('notgraded','-1.00000')→10`, y ese
@@ -477,6 +477,18 @@ Todo lo verificado en vivo el 2026-09-02 contra el course 77 (15 comisiones, 552
 participantes). La skill la cubre igual que a Programación, pero **cuatro cosas cambian y
 las cuatro se pueden decir mal sin que salte ningún error**:
 
+0. **La cursada NO pasa por las entregas: pasa por el CALIFICADOR.** Es lo primero que
+   hay que saber y lo que más caro sale ignorar. `mod_assign` está en **cero absoluto**:
+   549 participantes y 0 enviados en las 15 tareas, comisión por comisión. Lo que el
+   alumno hace son **videos interactivos H5P (`hvp`), lecciones y autoevaluaciones**, y
+   eso vive en el libro de calificaciones. Medido en la comisión 01 (40 alumnos): 240
+   notas de video, 89 de lección, 99 de autoevaluación y **0 de entrega**. Entonces
+   `sumario`, `entregas_tarea`, `pendientes_por_corregir` y `reporte_coordinacion`
+   devuelven CERO para Matemática y ese cero es real pero se lee al revés: parece "la
+   comisión no arrancó" cuando 34 de esos 40 alumnos vienen trabajando. Para Matemática
+   usá **`informe_alumnos`**, que lee el calificador. Para Programación seguí con las
+   otras: ahí la entrega sí es la entrega.
+
 1. **Califica con NOTA NUMÉRICA, no con la escala invertida.** Las 13 actividades de
    cadencia van `/100` y "Entrega trabajo 1 y 2" van `/10`. Programación usa `scaleid 5`
    (Aprobado=1, Desaprobado=2). `cargar_nota` lee el tipo de la tarea en vivo y no hay que
@@ -498,8 +510,20 @@ las cuatro se pueden decir mal sin que salte ningún error**:
    cargue; la corrección es a mano, con `ver_entrega` + `cargar_nota`.
 
 Lo que **sí** funciona igual y no hay que tocar: `descubrir_comisiones` (descarta solo los
-12 grupos de horario "Miercoles 19:00 Hs." y las 17 regionales), `entregas_tarea`,
-`sumario`, `demora_correccion`, `reporte_coordinacion`, `auditar_aula`, `foros_pendientes`.
+12 grupos de horario "Miercoles 19:00 Hs." y las 17 regionales), `sin_entrar_al_aula`,
+`auditar_aula`, `foros_pendientes`, `mensajes_pendientes` y `cargar_nota`.
+
+Lo que **corre sin error y devuelve cero** por el punto 0 —no está roto, es que mira el
+módulo que esta materia no usa—: `sumario`, `entregas_tarea`, `pendientes_por_corregir`,
+`demora_correccion` y `reporte_coordinacion`. Si te piden "cómo viene Matemática", ésas
+NO son la respuesta.
+
+**El tutor de cada comisión se resuelve en vivo y NO está escrito en ningún lado.** El
+padrón trae dos docentes por comisión: el tutor y el profesor de cátedra. `elegir_tutor`
+se queda con el que aparece en MENOS comisiones del curso, porque el que cubre cinco es
+la cátedra — contrastado contra el reparto oficial, 15 de 15. Antes se tomaba el primero
+del padrón y el web service ordena por `userid`, así que devolvía la cuenta más vieja (la
+de cátedra) en 13 de 15 comisiones.
 
 Y una ventaja sobre Programación: **Matemática SÍ tiene fechas de entrega** (13 de 15).
 `alumnos_en_riesgo` mide la racha bien desde el día uno, sin el problema de Prog I —donde
@@ -557,7 +581,7 @@ hallazgo es para la cátedra— o un criterio que el campus no expresa. Las dos 
 - No confundir la lista "Material PROG N" (materiales) con la lista "Tareas" del
   folder de la materia (trabajo asignable): usá siempre `tareas_list_id` del catálogo.
 - No armar ranking ni podio de tareas completadas por tutor (misma regla que
-  `panorama_comisiones`).
+  `reporte_coordinacion`).
 
 ## Vista del profesor — el curso entero, por comisión (read-only)
 
@@ -568,34 +592,50 @@ Todo el resto de la skill mira **una** comisión: la del tutor logueado. Éstas 
 
 - **`informes_nexos(course_id)`** → ¿el alumno **APARECE** por la materia? Los desenganchados
   agrupados por regional, con el Tutor Nexo de cada sede. Va a los nexos.
-- **`panorama_comisiones(course_id)`** → ¿el **TUTOR CORRIGIÓ**? El trabajo de corrección por
-  comisión, por tutor y por actividad. Va a coordinación.
-- **`avance_alumnos(course_id)`** → ¿el alumno **ENTREGA y aprueba**? Entregas, aprobadas,
-  desaprobadas y quién menos entregó, por comisión.
+- **`reporte_coordinacion(course_id)`** → ¿el **TUTOR CORRIGIÓ**? El trabajo de corrección por
+  comisión, por tutor y por actividad. Va a coordinación. **No sirve en Matemática**: mide
+  entregas y esa materia no tiene ninguna (ver la sección de Matemática).
+- **`informe_alumnos(course_id)`** → ¿qué **HIZO cada alumno y con qué nota**? Lee el LIBRO DE
+  CALIFICACIONES —videos, lecciones, autoevaluaciones y entregas— y escribe **un PDF por
+  comisión**, con su tutor arriba. Es el que se le manda a cada tutor.
 
-`avance_alumnos` **no resume el avance en ninguna métrica, y es deliberado.** No hay porcentaje,
-ni mediana, ni promedio. Un porcentaje necesita saber cuántas actividades ya deberían estar
-entregadas y ese dato no existe (la mayoría de las actividades no tiene `duedate`); la mediana da
-0 en todas las comisiones cuando más de la mitad del curso está en cero (Prog I: 437 de 566); el
-promedio general reparte las entregas de unos pocos adelantados entre todos y da 0,37 por alumno,
-que no describe a nadie. **Se probaron los tres y los tres fallan.**
+### `informe_alumnos(course_id, group_id?, pdf=True, detalle?)`
 
-Lo que hace en cambio es **mostrar**: el PDF (apaisado) trae una **matriz alumnos × unidades** por
-comisión, con una celda por unidad — `A` aprobó · `D` desaprobó · `·` entregó y nadie se lo
-corrigió · `?` corregido sin nota · vacío no entregó. El que lee ve el patrón directamente: si una
-unidad está vacía en toda la comisión, se ve; si alguien hizo las primeras y paró, se ve; y
-aparecen cosas que ningún promedio muestra, como el alumno que entregó la unidad 3 sin haber
-entregado la 1 ni la 2. Las columnas son sólo las unidades **con alguna entrega en el curso**, en
-orden de unidad, y las que quedan afuera se declaran.
+Lee el calificador y no las entregas, y por eso ve lo que las otras no ven. Devuelve por
+comisión: el **tutor a cargo**, sus alumnos, cuántas actividades hizo cada uno **por tipo y
+por unidad**, y **la última vez que abrió LA MATERIA** — el reloj del curso, nunca el del
+campus: el que entra todos los días para otra materia y hace un mes que no abre la propia
+figura al día si se mira el reloj equivocado.
 
-Para comparar comisiones entre sí sí hay un número, y es el único que se mueve desde el primer
-día: la **proporción de alumnos que no entregó nada** (`pct_sin_entregar`). Lo más útil sigue
-siendo la `lectura` de cada comisión, que cruza eso con el reloj de la materia y separa dos
-atrasos idénticos en los números: *"atrasada con los alumnos entrando"* (están y entregan poco:
-consigna, acompañamiento) de *"atrasada y con muchos que no abren la materia"* (se fueron: es
-retención). Y `esperando_correccion` es el único renglón donde el problema **no** es del alumno.
+**Un PDF por comisión y no uno del curso**, y es una decisión de destinatario: un documento
+donde la comisión de alguien aparece al lado de las otras catorce se lee como una comparación
+entre personas. Misma separación que ya hay entre `informes_nexos` y `reporte_coordinacion`.
+El PDF va apaisado y trae, además del panorama por alumno, una **matriz alumnos × actividades
+con la nota en la celda**, una por tipo. Una matriz no resume: **muestra**. Deja ver lo que
+ningún promedio deja — la unidad vacía en toda la comisión, el que hizo la 4 sin la 1 y la 2,
+el que arrancó y paró.
 
-`panorama_comisiones(course_id, cmids?, incluir_foros?, pdf=True)` — el trabajo de corrección
+**No hay porcentaje de avance, y es deliberado.** Un porcentaje necesita saber cuántas
+actividades ya deberían estar hechas y ese dato no existe. Se cuenta lo que pasó
+(`hechas/total`), no se estima lo que faltaría. Y el denominador cuenta **sólo los tipos que
+el informe muestra**: sumarle las 15 tareas de entrega —que en Matemática no tienen una sola
+entrega en todo el curso— dejaba al alumno que hizo todo lo posible en "7/9", que se lee como
+si le faltara algo. Un denominador inalcanzable no mide nada.
+
+**De dónde sale la unidad de cada video.** De la **estructura del curso**, no del título: los
+títulos del calificador dicen "Video 2 Semana 1 SN" y nunca la unidad. La sección numerada
+("2- Sistema binario") abre la unidad y los bloques que siguen (Videos, Lecciones, Trabajo
+Práctico, Autoevaluaciones) la heredan; una sección con nombre propio **corta la herencia** y
+sus actividades quedan sin unidad en vez de recibir la de al lado. Eso es lo que deja afuera a
+los 7 cuestionarios de COLOQUIOS, a los dos integradores y al video de bienvenida. Se verifica
+solo: las 13 tareas `ENTREGA U{n}S{m}` caen 13 de 13 en la unidad que dice su propio título.
+
+**Tamaños.** El curso entero son ~2 min y 15 PDFs; la respuesta trae el índice (tutor, números,
+ruta del PDF) más los alumnos que no hicieron nada. El alumno por alumno con su nota sale
+pidiendo **una** comisión (`group_id`), donde `detalle` se prende sola. Con 562 alumnos × 81
+actividades el detalle completo no entra en una respuesta y no lo lee nadie.
+
+`reporte_coordinacion(course_id, cmids?, incluir_foros?, pdf=True)` — el trabajo de corrección
 del curso, cortado de **tres** maneras, con PDF:
 
 - **por comisión**: tutor, alumnos, entregadas, corregidas, sin corregir, calificado sin nota,
@@ -657,7 +697,7 @@ Eso vive en ClickUp — un tablero por materia que el equipo ya usa activamente
    priority=..., assignees=[user_id], workspace_id="90171440963")`.
 5. Devolvé el link/ID de la tarea creada.
 
-**Carga de tareas por tutor (read-only, MISMA doctrina que `panorama_comisiones` —
+**Carga de tareas por tutor (read-only, MISMA doctrina que `reporte_coordinacion` —
 NUNCA un ranking):** `clickup_filter_tasks(list_ids=[...], statuses=["to do","in
 progress"], include_closed=false, workspace_id="90171440963")`, agrupado por
 `assignees`. Es **dato de ruteo**: "Fulano tiene 4 tareas abiertas, 1 vencida" sirve
