@@ -511,5 +511,117 @@ class TestGruposDeComision(unittest.TestCase):
         self.assertEqual(grupos.clasificar("Grupo_2"), grupos.OTRO)
 
 
+def _bloque(com, notas_por_alumno, tutor="Docente"):
+    """Una comisión armada a mano: `notas_por_alumno` es una lista de sets de item_id."""
+    alumnos = []
+    for i, ids in enumerate(notas_por_alumno):
+        alumnos.append({
+            "userid": 1000 + i, "nombre": f"ALUMNO {com}-{i}",
+            "notas": {j: {"nota": 10} for j in ids},
+            "por_eje": {5: {"hechas": 1 if ids else 0, "total": 2}},
+            "dias_sin_abrir_la_materia": 0,
+            "sin_actividad": not ids,
+        })
+    return {"comision": com, "nombre": com, "tutor": {"nombre": tutor},
+            "alumnos": alumnos,
+            "resumen": {"alumnos": len(alumnos),
+                        "con_actividad": sum(1 for a in alumnos if not a["sin_actividad"]),
+                        "sin_actividad": sum(1 for a in alumnos if a["sin_actividad"]),
+                        "nunca_abrieron_la_materia": 0,
+                        "notas_cargadas": {"cuestionario": sum(len(a["notas"]) for a in alumnos)}}}
+
+
+class TestVistaDelCoordinador(unittest.TestCase):
+    """El corte por ACTIVIDAD, que ninguna vista por comisión da.
+
+    El caso es real y salió del aula de Probabilidad y Estadística el 2026-09-03: el foro
+    calificado de la semana 1 tenía 31 notas en la comisión 11, 26 en la 3 … y CERO en la
+    4 y una en la 2. Por comisión eso se lee como "la com4 participa menos"; por actividad
+    se ve que en esa comisión la actividad no tiene una sola nota mientras en las otras
+    trece sí. Son dos conclusiones distintas y llevan a llamar a personas distintas.
+    """
+
+    def setUp(self):
+        # item 1 = cuestionario que anda en todas; item 2 = foro que falta en com4
+        self.items = {"items": [
+            {"item_id": 1, "nro": 1, "titulo": "S1-Cuestionario", "tipo": "cuestionario",
+             "naturaleza": "cadencia", "unidad": 1, "semana": 1, "cmid": 10},
+            {"item_id": 2, "nro": 2, "titulo": "S1-Foro calificado", "tipo": "foro",
+             "naturaleza": "cadencia", "unidad": 1, "semana": 1, "cmid": 11},
+        ], "eje": "semana"}
+        self.bloques = [
+            _bloque("com1", [{1, 2}, {1, 2}, {1, 2}], "Biondi"),
+            _bloque("com2", [{1, 2}, {1, 2}, {1}], "Isla Zuvialde"),
+            _bloque("com3", [{1}, {1}, {1}], "Comerci"),      # el foro en CERO
+            _bloque("com4", [{1, 2}, {1}, set()], "Figueroa"),
+        ]
+
+    def test_una_actividad_en_cero_en_una_comision_y_andando_en_el_resto_se_marca(self):
+        por_act = calificador.panorama_por_actividad(self.bloques, self.items,
+                                                     minimo_para_comparar=5)
+        foro = next(f for f in por_act if f["nro"] == 2)
+        self.assertEqual(foro["notas_en_el_curso"], 6)
+        self.assertEqual(foro["comisiones_en_cero"], ["com3"])
+        cuest = next(f for f in por_act if f["nro"] == 1)
+        self.assertEqual(cuest["comisiones_en_cero"], [])
+
+    def test_una_actividad_que_no_arranco_en_NINGUN_lado_no_es_un_hueco(self):
+        """Catorce comisiones en cero sobre una actividad que el curso todavía no dictó no
+        dicen nada. Marcarlas llena la lista de ruido y nadie la mira más."""
+        bloques = [_bloque("com1", [{1}]), _bloque("com2", [{1}])]
+        por_act = calificador.panorama_por_actividad(bloques, self.items,
+                                                     minimo_para_comparar=5)
+        foro = next(f for f in por_act if f["nro"] == 2)
+        self.assertEqual(foro["notas_en_el_curso"], 0)
+        self.assertEqual(foro["comisiones_en_cero"], [])
+
+    def test_una_actividad_en_cero_en_TODAS_tampoco_es_un_hueco_de_una_comision(self):
+        """Si falta en todas, el problema es del curso y no de ninguna comisión."""
+        bloques = [_bloque("com1", [{1}] * 5), _bloque("com2", [{1}] * 5)]
+        por_act = calificador.panorama_por_actividad(bloques, self.items,
+                                                     minimo_para_comparar=1)
+        foro = next(f for f in por_act if f["nro"] == 2)
+        self.assertEqual(foro["comisiones_en_cero"], [])
+
+    def test_los_huecos_se_ordenan_por_cuantas_comisiones_quedaron_afuera(self):
+        """Cuantas más comisiones, menos se parece a un problema de una persona."""
+        por_act = calificador.panorama_por_actividad(self.bloques, self.items,
+                                                     minimo_para_comparar=5)
+        huecos = calificador.huecos_de_calificacion(por_act)
+        self.assertEqual([h["nro"] for h in huecos], [2])
+
+    def test_la_fila_por_comision_lleva_al_tutor_y_no_un_puntaje(self):
+        filas = calificador.panorama_por_comision(self.bloques, self.items, hasta=5)
+        self.assertEqual(filas[0]["tutor"], "Biondi")
+        self.assertEqual(filas[0]["alumnos"], 3)
+        # `al_dia` es la única columna comparable, y sale del eje del curso
+        self.assertEqual(filas[0]["al_dia"], 3)
+        self.assertEqual(filas[3]["sin_actividad"], 1)
+
+    def test_una_comision_vacia_lo_declara_en_vez_de_mostrar_cero(self):
+        """Un 0 porque no se pudo leer el padrón y un 0 porque nadie hizo nada son cosas
+        distintas: sólo una manda a llamar a alguien."""
+        filas = calificador.panorama_por_comision(
+            [{"comision": "com9", "alumnos": [], "resumen": {}}], self.items, hasta=5)
+        self.assertTrue(filas[0]["sin_dato"])
+
+    def test_los_alumnos_sin_comision_van_con_nombre(self):
+        """Decir "hay 1" no le sirve a nadie: no lo ve ningún tutor, así que hay que poder
+        escribirle."""
+        padron = {"sueltos": [
+            {"id": 77, "fullname": "SUELTO UNO", "email": "s1@x.com",
+             "lastcourseaccess": 0, "lastaccess": 0}]}
+        fuera = calificador.alumnos_sin_comision(padron, uids_en_comisiones={1, 2})
+        self.assertEqual(len(fuera), 1)
+        self.assertEqual(fuera[0]["nombre"], "SUELTO UNO")
+        self.assertEqual(fuera[0]["email"], "s1@x.com")
+        self.assertEqual(fuera[0]["estado_aula"], "nunca_abrio")
+
+    def test_el_que_ya_esta_en_una_comision_no_se_cuenta_como_suelto(self):
+        padron = {"sueltos": [{"id": 1, "fullname": "YA ESTA", "email": "y@x.com"}]}
+        self.assertEqual(
+            calificador.alumnos_sin_comision(padron, uids_en_comisiones={1}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

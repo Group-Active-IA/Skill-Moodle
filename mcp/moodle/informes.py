@@ -1523,3 +1523,177 @@ def informe_comision_pdf(bloque: dict, catalogo: dict, dest_dir: str,
     doc.build(E)
     return {"ok": True, "archivo": path, "alumnos": len(alumnos),
             "comision": com, "tutor": tutor}
+
+
+# ---------------------------------------------------------------------------
+# PDF DE CURSO — la vista del COORDINADOR sobre el calificador
+# ---------------------------------------------------------------------------
+#
+# El complemento del PDF por comisión, y su opuesto en destinatario: aquél va al tutor con
+# SUS alumnos, éste va a quien coordina la materia y pone las quince al lado. Por eso acá
+# NO hay nombres de alumnos salvo en dos listas donde el nombre ES la acción (los que no
+# están en ninguna comisión y los que dejaron de abrir la materia).
+#
+# Se audita el TRABAJO, nunca se califica a la PERSONA. Nombrar al tutor es ruteo —a quién
+# llamar— y va. Un ranking o un puntaje de tutores NO va: las comisiones no son comparables
+# entre sí y comparar personas convierte un hecho en un juicio.
+
+_MAX_HUECOS = 12
+_MAX_SIN_COMISION = 15
+
+
+def informe_curso_pdf(datos: dict, dest_dir: str, materia: str = "", fecha: str = "",
+                      por_comision=None, por_actividad=None, huecos=None,
+                      sin_comision=None) -> dict:
+    """La vista del coordinador: las comisiones lado a lado y los huecos de calificación.
+
+    PURO en lo que importa: recibe el dict ya armado por `calificador.informe` más los
+    tres cortes ya calculados. Sin red y sin credenciales.
+    """
+    from . import calificador as _cal
+
+    os.makedirs(dest_dir, exist_ok=True)
+    cid = datos.get("course_id", "")
+    path = os.path.join(dest_dir, f"coordinacion_calificador_curso{cid}.pdf")
+
+    cat = datos.get("catalogo") or {}
+    eje = cat.get("eje") or "unidad"
+    hasta = datos.get("hasta_donde_llego")
+    por_comision = por_comision or []
+    huecos = huecos or []
+    sin_comision = sin_comision or []
+
+    ss = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1x", parent=ss["Heading1"], fontSize=15, leading=17,
+                        textColor=NAVY, spaceAfter=2)
+    h2 = ParagraphStyle("h2x", parent=ss["Heading2"], fontSize=10.5, leading=12.5,
+                        textColor=colors.HexColor("#1c5a7a"), spaceBefore=10, spaceAfter=3)
+    small = ParagraphStyle("sx", parent=ss["Normal"], fontSize=7.2, leading=9.2,
+                           textColor=colors.grey)
+    mini = ParagraphStyle("mx", parent=ss["Normal"], fontSize=6, leading=7.6,
+                          textColor=colors.HexColor("#555555"))
+
+    ancho_total = 27.0
+    doc = SimpleDocTemplate(path, pagesize=landscape(A4),
+                            leftMargin=1.1 * cm, rightMargin=1.1 * cm,
+                            topMargin=1.0 * cm, bottomMargin=1.0 * cm)
+
+    tot_alumnos = sum(f["alumnos"] or 0 for f in por_comision)
+    tot_con = sum(f["con_actividad"] or 0 for f in por_comision)
+    tot_sin = sum(f["sin_actividad"] or 0 for f in por_comision)
+    tot_nunca = sum(f["nunca_abrieron"] or 0 for f in por_comision)
+
+    E = [Paragraph(f"{sin_emoji(materia) or f'Curso {cid}'} - Coordinación de la materia", h1)]
+    linea = (f"{len(por_comision)} comisiones &nbsp;·&nbsp; {tot_alumnos} alumnos"
+             + (f" &nbsp;·&nbsp; {fecha}" if fecha else ""))
+    E.append(Paragraph(linea, small))
+    if hasta is not None:
+        ejes = cat.get("semanas") if eje == "semana" else cat.get("unidades")
+        tope = (ejes or [hasta])[-1]
+        E.append(Paragraph(
+            f"La cursada va por la <b>{eje} {hasta} de {tope}</b> — dato derivado (la "
+            f"última {eje} con alguna nota cargada en el curso), no una fecha del campus.",
+            small))
+    E.append(Spacer(1, 6))
+
+    E.append(_tiles([
+        (tot_alumnos, "ALUMNOS EN COMISIONES", NAVY),
+        (tot_con, "CON ACTIVIDAD REGISTRADA", TEAL),
+        (tot_sin, "SIN NINGUNA ACTIVIDAD", AMBER),
+        (len(huecos), "ACTIVIDADES CON HUECOS DE CALIFICACIÓN", RED),
+    ], ancho_total))
+    E.append(Spacer(1, 8))
+
+    # --- Tabla por comisión ---
+    tipos = [t for t in _cal.ORDEN_TIPOS
+             if any((f["notas_cargadas"] or {}).get(t) for f in por_comision)]
+    cab = (["Com.", "Tutor/a", "Alu.", "Con act.", "Sin act."]
+           + ([f"Al día ({eje[:3]}. {hasta})"] if hasta is not None else [])
+           + ["Nunca abrió", "Sin abrir +7 d"]
+           + [_TIPO_CORTO.get(t, t) for t in tipos])
+    filas = [cab]
+    for f in por_comision:
+        fila = [f["comision"] or "—", sin_emoji(f["tutor"] or "SIN DOCENTE")[:28],
+                str(f["alumnos"] or 0), str(f["con_actividad"] or 0),
+                str(f["sin_actividad"] or 0)]
+        if hasta is not None:
+            fila.append(str(f["al_dia"] if f["al_dia"] is not None else "—"))
+        fila += [str(f["nunca_abrieron"] or 0), str(f["desenganchados"] or 0)]
+        fila += [str((f["notas_cargadas"] or {}).get(t, 0)) for t in tipos]
+        filas.append(fila)
+    # Fila TOTAL: sin ella, cada número de arriba se lee sin denominador.
+    total = ["TOTAL", "", str(tot_alumnos), str(tot_con), str(tot_sin)]
+    if hasta is not None:
+        total.append(str(sum(f["al_dia"] or 0 for f in por_comision)))
+    total += [str(tot_nunca), str(sum(f["desenganchados"] or 0 for f in por_comision))]
+    total += [str(sum((f["notas_cargadas"] or {}).get(t, 0) for f in por_comision))
+              for t in tipos]
+    filas.append(total)
+
+    n_extra = len(filas[0]) - 2
+    anchos = [1.5, 6.2] + [(ancho_total - 7.7) / n_extra] * n_extra
+    E.append(Paragraph("Cada comisión y su tutor/a", h2))
+    E.append(_tabla(filas, anchos, font=6.8, compacta=True,
+                    alinear_der=list(range(2, len(filas[0])))))
+    E.append(Paragraph(
+        f"«Al día» = alumnos con alguna nota en la {eje} {hasta}, que es hasta donde llegó "
+        "el curso. Es la única columna comparable entre comisiones, y aun así no son "
+        "comparables del todo: distinto tamaño, distinta cohorte. <b>Son hechos por "
+        "comisión, no un puntaje del tutor.</b> «Sin abrir +7 d» usa el reloj de ESTA "
+        "materia, no el del campus.", mini))
+
+    # --- Huecos de calificación: el corte que no da ninguna vista por comisión ---
+    E.append(PageBreak())
+    E.append(Paragraph("Actividades que andan en el curso y están en CERO en alguna comisión", h2))
+    if not huecos:
+        E.append(Paragraph(
+            "Ninguna. Toda actividad con movimiento en el curso tiene al menos una nota en "
+            "cada comisión. (No quiere decir que estén al día: quiere decir que no hay "
+            "ninguna comisión donde una actividad quedó entera sin calificar.)", small))
+    else:
+        rows = [["Nro", eje.capitalize(), "Actividad", "Tipo", "Notas en el curso",
+                 "Comisiones en CERO"]]
+        for f in huecos[:_MAX_HUECOS]:
+            v = f["semana"] if eje == "semana" else f["unidad"]
+            rows.append([str(f["nro"]), str(v) if v is not None else "—",
+                         sin_emoji(f["actividad"])[:58],
+                         _TIPO_CORTO.get(f["tipo"], f["tipo"]),
+                         str(f["notas_en_el_curso"]),
+                         ", ".join(f["comisiones_en_cero"])])
+        E.append(_tabla(rows, [1.1, 1.5, 11.5, 2.0, 2.6, ancho_total - 18.7],
+                        font=6.8, compacta=True, alinear_der=[4]))
+        if len(huecos) > _MAX_HUECOS:
+            E.append(Paragraph(f"…y {len(huecos) - _MAX_HUECOS} más. La lista completa "
+                               "está en la respuesta, en `huecos_de_calificacion`.", mini))
+        E.append(Paragraph(
+            "<b>Esto NO dice que esos alumnos no participaron.</b> Dice que en esas "
+            "comisiones la actividad no tiene una sola nota mientras en el resto del curso "
+            "sí las tiene. Puede ser que no se calificó, que no se dictó o que quedó "
+            "restringida — las tres se arreglan hablando con alguien distinto. Sólo se "
+            "listan actividades con al menos 5 notas en el curso: una que todavía no "
+            "arrancó en ningún lado no dice nada.", mini))
+
+    # --- Los que no ve ningún tutor ---
+    if sin_comision:
+        E.append(PageBreak())
+        E.append(Paragraph("Matriculados en el curso y en NINGUNA comisión", h2))
+        rows = [["Alumno", "Email", "Última vez que abrió la materia"]]
+        for a in sin_comision[:_MAX_SIN_COMISION]:
+            rows.append([sin_emoji(a["nombre"])[:40], a.get("email") or "—",
+                         _acceso_txt(a)])
+        E.append(_tabla(rows, [8.0, 10.0, ancho_total - 18.0], font=7, compacta=True))
+        E.append(Paragraph(
+            "No los ve ningún tutor: toda la skill y todas las vistas del campus que usa "
+            "un tutor trabajan por comisión. Son invisibles por construcción, y por eso "
+            "van con nombre y mail — decir «hay 1» no le sirve a nadie.", mini))
+
+    avisos = list(datos.get("avisos") or [])
+    if avisos:
+        E.append(PageBreak())
+        E.append(Paragraph("Lo que este informe NO pudo relevar, y cómo se leyó el aula", h2))
+        for a in avisos:
+            E.append(Paragraph(f"- {sin_emoji(a)}", small))
+
+    doc.build(E)
+    return {"ok": True, "archivo": path, "comisiones": len(por_comision),
+            "alumnos": tot_alumnos, "huecos": len(huecos)}

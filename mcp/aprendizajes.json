@@ -186,6 +186,18 @@
             "informe_alumnos",
             "alumnos_en_riesgo"
           ]
+        },
+        {
+          "fecha": "2026-09-03",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "En PyE hay actividades que están calificadas en la mayoría de las comisiones y en CERO en algunas — no unas pocas notas menos: ninguna. Al 2026-09-03: el cuestionario 'S3-Análisis de Informe Técnico' tiene 98 notas en el curso y cero en SEIS comisiones (2, 5, 7, 9, 10 y 14); 'S2-Ejercitación: interpretación de tablas de frecuencias' tiene 324 y cero en la com2; el foro calificado de la S1 tiene 274 y cero en la com4. Antes de leerlo como que esos alumnos no participaron, PREGUNTALE A LA CÁTEDRA: puede ser que no se calificó, que esa comisión no lo dictó, o que la actividad esté restringida por grupo. Las tres se arreglan hablando con alguien distinto.",
+          "estado": "dicho",
+          "verificacion": "Contado con `informe_alumnos(79)` sobre las 15 comisiones: es un HECHO del calificador y está verificado. Lo que NO está verificado —y por eso esta entrada es `dicho`— es la CAUSA. Nadie de la cátedra la confirmó.",
+          "afecta": [
+            "informe_alumnos",
+            "huecos_de_calificacion",
+            "reporte_coordinacion"
+          ]
         }
       ]
     }

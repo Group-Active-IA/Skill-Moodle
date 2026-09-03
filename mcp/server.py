@@ -1541,6 +1541,20 @@ async def informe_alumnos(course_id: int, group_id: int = 0, pdf: bool = True,
     comisiones, porque el que cubre cinco es la cátedra. Contrastado contra el reparto
     oficial de Matemática: 15 de 15.
 
+    **Con el curso entero (sin `group_id`) suma la vista del COORDINADOR**, que es otro
+    documento y otro destinatario: `coordinacion_calificador_curso«N».pdf` pone las
+    comisiones lado a lado con su tutor, y trae dos cortes que ninguna vista por comisión
+    da. `huecos_de_calificacion`: actividades que andan en el curso y están en CERO en
+    alguna comisión — relevado en PyE, el foro calificado de la semana 1 tenía 31 notas en
+    una comisión y NINGUNA en otras dos; por comisión eso se lee como "participan menos" y
+    manda a llamar a la gente equivocada. Y `alumnos_sin_comision`, con nombre y mail: no
+    los ve ningún tutor porque toda la skill trabaja por comisión.
+
+    **Se audita el TRABAJO, nunca se califica a la PERSONA.** Nombrar al tutor es ruteo —a
+    quién llamar— y va. Un ranking o un puntaje de tutores NO va, ni en la tabla ni en cómo
+    lo contás: las comisiones no son comparables entre sí (distinto tamaño, cohorte y
+    consigna), así que comparar personas convierte un hecho en un juicio.
+
     `sin_dato_de_acceso` y `avisos` antes de concluir nada: un 0 porque nadie hizo nada y
     un 0 porque no se pudo leer el calificador son cosas distintas. READ-ONLY sobre el
     campus: lo único que escribe son los PDF, locales, en `salidas/informes/`.
@@ -1583,6 +1597,35 @@ async def informe_alumnos(course_id: int, group_id: int = 0, pdf: bool = True,
     if ignorados:
         datos["grupos_ignorados"] = ignorados
 
+    # --- Los tres cortes de la vista del coordinador. Salen GRATIS: los datos ya se
+    # bajaron para los PDF por comisión, y son puros. ---
+    hasta = datos.get("hasta_donde_llego")
+    por_comision = calificador.panorama_por_comision(
+        datos["comisiones"], datos["catalogo"], hasta)
+    por_actividad = calificador.panorama_por_actividad(
+        datos["comisiones"], datos["catalogo"])
+    huecos = calificador.huecos_de_calificacion(por_actividad)
+
+    # Quién está matriculado en el curso y en ninguna comisión. Cuesta una consulta más y
+    # sólo se paga cuando se mira el curso entero: pedir una comisión no necesita saberlo.
+    sin_comision = []
+    if not group_id:
+        padron_curso = await panorama._padron_del_curso(_cli(), course_id)
+        if padron_curso.get("error"):
+            datos["avisos"].append(
+                f"No pude leer el padrón completo del curso: {padron_curso['error']}. No "
+                "puedo decir si hay alumnos fuera de toda comisión — que no es lo mismo "
+                "que decir que no los hay.")
+        else:
+            uids = {uid for gid in padrones
+                    for uid in (padrones[gid].get("alumnos") or {})}
+            sin_comision = calificador.alumnos_sin_comision(padron_curso, uids)
+            if sin_comision:
+                datos["avisos"].append(
+                    f"{len(sin_comision)} alumno(s) están matriculados en el curso y en "
+                    "NINGUNA comisión: no los ve ningún tutor. Van con nombre en "
+                    "`alumnos_sin_comision` y en el PDF de coordinación.")
+
     if pdf:
         try:
             nombre = await panorama._nombre_del_curso(_cli(), course_id)
@@ -1600,7 +1643,18 @@ async def informe_alumnos(course_id: int, group_id: int = 0, pdf: bool = True,
                 # Que falle un render no puede tirar el relevamiento del curso entero.
                 fallados.append({"comision": b.get("comision"),
                                  "motivo": f"{type(e).__name__}: {e}"})
-        datos["pdf"] = {"archivos": hechos, "fallaron": fallados, "carpeta": destino}
+        coordinacion = None
+        if not group_id:
+            try:
+                coordinacion = informes.informe_curso_pdf(
+                    datos, destino, materia=nombre or "", fecha=date.today().isoformat(),
+                    por_comision=por_comision, por_actividad=por_actividad,
+                    huecos=huecos, sin_comision=sin_comision)
+            except Exception as e:  # noqa: BLE001
+                coordinacion = {"error": f"No pude escribir el PDF de coordinación: "
+                                         f"{type(e).__name__}: {e}"}
+        datos["pdf"] = {"archivos": hechos, "fallaron": fallados, "carpeta": destino,
+                        "coordinacion": coordinacion}
         if fallados:
             datos["avisos"].append(
                 f"{len(fallados)} PDF no se pudieron escribir: los datos de esas "
@@ -1661,6 +1715,12 @@ async def informe_alumnos(course_id: int, group_id: int = 0, pdf: bool = True,
         "semanas": datos["catalogo"].get("semanas") or [],
         "hasta_donde_llego": datos.get("hasta_donde_llego"),
         "comisiones": salida_com,
+        "por_comision": por_comision,
+        "huecos_de_calificacion": [
+            {k: h[k] for k in ("nro", "actividad", "tipo", "naturaleza", "unidad",
+                               "semana", "notas_en_el_curso", "comisiones_en_cero")}
+            for h in huecos],
+        **({"alumnos_sin_comision": sin_comision} if sin_comision else {}),
         **({"como_ver_el_detalle":
             "Esta respuesta trae el índice del curso: tutor, números y la ruta del PDF de "
             "cada comisión, más los alumnos que no hicieron NADA. El alumno por alumno "

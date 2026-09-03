@@ -685,6 +685,29 @@ ruta del PDF) más los alumnos que no hicieron nada. El alumno por alumno con su
 pidiendo **una** comisión (`group_id`), donde `detalle` se prende sola. Con 562 alumnos × 81
 actividades el detalle completo no entra en una respuesta y no lo lee nadie.
 
+#### Sin `group_id` suma la vista del COORDINADOR
+
+Otro documento y otro destinatario: `coordinacion_calificador_curso«N».pdf` pone las
+comisiones **lado a lado** con su tutor, y por eso NO lleva nombres de alumnos salvo donde el
+nombre ES la acción. Trae dos cortes que ninguna vista por comisión da:
+
+- **`huecos_de_calificacion`** — actividades que andan en el curso y están en **CERO** en
+  alguna comisión. Es el corte que no existía, y encuentra lo que a ojo no se ve: en PyE
+  destapó que el cuestionario de la semana 3 tiene 98 notas en el curso y **ninguna en seis
+  comisiones**, y que el de la semana 2 tiene **324** y cero en una. Sólo se listan
+  actividades con al menos 5 notas en el curso: una que todavía no arrancó en ningún lado
+  tiene catorce comisiones en cero y no dice nada.
+  **Esto NO dice que esos alumnos no participaron.** Dice que ahí la actividad no tiene una
+  sola nota mientras en el resto sí — puede ser que no se calificó, que no se dictó o que
+  quedó restringida, y las tres se arreglan hablando con alguien distinto.
+- **`alumnos_sin_comision`**, con nombre y mail. No los ve ningún tutor porque toda la skill
+  trabaja por comisión: son invisibles por construcción. Decir "hay 1" no le sirve a nadie.
+
+La columna **`al_dia`** (alumnos con alguna nota en la última unidad/semana que el curso
+dictó) es la única comparable entre comisiones, y aun así no del todo. **Se audita el
+TRABAJO, nunca se califica a la PERSONA**: nombrar al tutor es ruteo —a quién llamar— y va;
+un ranking o un puntaje NO va, ni en la tabla ni en cómo lo contás.
+
 `reporte_coordinacion(course_id, cmids?, incluir_foros?, pdf=True)` — el trabajo de corrección
 del curso, cortado de **tres** maneras, con PDF:
 

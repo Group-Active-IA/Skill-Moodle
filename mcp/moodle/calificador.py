@@ -618,6 +618,134 @@ def hasta_donde_llego_el_curso(filas_de_todas: list[dict]) -> int | None:
 
 
 # ---------------------------------------------------------------------------
+# La vista del COORDINADOR: las comisiones lado a lado. PURO.
+# ---------------------------------------------------------------------------
+#
+# `informe_alumnos` le da a cada tutor su comisión. Al que coordina la materia eso no le
+# sirve: son quince documentos y ninguno le dice dónde mirar primero. Estas dos funciones
+# son los dos cortes de la MISMA información, y el segundo es el que no existía en ningún
+# lado.
+#
+# Por qué el corte por ACTIVIDAD importa tanto: relevado en PyE el 2026-09-03, el foro
+# calificado de la semana 1 tenía 31 notas en la comisión 11, 26 en la 3 … y **CERO en la
+# 4 y una en la 2**. Por comisión eso se ve como "la com4 participa menos"; por actividad
+# se ve lo que realmente pasó, que es que en dos comisiones esa actividad no se calificó.
+# Son dos conclusiones distintas y llevan a llamar a personas distintas.
+
+_DESENGANCHE_DIAS = 7
+
+
+def panorama_por_comision(bloques: list[dict], items_cal: dict,
+                          hasta: int | None = None) -> list[dict]:
+    """Una fila por comisión, con su tutor. PURA.
+
+    `al_dia` es la única columna comparable entre comisiones y por eso existe: cuenta los
+    alumnos con alguna nota en la ÚLTIMA unidad/semana que el curso dictó. No hay
+    porcentaje de avance ni mediana — este proyecto probó los tres y los tres fallan
+    (la mediana da 0 en todas las comisiones cuando más de la mitad del curso está en
+    cero, y el promedio reparte el trabajo de unos pocos entre todos).
+    """
+    filas = []
+    for b in bloques:
+        alumnos = b.get("alumnos") or []
+        res = b.get("resumen") or {}
+        al_dia = sum(1 for a in alumnos
+                     if hasta is not None and (a.get("por_eje") or {}).get(hasta, {}).get("hechas"))
+        deseng = sum(1 for a in alumnos
+                     if (a.get("dias_sin_abrir_la_materia") or 0) >= _DESENGANCHE_DIAS)
+        sin_dato = []
+        if b.get("error"):
+            sin_dato.append(f"No se pudo leer esta comisión: {b['error']}")
+        elif not alumnos:
+            sin_dato.append("La comisión vino sin alumnos: el 0 de acá es 'no se pudo "
+                            "leer el padrón', no 'no hay nadie'.")
+        filas.append({
+            "comision": b.get("comision"),
+            "nombre": b.get("nombre"),
+            "tutor": (b.get("tutor") or {}).get("nombre"),
+            "alumnos": res.get("alumnos", len(alumnos)),
+            "con_actividad": res.get("con_actividad", 0),
+            "sin_actividad": res.get("sin_actividad", 0),
+            "al_dia": al_dia if hasta is not None else None,
+            "nunca_abrieron": res.get("nunca_abrieron_la_materia", 0),
+            "desenganchados": deseng,
+            "notas_cargadas": res.get("notas_cargadas", {}),
+            "avisos": b.get("avisos") or [],
+            "sin_dato": sin_dato,
+        })
+    return filas
+
+
+def panorama_por_actividad(bloques: list[dict], items_cal: dict,
+                           minimo_para_comparar: int = 5) -> list[dict]:
+    """Una fila por ACTIVIDAD, con en cuántas comisiones tiene notas. PURA.
+
+    El corte que ninguna vista por comisión da. Cuando una actividad está calificada en
+    doce comisiones y en cero en dos, el problema no es de los alumnos de esas dos: o no
+    se calificó, o no se dictó, o quedó restringida. Por comisión eso se lee como
+    "participan menos" y manda a llamar a la gente equivocada.
+
+    `minimo_para_comparar` evita el ruido: una actividad que en TODO el curso tiene tres
+    notas todavía no arrancó en ningún lado y sus catorce comisiones en cero no dicen
+    nada. Sólo se marcan huecos donde el resto del curso ya la tiene andando.
+    """
+    con_alumnos = [b for b in bloques if (b.get("alumnos") or [])]
+    filas = []
+    for it in items_cal.get("items", []):
+        iid = it["item_id"]
+        por_comision, total = {}, 0
+        for b in con_alumnos:
+            n = sum(1 for a in b["alumnos"] if iid in (a.get("notas") or {}))
+            por_comision[b.get("comision")] = n
+            total += n
+        en_cero = sorted((c for c, n in por_comision.items() if n == 0),
+                         key=lambda c: int(str(c)[3:]) if str(c)[3:].isdigit() else 0)
+        hueco = (total >= minimo_para_comparar
+                 and len(en_cero) < len(con_alumnos)
+                 and bool(en_cero))
+        filas.append({
+            "nro": it["nro"], "actividad": it["titulo"], "tipo": it["tipo"],
+            "naturaleza": it["naturaleza"], "unidad": it["unidad"],
+            "semana": it["semana"], "cmid": it["cmid"],
+            "notas_en_el_curso": total,
+            "comisiones_con_notas": sum(1 for n in por_comision.values() if n),
+            "comisiones_en_cero": en_cero if hueco else [],
+            "por_comision": por_comision,
+        })
+    return filas
+
+
+def huecos_de_calificacion(por_actividad: list[dict]) -> list[dict]:
+    """Las actividades que andan en el curso y están en cero en alguna comisión.
+
+    Es la lista corta que el coordinador mira primero. Ordenada por cuántas comisiones
+    quedaron afuera: cuantas más, menos se parece a un problema de una persona.
+    """
+    huecos = [f for f in por_actividad if f["comisiones_en_cero"]]
+    huecos.sort(key=lambda f: (-len(f["comisiones_en_cero"]), -f["notas_en_el_curso"]))
+    return huecos
+
+
+def alumnos_sin_comision(padron_curso: dict, uids_en_comisiones: set) -> list[dict]:
+    """Los matriculados en el curso que no están en ninguna comisión. PURA.
+
+    No los ve NINGÚN tutor: toda la skill (y todas las vistas del campus que usa un tutor)
+    trabajan por comisión. Son invisibles por construcción, así que el informe los tiene
+    que nombrar — decir "hay 1" y no cuál es lo deja igual de perdido.
+    """
+    fuera = []
+    for u in (padron_curso.get("sueltos") or []):
+        uid = u.get("id")
+        if uid is None or int(uid) in uids_en_comisiones:
+            continue
+        fuera.append({"userid": int(uid), "nombre": u.get("fullname") or "",
+                      "email": u.get("email") or "",
+                      **_acceso(u)})
+    fuera.sort(key=lambda a: a["nombre"].upper())
+    return fuera
+
+
+# ---------------------------------------------------------------------------
 # Consultas al campus.
 # ---------------------------------------------------------------------------
 
