@@ -12,7 +12,7 @@ import html as _html
 import logging
 import re
 
-from . import titulos
+from . import grupos, titulos
 from .cliente import MoodleWSError
 
 log = logging.getLogger("skill.ws_api")
@@ -158,24 +158,14 @@ async def _participantes(client, cmid: str, group_id: int) -> list[dict] | dict:
         return {"error": f"list_participants falló: {e.errorcode}"}
 
 
-# Nombre de comisión de este campus: cohorte + comisión ("A26 C1-06", "M26 C2-14").
-_RE_COMISION = re.compile(r"^\s*[AM]\d{2}\s+C\d+\s*-\s*\d+\s*$")
-
-
 def clasificar_grupo(nombre: str) -> str:
     """Qué es un grupo del curso: `comision`, `regional` u `otro`.
 
-    Los grupos de un curso NO son todos comisiones: conviven con las 17 regionales `R-*` y
-    con grupos auxiliares. Contarlos juntos da números que parecen del padrón y no lo son —
-    en Prog II, 32 grupos de los que sólo 15 son comisiones, y cruzar los otros 17 contra una
-    tarea produjo un conteo de alumnos «invisibles» inflado al doble.
+    El criterio vive en `grupos.py`. Acá había una segunda regex, casi igual a la de
+    `panorama` pero no igual (ésta exigía `[AM]`, aquélla `[A-Z]`), y las dos ignoraban las
+    15 comisiones de Probabilidad y Estadística.
     """
-    n = (nombre or "").strip()
-    if _RE_COMISION.match(n):
-        return "comision"
-    if n.upper().startswith("R-") or n.upper().startswith("R "):
-        return "regional"
-    return "otro"
+    return grupos.clasificar(nombre)
 
 
 def _es_estudiante(p: dict) -> bool:

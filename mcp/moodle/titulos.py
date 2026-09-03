@@ -15,6 +15,7 @@ verificados en vivo el 2026-09-02:
   Programación   "Actividad de cierre unidad 4 - Git 🎯🏁"      -> unidad 4
   Matemática     "ENTREGA U3S1: Ejercicio 3, 4 y 12 de la ..."  -> unidad 3, semana 1
   Calificador    "Video 2 Semana 1 SN"                          -> semana 1, sin unidad
+  Prob. y Est.   "S5-Cuestionario: técnicas de conteo"          -> semana 5, sin unidad
 
 El de Matemática trae un eje que Programación no tiene: la SEMANA. Una unidad
 puede tener dos o tres entregas (U5 tiene tres) y no son la misma actividad.
@@ -35,6 +36,16 @@ devolvía la unidad 1 — el número del CUADERNILLO, no el de la unidad. Daba m
 13 de las 15 de Matemática, y en la grilla se leía como cuatro actividades de la
 unidad 1: un dato falso, no un blanco sospechoso.
 
+El cuarto —el de Probabilidad y Estadística— es el que obliga a que la SEMANA pueda ser
+el eje principal y no un adorno de la unidad. Esa materia numera 16 semanas y las agrupa
+en 4 unidades, y lo que el título declara es la SEMANA: `S5-`, `S13-`. La unidad no está
+en ningún título. Leer ese prefijo como unidad daría "unidad 16" en una materia de cuatro
+—el mismo error que ya cometimos con el número del cuadernillo de Matemática, y con la
+misma cara de dato bueno.
+
+El prefijo se lee ANCLADO AL PRINCIPIO (`^S5-`) y no en cualquier parte: "Análisis de S5"
+no es la semana 5. Y se prueba DESPUÉS de `U{n}S{m}`, que dice las dos cosas a la vez.
+
 Agregar una materia nueva es agregar un patrón acá y nada más.
 """
 
@@ -54,12 +65,21 @@ _RE_CIERRE_PALABRA = re.compile(r"actividad\s+de\s+cierre|cierre", re.I)
 # La SEMANA sola, sin unidad: "Video 2 Semana 1 SN", "Sistema Binario Lección semana 2".
 # Se prueba ÚLTIMA y sólo cuando no hubo código `U{n}S{m}`: ahí la semana ya vino.
 _RE_SEMANA_PALABRA = re.compile(r"semana\s*(\d{1,2})", re.I)
+# El prefijo de semana de Probabilidad y Estadística: "S5-Cuestionario…", "S13- Foro…".
+# ANCLADO al principio: en el medio del título un "S5" puede ser cualquier cosa.
+_RE_SEMANA_PREFIJO = re.compile(r"^s\s*(\d{1,2})\s*[-–—.:]", re.I)
 
 # Instancias que NO son la cadencia semanal: tienen calendario y dinámica propios.
 # El Integrador es grupal y de una sola entrega al final; medido en vivo, 13 de 16
 # alumnos de una comisión no lo habían entregado, así que contarlo en la racha
 # marcaba en amarillo a gente que venía al día.
-_FUERA_DE_CADENCIA = ("integrador", "parcial", "recuperatorio", "tio", "extraordinari")
+# `tio` va con límites de palabra y el resto no, y la diferencia no es cosmética: como
+# substring suelto, "tio" matchea **"cues-tio-nario"**. En Programación y Matemática eso
+# nunca se disparó porque ninguna actividad de cadencia se llama así; en Probabilidad y
+# Estadística, donde la cursada son 36 CUESTIONARIOS, excluía la materia entera de su
+# propia cadencia — en silencio y con los conteos plausibles.
+_RE_FUERA_DE_CADENCIA = re.compile(
+    r"integrador|parcial|recuperatorio|extraordinari|tio", re.I)
 
 
 def _norm(txt: str) -> str:
@@ -110,7 +130,7 @@ def leer(titulo: str) -> Actividad:
     adivinar y por eso va último.
     """
     t = _norm(titulo)
-    fuera = any(p in t for p in _FUERA_DE_CADENCIA)
+    fuera = bool(_RE_FUERA_DE_CADENCIA.search(t))
 
     m = _RE_UNIDAD_SEMANA.search(t)
     if m:
@@ -119,7 +139,10 @@ def leer(titulo: str) -> Actividad:
     # La semana suelta es un dato de segunda: no dice qué unidad es, así que no
     # puede cambiar `unidad` ni `es_cadencia`. Sólo rellena el eje que el título
     # sí declara, para poder ORDENAR los videos de una unidad como se cursan.
-    ms = _RE_SEMANA_PALABRA.search(t)
+    # El prefijo gana sobre la palabra suelta: es estructurado y está anclado, mientras
+    # que "semana" suelta puede referirse a otra cosa ("Cuestionario de repaso Semana 13"
+    # dentro de la sección de la semana 15 — caso real del aula de PyE).
+    ms = _RE_SEMANA_PREFIJO.match(t) or _RE_SEMANA_PALABRA.search(t)
     semana = int(ms.group(1)) if ms else None
 
     m = _RE_UNIDAD_PALABRA.search(t)
@@ -142,6 +165,18 @@ def es_actividad_de_cierre(titulo: str) -> bool:
     # Con unidad declarada alcanza: es la cadencia de la materia, la nombre como la
     # nombre. `_RE_CIERRE_PALABRA` queda para el aula que dice "cierre" sin numerar.
     return act.unidad is not None or bool(_RE_CIERRE_PALABRA.search(_norm(titulo)))
+
+
+def semana_prefijo(titulo: str) -> int | None:
+    """La semana SÓLO si el título la declara con el prefijo anclado (`S5-…`). PURA.
+
+    Existe para que `calificador` pueda preguntarse una cosa que cambia todo el informe:
+    ¿el número de una sección numerada es una UNIDAD o una SEMANA? La respuesta sale de
+    cruzar este prefijo contra el número de la sección que contiene la actividad. Si
+    coinciden, las secciones son semanas. No hace falta configurar nada por materia.
+    """
+    m = _RE_SEMANA_PREFIJO.match(_norm(titulo))
+    return int(m.group(1)) if m else None
 
 
 def nro_unidad(titulo: str) -> int | None:

@@ -1221,7 +1221,18 @@ def _bloque_focos(focos: list[tuple], body, small, ancho_total: float = 17.0) ->
 # comisión, el alumno que hizo la 4 sin haber hecho la 1, el que arrancó y paró.
 
 _TIPO_TITULO = {"video": "Videos", "leccion": "Lecciones",
-                "autoevaluacion": "Autoevaluaciones", "entrega": "Entregas"}
+                "cuestionario": "Cuestionarios", "foro": "Foros calificados",
+                "glosario": "Glosario", "entrega": "Entregas", "otro": "Otras"}
+# Encabezado corto de la columna de resumen, que va apretada.
+_TIPO_CORTO = {"video": "Videos", "leccion": "Lecc.", "cuestionario": "Cuest.",
+               "foro": "Foros", "glosario": "Glos.", "entrega": "Entregas", "otro": "Otras"}
+# Las cuatro naturalezas se leen en momentos distintos, así que van en bloques distintos.
+# Mezclar los 36 cuestionarios semanales con los dos parciales y el coloquio en una sola
+# matriz es pedirle al que lee que separe a ojo lo que se mira todas las semanas de lo que
+# se mira dos veces por cuatrimestre.
+_NATURALEZA_TITULO = {"cadencia": "La cursada semana a semana",
+                      "integrador": "Trabajo integrador (se entrega por partes)",
+                      "evaluacion": "Parciales, recuperatorios y coloquio"}
 # Cuántos alumnos entran por página en la matriz antes de partirla a mano. reportlab
 # parte solo, pero acá se parte con título propio para que la página 2 diga a qué tanda
 # de alumnos corresponde: 29 columnas de números sin ese rótulo no se leen. Con 34 la
@@ -1259,28 +1270,29 @@ def _acceso_txt(fila: dict) -> str:
     return f"{dias} - {_fecha_txt(fila.get('ultimo_acceso_aula_ts'))}"
 
 
-def _matriz_de_tipo(catalogo: dict, tipo: str, alumnos: list[dict],
-                    ancho_total: float):
+def _matriz(items: list[dict], alumnos: list[dict], eje: str, ancho_total: float):
     """Matriz alumnos x actividades de UN tipo. -> (tabla, leyenda) o (None, []).
 
     Las columnas se numeran y el título completo va en la leyenda de abajo. Ponerlo en la
     cabecera obligaba a rotarlo o a truncarlo a cuatro letras, y "Video 1 Semana 1 SN" y
     "Video 1 Semana 2 SN" truncados son la misma columna.
     """
-    items = [it for it in catalogo["items"] if it["tipo"] == tipo]
     if not items:
         return None, []
 
-    # Cabecera de dos filas: la unidad arriba (con SPAN) y el número de columna abajo.
+    # Cabecera de dos filas: el eje de la materia arriba (con SPAN) y el número de columna
+    # abajo. El eje es la UNIDAD en Matemática y la SEMANA en Probabilidad y Estadística —
+    # rotularlo mal es lo que ponía "unidad 16" en una materia de cuatro.
+    prefijo = "S" if eje == "semana" else "U"
     fila_u, fila_n, spans, ini = [""], ["Alumno"], [], 1
     ult = object()
     for i, it in enumerate(items):
-        u = it["unidad"]
-        if u != ult:
+        v = it["semana"] if eje == "semana" else it["unidad"]
+        if v != ult:
             if i:
                 spans.append((ini, i))
-            ini, ult = i + 1, u
-            fila_u.append(f"U{u}" if u is not None else "s/u")
+            ini, ult = i + 1, v
+            fila_u.append(f"{prefijo}{v}" if v is not None else "s/e")
         else:
             fila_u.append("")
         fila_n.append(str(it["nro"]))
@@ -1290,7 +1302,7 @@ def _matriz_de_tipo(catalogo: dict, tipo: str, alumnos: list[dict],
     for a in alumnos:
         fila = [sin_emoji(a["nombre"])[:30]]
         for it in items:
-            n = a["notas"].get(it["cmid"])
+            n = a["notas"].get(it["item_id"])
             fila.append(_nota_celda(n["nota"]) if n else "")
         filas.append(fila)
 
@@ -1319,12 +1331,16 @@ def _matriz_de_tipo(catalogo: dict, tipo: str, alumnos: list[dict],
 
 def informe_comision_pdf(bloque: dict, catalogo: dict, dest_dir: str,
                          materia: str = "", fecha: str = "",
-                         tipos: tuple = ("video", "leccion", "autoevaluacion")) -> dict:
+                         hasta_donde_llego=None, tipos: tuple | None = None) -> dict:
     """PDF de UNA comisión: su tutor, sus alumnos, qué hizo cada uno y con qué nota.
 
     PURO en lo que importa: recibe el dict ya armado por `calificador.informe`, no el
     cliente. Se puede testear sin red y sin credenciales, que es donde este proyecto
     encuentra los bugs.
+
+    `catalogo` es la lista de columnas que devuelve `calificador.items_de_calificador` —
+    los grade items reales, no el árbol del curso. `tipos` acota qué tipos se dibujan; por
+    defecto salen todos los que la materia realmente tenga.
     """
     os.makedirs(dest_dir, exist_ok=True)
     com = bloque.get("comision") or "comision"
@@ -1349,11 +1365,27 @@ def informe_comision_pdf(bloque: dict, catalogo: dict, dest_dir: str,
     res = bloque.get("resumen") or {}
     tutor = (bloque.get("tutor") or {}).get("nombre") or "SIN DOCENTE ASIGNADO"
     nombre_campus = bloque.get("nombre") or com
+    eje = catalogo.get("eje") or "unidad"
+    prefijo = "S" if eje == "semana" else "U"
+    items = catalogo.get("items") or []
 
-    E = [Paragraph(f"{sin_emoji(materia) or 'Curso'} - {com.upper()} ({nombre_campus})", h1),
-         Paragraph(f"Tutor/a: <b>{sin_emoji(tutor)}</b> &nbsp;·&nbsp; {len(alumnos)} alumnos"
-                   + (f" &nbsp;·&nbsp; {fecha}" if fecha else ""), small),
-         Spacer(1, 6)]
+    E = [Paragraph(f"{sin_emoji(materia) or 'Curso'} - {com.upper()} ({nombre_campus})", h1)]
+    linea = f"Tutor/a: <b>{sin_emoji(tutor)}</b> &nbsp;·&nbsp; {len(alumnos)} alumnos"
+    if fecha:
+        linea += f" &nbsp;·&nbsp; {fecha}"
+    E.append(Paragraph(linea, small))
+    if hasta_donde_llego is not None:
+        ejes = sorted({(it["semana"] if eje == "semana" else it["unidad"]) for it in items
+                       if (it["semana"] if eje == "semana" else it["unidad"]) is not None})
+        tope = ejes[-1] if ejes else hasta_donde_llego
+        # Sin esta línea, once semanas vacías por CALENDARIO se leen como abandono. Es el
+        # mismo error que ya cometimos mostrando exámenes de noviembre como "nadie entregó".
+        E.append(Paragraph(
+            f"La cursada va por la <b>{eje} {hasta_donde_llego} de {tope}</b> — dato "
+            f"derivado (la última {eje} con alguna nota cargada en el curso), no una fecha "
+            "del campus. Lo que está vacío más adelante está vacío porque todavía no pasó.",
+            small))
+    E.append(Spacer(1, 6))
 
     if bloque.get("error"):
         E.append(Paragraph(f"<b>No se pudo leer esta comisión:</b> {bloque['error']}", small))
@@ -1368,68 +1400,118 @@ def informe_comision_pdf(bloque: dict, catalogo: dict, dest_dir: str,
     ], ancho_total))
     E.append(Spacer(1, 8))
 
+    # Qué tipos tiene REALMENTE esta materia, en el orden de la cursada. Clavarlos rompía
+    # en la materia siguiente: Matemática tiene videos y Estadística foros calificados.
+    from . import calificador as _cal
+    cadencia = [it for it in items if it["naturaleza"] == _cal.CADENCIA]
+    tipos_reales = tuple(t for t in _cal.ORDEN_TIPOS
+                         if any(it["tipo"] == t for it in cadencia))
+    if tipos:
+        tipos_reales = tuple(t for t in tipos_reales if t in tipos)
+
     # --- Panorama: una fila por alumno ---
-    unidades = catalogo.get("unidades") or []
-    cab = (["Alumno"] + [f"U{u}" for u in unidades]
-           + ["Videos", "Lecc.", "Autoev.", "Última vez que abrió la materia"])
+    ejes = sorted({(it["semana"] if eje == "semana" else it["unidad"]) for it in cadencia
+                   if (it["semana"] if eje == "semana" else it["unidad"]) is not None})
+    cab = (["Alumno"] + [f"{prefijo}{v}" for v in ejes]
+           + [_TIPO_CORTO.get(t, t) for t in tipos_reales]
+           + ["Última vez que abrió la materia"])
     filas = [cab]
-    # La celda por unidad cuenta EXACTAMENTE los tipos que muestra el informe. Sumar
-    # también las entregas metía en el denominador 15 tareas que en Matemática no tienen
-    # una sola entrega en todo el curso: el alumno que hizo todo lo que podía hacer salía
-    # "7/9" y se leía como si le faltara algo. Un denominador inalcanzable no mide nada.
+    # La celda cuenta EXACTAMENTE los tipos que muestra el informe, y sólo la CADENCIA.
+    # Sumarle las entregas metía en el denominador 15 tareas que en Matemática no tienen
+    # una sola entrega en todo el curso: el alumno que hizo todo lo posible salía "7/9" y
+    # se leía como si le faltara algo. Un denominador inalcanzable no mide nada.
+    # El denominador por tipo cuenta SÓLO la cadencia, igual que las celdas del eje. Con
+    # `por_tipo` a secas, "Cuest. 3/36" incluía los dos parciales y el coloquio, y la nota
+    # al pie que dice "cuenta sólo la cursada semanal" quedaba siendo mentira.
+    total_cad = {}
+    for it in cadencia:
+        total_cad[it["tipo"]] = total_cad.get(it["tipo"], 0) + 1
+    ids_cad = {it["item_id"]: it["tipo"] for it in cadencia}
+
     for a in alumnos:
         f = [sin_emoji(a["nombre"])[:34]]
-        for u in unidades:
-            b = a["por_unidad"].get(u) or {}
-            hechas = sum(b.get(t, {}).get("hechas", 0) for t in tipos)
-            total = sum(b.get(t, {}).get("total", 0) for t in tipos)
-            f.append(f"{hechas}/{total}" if total else "-")
-        for t in ("video", "leccion", "autoevaluacion"):
-            pt = a["por_tipo"][t]
-            f.append(f"{pt['hechas']}/{pt['total']}")
+        for v in ejes:
+            b = (a.get("por_eje") or {}).get(v) or {}
+            if hasta_donde_llego is not None and v > hasta_donde_llego:
+                # Todavía no pasó. Un "0/4" acá se lee como que el alumno no hizo nada,
+                # cuando lo que hay es una actividad que el curso no dictó: en la semana 5
+                # de 16 eso son DIEZ columnas de ceros que no acusan a nadie de nada.
+                f.append("·")
+            else:
+                f.append(f"{b.get('hechas', 0)}/{b['total']}" if b.get("total") else "-")
+        hechas_por_tipo = {}
+        for iid in (a.get("notas") or {}):
+            t = ids_cad.get(iid)
+            if t:
+                hechas_por_tipo[t] = hechas_por_tipo.get(t, 0) + 1
+        for t in tipos_reales:
+            f.append(f"{hechas_por_tipo.get(t, 0)}/{total_cad.get(t, 0)}")
         f.append(_acceso_txt(a))
         filas.append(f)
 
-    anchos = ([6.4] + [1.05] * len(unidades) + [1.35, 1.15, 1.35]
-              + [ancho_total - 6.4 - 1.05 * len(unidades) - 3.85])
-    E.append(Paragraph("Panorama de la comisión — actividades hechas sobre el total del curso", h2))
-    E.append(_tabla(filas, anchos, font=6.4, compacta=True))
+    ancho_eje = min(1.05, max(0.62, 9.0 / max(len(ejes), 1)))
+    ancho_tipos = 1.25 * len(tipos_reales)
+    ancho_nombre = 6.0
+    anchos = ([ancho_nombre] + [ancho_eje] * len(ejes) + [1.25] * len(tipos_reales)
+              + [max(ancho_total - ancho_nombre - ancho_eje * len(ejes) - ancho_tipos, 3.0)])
     E.append(Paragraph(
-        "«hechas/total» cuenta videos, lecciones y autoevaluaciones con nota cargada. Un «0/12» "
-        "es que no hizo ninguna, NO que las hizo mal. La columna de acceso usa el reloj de ESTA "
-        "materia y no el del campus: quien entra todos los días para otra materia y no abre ésta "
-        "figura al día si se mira el reloj equivocado.", mini))
-    n_entregas = (res.get("actividades_del_curso") or {}).get("entrega") or 0
-    if n_entregas and not (res.get("notas_cargadas") or {}).get("entrega"):
-        # No es una omisión: es el hallazgo que motivó todo este informe. Decirlo acá
-        # evita que alguien lea el documento y concluya que las entregas no se miraron.
-        E.append(Paragraph(
-            f"Las {n_entregas} tareas de ENTREGA del aula quedan fuera de este informe "
-            "porque no tienen una sola entrega registrada en TODO el curso — no es que "
-            "no se miraron. La cursada de esta materia pasa por los videos, las "
-            "lecciones y las autoevaluaciones.", mini))
+        f"Panorama de la comisión — actividades hechas sobre el total, por {eje}", h2))
+    E.append(_tabla(filas, anchos, font=6.2, compacta=True))
+    nota_pie = ("«hechas/total» cuenta sólo la cursada semanal, con nota cargada. Un «0/12» "
+                "es que no hizo ninguna, NO que las hizo mal. ")
+    if hasta_donde_llego is not None:
+        nota_pie += (f"El punto «·» es una {eje} que TODAVÍA NO PASÓ: no es un cero de "
+                     "nadie. ")
+    nota_pie += ("La columna de acceso usa el reloj de ESTA materia y no el del campus: "
+                 "quien entra todos los días para otra materia y no abre ésta figura al "
+                 "día si se mira el reloj equivocado.")
+    E.append(Paragraph(nota_pie, mini))
 
-    # --- Una matriz por tipo de actividad ---
-    for tipo in tipos:
+    # Lo que queda fuera de la cadencia, y por qué. Callarlo hace que alguien lea el
+    # documento y concluya que esas actividades no se miraron.
+    fuera = []
+    n_adm = sum(1 for it in items if it["naturaleza"] == _cal.ADMINISTRATIVA)
+    if n_adm:
+        fuera.append(f"{n_adm} columna(s) del calificador donde el docente vuelca una nota "
+                     "(condiciones finales, promedios, calificación de coloquio): no son "
+                     "actividades que el alumno entregue")
+    vacios = [t for t in _cal.ORDEN_TIPOS
+              if (res.get("actividades_del_curso") or {}).get(t)
+              and not (res.get("notas_cargadas") or {}).get(t)]
+    for t in vacios:
+        fuera.append(f"{res['actividades_del_curso'][t]} {_TIPO_TITULO.get(t, t).lower()} "
+                     "sin una sola nota cargada en toda la comisión")
+    if fuera:
+        E.append(Paragraph("Queda fuera de las tablas: " + "; ".join(fuera)
+                           + ". No es que no se miraron.", mini))
+
+    # --- Matrices: la cadencia por tipo, y después lo que tiene calendario propio ---
+    bloques_matriz = [(_TIPO_TITULO.get(t, t), [it for it in cadencia if it["tipo"] == t])
+                      for t in tipos_reales]
+    for etiqueta_nat in ("integrador", "evaluacion"):
+        subset = [it for it in items if it["naturaleza"] == etiqueta_nat]
+        if subset:
+            bloques_matriz.append((_NATURALEZA_TITULO[etiqueta_nat], subset))
+
+    for titulo_bloque, subset in bloques_matriz:
         for i in range(0, max(len(alumnos), 1), _ALUMNOS_POR_PAGINA):
             tanda = alumnos[i:i + _ALUMNOS_POR_PAGINA]
             if not tanda:
                 break
-            t, leyenda = _matriz_de_tipo(catalogo, tipo, tanda, ancho_total)
+            t, leyenda = _matriz(subset, tanda, eje, ancho_total)
             if t is None:
                 break
             E.append(PageBreak())
             sufijo = ("" if len(alumnos) <= _ALUMNOS_POR_PAGINA else
                       f" - alumnos {i + 1} a {min(i + _ALUMNOS_POR_PAGINA, len(alumnos))}")
-            E.append(Paragraph(f"{_TIPO_TITULO.get(tipo, tipo)}: la nota de cada alumno, "
-                               f"actividad por actividad{sufijo}", h2))
+            E.append(Paragraph(f"{titulo_bloque}: la nota de cada alumno, actividad por "
+                               f"actividad{sufijo}", h2))
             E.append(t)
             E.append(Spacer(1, 4))
             E.append(Paragraph("<b>Columnas:</b> " + " &nbsp;·&nbsp; ".join(leyenda), mini))
             E.append(Paragraph(
-                "Celda vacía = sin nota cargada. La nota va en la escala de SU actividad: los "
-                "videos y las autoevaluaciones son sobre 10, las lecciones sobre 100 salvo donde "
-                "el aula diga otra cosa.", mini))
+                "Celda vacía = sin nota cargada. La nota va en la escala de SU actividad, "
+                "que no es la misma en todas: mirá el máximo en la leyenda del aula.", mini))
 
     avisos = list(bloque.get("avisos") or [])
     if avisos:

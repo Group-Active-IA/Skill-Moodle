@@ -1594,7 +1594,8 @@ async def informe_alumnos(course_id: int, group_id: int = 0, pdf: bool = True,
             try:
                 hechos.append(informes.informe_comision_pdf(
                     b, datos["catalogo"], destino, materia=nombre or "",
-                    fecha=date.today().isoformat()))
+                    fecha=date.today().isoformat(),
+                    hasta_donde_llego=datos.get("hasta_donde_llego")))
             except Exception as e:  # noqa: BLE001
                 # Que falle un render no puede tirar el relevamiento del curso entero.
                 fallados.append({"comision": b.get("comision"),
@@ -1623,15 +1624,18 @@ async def informe_alumnos(course_id: int, group_id: int = 0, pdf: bool = True,
             fila["por_tipo"] = {t: {"hechas": v["hechas"], "total": v["total"],
                                     "promedio_pct": v["promedio_pct"]}
                                 for t, v in a["por_tipo"].items()}
-            # Sólo las unidades donde hizo algo. La unidad ausente = no hizo nada
-            # ahí; cuáles existen en el curso está arriba, en `unidades`.
-            fila["por_unidad"] = {
-                u: hechas for u, b2 in a["por_unidad"].items()
-                if (hechas := {t: v["hechas"] for t, v in b2.items() if v["hechas"]})}
+            fila["por_naturaleza"] = {n: {"hechas": v["hechas"], "total": v["total"]}
+                                      for n, v in a["por_naturaleza"].items()}
+            # Sólo donde hizo algo. La unidad/semana ausente = no hizo nada ahí; cuáles
+            # existen en el curso está arriba, en `unidades`/`semanas`.
+            fila["ultima_con_actividad"] = a["ultima_con_actividad"]
+            fila[f"por_{a['eje']}"] = {v: b2["hechas"] for v, b2 in a["por_eje"].items()
+                                       if b2["hechas"]}
             if detalle:
                 fila["notas"] = sorted(
                     ({"nro": n["nro"], "actividad": n["titulo"], "tipo": n["tipo"],
-                      "unidad": n["unidad"], "nota": n["nota"], "sobre": n["sobre"]}
+                      "naturaleza": n["naturaleza"], "unidad": n["unidad"],
+                      "semana": n["semana"], "nota": n["nota"], "sobre": n["sobre"]}
                      for n in a["notas"].values()), key=lambda n: n["nro"])
             alumnos.append(fila)
         fila_com = ({k: b[k] for k in ("comision", "group_id", "nombre") if k in b}
@@ -1649,9 +1653,13 @@ async def informe_alumnos(course_id: int, group_id: int = 0, pdf: bool = True,
         "ok": True, "course_id": course_id, "detalle": detalle,
         "actividades_del_curso": [
             {"nro": it["nro"], "actividad": it["titulo"], "tipo": it["tipo"],
-             "unidad": it["unidad"], "semana": it["semana"], "cmid": it["cmid"]}
+             "naturaleza": it["naturaleza"], "unidad": it["unidad"],
+             "semana": it["semana"], "cmid": it["cmid"]}
             for it in datos["catalogo"]["items"]],
+        "eje": datos["catalogo"]["eje"],
         "unidades": datos["catalogo"]["unidades"],
+        "semanas": datos["catalogo"].get("semanas") or [],
+        "hasta_donde_llego": datos.get("hasta_donde_llego"),
         "comisiones": salida_com,
         **({"como_ver_el_detalle":
             "Esta respuesta trae el índice del curso: tutor, números y la ruta del PDF de "
