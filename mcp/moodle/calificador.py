@@ -67,12 +67,35 @@ _SEM = 4
 TIPOS = {
     "hvp": "video",            # H5P interactivo — lo que la cátedra llama "los videos"
     "lesson": "leccion",
-    "quiz": "autoevaluacion",
+    "quiz": "cuestionario",
     "assign": "entrega",
+    # Los dos que trae Probabilidad y Estadística y no existían en las otras materias.
+    # El foro CALIFICADO es una actividad del alumno con nota, no un canal de consulta:
+    # dejarlo afuera perdía 22 notas por comisión.
+    "forum": "foro",
+    "glossary": "glosario",
 }
-# El orden en que se muestran. No es alfabético: es el de la cursada — mirás el video,
-# hacés la lección, te autoevaluás, entregás.
-ORDEN_TIPOS = ("video", "leccion", "autoevaluacion", "entrega")
+# El orden en que se muestran. No es alfabético: es el de la cursada — mirás el video o la
+# lección, resolvés el cuestionario, participás del foro, entregás.
+ORDEN_TIPOS = ("video", "leccion", "cuestionario", "foro", "glosario", "entrega")
+
+# QUÉ ES cada actividad para el que lee el informe, más allá de con qué módulo está hecha.
+# Sin esto el informe de Probabilidad y Estadística mezcla en una misma lista los 36
+# cuestionarios semanales, los dos parciales, el coloquio final y TRES columnas donde el
+# docente vuelca notas y ningún alumno entrega nunca. Son cuatro cosas que se miran en
+# momentos distintos y con criterios distintos.
+CADENCIA = "cadencia"            # lo semanal: es contra esto que se mide venir al día
+INTEGRADOR = "integrador"        # el TAI/TPI: se entrega por partes a lo largo del cuatrimestre
+EVALUACION = "evaluacion"        # parciales, recuperatorios, coloquio: calendario propio
+ADMINISTRATIVA = "administrativa"  # columnas de nota, no actividades del alumno
+
+_RE_INTEGRADOR = re.compile(r"ta\s*i|tpi|integrador", re.I)
+_RE_EVALUACION = re.compile(r"parcial|recuperatorio|coloquio|examen|extraordinari", re.I)
+# La sección lo declara mejor que el título: "CONDICIONES FINALES", "Promedio Trabajo
+# Práctico Integrador" y "Calificación Coloquio" viven las tres en la sección "Condiciones
+# Finales" y ninguna es una entrega. Por el título solo, "Calificación Coloquio" se leería
+# como el coloquio mismo.
+_RE_SECCION_ADMIN = re.compile(r"condiciones\s+finales|gesti[oó]n\s+acad", re.I)
 
 # Un encabezado de unidad: "1 - Algebra de Boole", "2- Sistema binario", "6 - Arboles y
 # Grafos". El número al principio seguido de guion es la firma; el nombre del tema no se
@@ -129,89 +152,200 @@ def limpiar_nota(txt: str) -> str:
 # Catálogo de actividades: qué es cada cosa y de qué unidad. PURO.
 # ---------------------------------------------------------------------------
 
+# El foro de consultas de cada unidad es lo ÚNICO del aula de Probabilidad y Estadística
+# que nombra la unidad: "Espacio para Consultas y Dudas sobre la UNIDAD N° 1", "Foro de
+# consultas académicas – Unidad 4". Los cuatro abren su bloque, así que sirven de mojón.
+# Se exige que el título hable de consultas: "8 - Repaso Unidades N° 1 y 2" menciona DOS
+# unidades y no abre ninguna — es el cierre de las dos.
+_RE_UNIDAD_MENCION = re.compile(r"unidad(?:es)?\s*n?\s*[°º]?\s*(\d{1,2})", re.I)
+_RE_ES_CONSULTA = re.compile(r"consulta|duda", re.I)
+# Semanas que no son de ninguna unidad: el repaso cierra varias y el parcial las evalúa.
+# Adjudicarles la última unidad abierta pondría el Primer Parcial dentro de la unidad 2.
+_RE_SEMANA_SIN_UNIDAD = re.compile(r"repaso|parcial", re.I)
+
+
+def eje_de_secciones(contenidos: list[dict]) -> tuple[str, int]:
+    """¿El número de una sección numerada es una UNIDAD o una SEMANA? PURA.
+
+    -> `("unidad" | "semana", coincidencias)`.
+
+    Es la pregunta que decide el informe entero, y **no se configura por materia: se
+    deriva**. Matemática numera 6 secciones y son sus 6 unidades; Probabilidad y
+    Estadística numera 16 y son 16 SEMANAS agrupadas en 4 unidades. Aplicarle a la segunda
+    el criterio de la primera devuelve "unidad 16" en una materia de cuatro — un número
+    plausible y falso, que es la única clase de error que importa acá.
+
+    La señal: las actividades de PyE declaran su semana en un prefijo anclado (`S5-…`). Si
+    ese número coincide con el de la sección numerada que las contiene, entonces las
+    secciones son semanas. Medido en vivo el 2026-09-02: 41 coincidencias sobre 42
+    actividades con prefijo (la única que no coincide está mal puesta en el aula), contra
+    CERO en Matemática, que no usa el prefijo en ningún título.
+    """
+    coincidencias = 0
+    actual: int | None = None
+    for sec in contenidos or []:
+        m = _RE_SECCION_UNIDAD.match(_norm(sec.get("name") or ""))
+        if m:
+            actual = int(m.group(1))
+        for mod in (sec.get("modules") or []):
+            if TIPOS.get(mod.get("modname")) is None:
+                continue
+            sem = titulos.semana_prefijo(mod.get("name") or "")
+            if sem is not None and sem == actual:
+                coincidencias += 1
+    # Tres es el piso para no dar vuelta el criterio por una coincidencia suelta: un aula
+    # de unidades donde por casualidad la actividad 3 de la unidad 3 se llame "S3-" no
+    # alcanza para redefinir el eje de la materia entera.
+    return ("semana" if coincidencias >= 3 else "unidad"), coincidencias
+
+
+def naturaleza_de(titulo: str, seccion: str, tipo: str) -> str:
+    """Qué ES la actividad para el que lee: cadencia, integrador, evaluación o columna
+    administrativa. PURA.
+
+    El orden importa. `administrativa` va primero porque la declara la SECCIÓN y le gana
+    al título: "Calificación Coloquio" leído solo parece el coloquio, y es la casilla donde
+    se vuelca su nota. Después `evaluacion`, porque el Coloquio Final Integrador dice
+    "integrador" en el nombre y no es el TAI.
+    """
+    if _RE_SECCION_ADMIN.search(seccion or ""):
+        return ADMINISTRATIVA
+    if _RE_EVALUACION.search(titulo or "") or _RE_EVALUACION.search(seccion or ""):
+        return EVALUACION
+    if _RE_INTEGRADOR.search(titulo or "") or _RE_INTEGRADOR.search(seccion or ""):
+        return INTEGRADOR
+    return CADENCIA
+
+
 def catalogo_de_actividades(contenidos: list[dict]) -> dict:
     """Lee la estructura del curso y devuelve qué actividad calificable es cada cosa.
 
     PURA: recibe lo que devuelve `core_course_get_contents` y no consulta nada.
 
-    -> {"items": [ ... ], "por_cmid": {cmid: item}, "unidades": [1, 2, ...],
-        "avisos": [...]}
+    -> {"items": [...], "por_cmid": {cmid: item}, "unidades": [...], "semanas": [...],
+        "eje": "unidad"|"semana", "avisos": [...]}
 
-    Cada item: `cmid`, `titulo`, `modname`, `tipo`, `unidad`, `semana`, `seccion`,
-    `orden`. `unidad`/`semana` en None significan **no se pudo leer**, nunca cero.
+    Cada item: `cmid`, `titulo`, `modname`, `tipo`, `naturaleza`, `unidad`, `semana`,
+    `seccion`, `orden`, `nro`. `unidad`/`semana` en None significan **no se pudo leer**,
+    nunca cero.
     """
+    eje, coincidencias = eje_de_secciones(contenidos)
     items: list[dict] = []
     avisos: list[str] = []
-    sin_unidad: list[str] = []
+    sin_eje: list[str] = []
     unidad_actual: int | None = None
+    semana_actual: int | None = None
     huerfanas_de_seccion: list[str] = []
+    semana_sin_unidad = False
 
     for sec in contenidos or []:
         nombre = sec.get("name") or ""
         n = _norm(nombre)
         m = _RE_SECCION_UNIDAD.match(n)
         if m:
-            unidad_actual = int(m.group(1))
+            numero = int(m.group(1))
+            if eje == "semana":
+                semana_actual = numero
+                # El repaso cierra varias unidades y el parcial las evalúa: ninguna de las
+                # dos semanas ES de una unidad. Heredar la última abierta metería el Primer
+                # Parcial adentro de la unidad 2.
+                semana_sin_unidad = bool(_RE_SEMANA_SIN_UNIDAD.search(n))
+            else:
+                unidad_actual = numero
         elif n not in _SUBBLOQUES:
-            # Sección con nombre propio que no es un sub-bloque de unidad: corta la
-            # herencia. Es lo que deja afuera a COLOQUIOS y a los integradores.
-            if unidad_actual is not None:
-                huerfanas_de_seccion.append(nombre)
-            unidad_actual = None
+            # Sección con nombre propio que no es un sub-bloque: corta la herencia. Es lo
+            # que deja afuera a COLOQUIOS y a los integradores en Matemática.
+            if eje == "unidad":
+                if unidad_actual is not None:
+                    huerfanas_de_seccion.append(nombre)
+                unidad_actual = None
 
         for i, mod in enumerate(sec.get("modules") or []):
             tipo = TIPOS.get(mod.get("modname"))
             if tipo is None:
-                continue  # etiquetas, foros, urls: no se califican
+                continue  # etiquetas, urls, certificados: no se califican
             cmid = mod.get("id")
             if cmid is None:
                 continue
             titulo = mod.get("name") or f"cmid {cmid}"
             leido = titulos.leer(titulo)
-            unidad = unidad_actual
-            # Precedencia: el título gana cuando declara la unidad de forma explícita
-            # (`U{n}S{m}`). Es la misma regla de `titulos.py` y acá además sirve de
-            # verificación cruzada de la lectura por sección.
-            if leido.unidad is not None:
-                if unidad is not None and unidad != leido.unidad:
-                    avisos.append(
-                        f"«{titulo}» está en la sección de la unidad {unidad} pero su "
-                        f"título declara la unidad {leido.unidad}. Gana el título "
-                        "(es explícito); revisá dónde está puesta la actividad.")
+
+            # El foro de consultas de una unidad es el único mojón de unidad que tiene el
+            # aula de PyE. Se lee ANTES de resolver la actividad para que la propia unidad
+            # que abre valga desde acá.
+            if eje == "semana" and tipo == "foro" and _RE_ES_CONSULTA.search(titulo):
+                mu = _RE_UNIDAD_MENCION.search(titulo)
+                if mu:
+                    unidad_actual = int(mu.group(1))
+
+            if eje == "semana":
+                semana = leido.semana if leido.semana is not None else semana_actual
                 unidad = leido.unidad
-            if unidad is None:
-                sin_unidad.append(titulo)
+                if unidad is None and not semana_sin_unidad:
+                    unidad = unidad_actual
+            else:
+                semana = leido.semana
+                unidad = unidad_actual
+                # Precedencia: el título gana cuando declara la unidad de forma explícita
+                # (`U{n}S{m}`). Misma regla que `titulos.py`, y acá además verifica la
+                # lectura por sección.
+                if leido.unidad is not None:
+                    if unidad is not None and unidad != leido.unidad:
+                        avisos.append(
+                            f"«{titulo}» está en la sección de la unidad {unidad} pero su "
+                            f"título declara la unidad {leido.unidad}. Gana el título "
+                            "(es explícito); revisá dónde está puesta la actividad.")
+                    unidad = leido.unidad
+
+            if (semana if eje == "semana" else unidad) is None:
+                sin_eje.append(titulo)
+
             items.append({
                 "cmid": int(cmid),
                 "titulo": titulo,
                 "modname": mod.get("modname"),
                 "tipo": tipo,
+                "naturaleza": naturaleza_de(titulo, nombre, tipo),
                 "unidad": unidad,
-                "semana": leido.semana,
+                "semana": semana,
                 "seccion": nombre,
                 "orden": i,
                 "fuera_de_cadencia": leido.fuera_de_cadencia,
             })
 
-    # Orden de lectura: por unidad, dentro de la unidad por semana, y dentro de la
-    # semana por el orden en que están puestas en el aula. Lo que no declara unidad va
-    # al final y no se mezcla con lo que sí. Ordenar por título dejaba el "Video 4
-    # Semana 1" después del "Video 1 Semana 2".
-    items.sort(key=lambda it: (
-        it["unidad"] is None, it["unidad"] or 0,
-        ORDEN_TIPOS.index(it["tipo"]) if it["tipo"] in ORDEN_TIPOS else 9,
-        it["semana"] is None, it["semana"] or 0, it["orden"], it["titulo"],
-    ))
+    # Orden de lectura: por el EJE de la materia primero, y dentro de él por tipo y por el
+    # orden en que están puestas en el aula. Lo que no declara eje va al final y no se
+    # mezcla con lo que sí. Ordenar por título dejaba el "Video 4 Semana 1" después del
+    # "Video 1 Semana 2".
+    def _clave(it):
+        eje_v = it["semana"] if eje == "semana" else it["unidad"]
+        otro = it["unidad"] if eje == "semana" else it["semana"]
+        return (eje_v is None, eje_v or 0,
+                ORDEN_TIPOS.index(it["tipo"]) if it["tipo"] in ORDEN_TIPOS else 9,
+                otro is None, otro or 0, it["orden"], it["titulo"])
+
+    items.sort(key=_clave)
     for pos, it in enumerate(items):
         it["nro"] = pos + 1  # número de columna en la matriz del PDF
 
     unidades = sorted({it["unidad"] for it in items if it["unidad"] is not None})
-    if sin_unidad:
+    semanas = sorted({it["semana"] for it in items if it["semana"] is not None})
+
+    avisos.append(
+        f"El número de las secciones numeradas de este curso se leyó como {eje.upper()} "
+        + (f"({coincidencias} actividades declaran su semana con el prefijo «S«n»-» y "
+           "coincide con la sección que las contiene)." if eje == "semana"
+           else "(ninguna actividad declara semana con el prefijo «S«n»-», así que el "
+                "número de la sección es la unidad).")
+        + f" Unidades vistas: {unidades or '—'}. Semanas vistas: "
+        + (f"{semanas[0]}-{semanas[-1]}." if semanas else "—."))
+
+    if sin_eje:
         avisos.append(
-            f"{len(sin_unidad)} actividad(es) calificables no quedaron bajo ninguna "
-            "unidad porque su sección no es un sub-bloque de unidad (integradores, "
-            "coloquios, bienvenida). Se listan igual, agrupadas aparte: "
-            + ", ".join(sin_unidad[:6]) + ("…" if len(sin_unidad) > 6 else ""))
+            f"{len(sin_eje)} actividad(es) calificables no quedaron bajo ninguna "
+            f"{'semana' if eje == 'semana' else 'unidad'}: "
+            + ", ".join(sin_eje[:6]) + ("…" if len(sin_eje) > 6 else "")
+            + ". Se listan igual, agrupadas aparte — no se les inventa una.")
     if huerfanas_de_seccion:
         avisos.append(
             "Estas secciones cortaron la herencia de unidad por tener nombre propio: "
@@ -220,23 +354,114 @@ def catalogo_de_actividades(contenidos: list[dict]) -> dict:
               "actividades quedaron sin unidad (no mal asignadas).")
 
     return {"items": items, "por_cmid": {it["cmid"]: it for it in items},
-            "unidades": unidades, "avisos": avisos}
+            "unidades": unidades, "semanas": semanas, "eje": eje,
+            "avisos": avisos}
 
 
 # ---------------------------------------------------------------------------
 # Cruce alumno x actividad. PURO.
 # ---------------------------------------------------------------------------
 
-def filas_de_alumnos(usergrades: list[dict], catalogo: dict,
+def items_de_calificador(usergrades: list[dict], catalogo: dict) -> dict:
+    """La lista REAL de columnas del informe: los grade items que devuelve el calificador,
+    con la unidad/semana/naturaleza que les pone el catálogo. PURA.
+
+    Existe porque la estructura del curso **no sabe qué se califica**. Dos casos reales, y
+    los dos rompían el informe de maneras distintas:
+
+    - Un `forum` sólo tiene nota si la cátedra lo configuró calificable. En Probabilidad y
+      Estadística hay cuatro que sí (22 notas por comisión) y en Matemática ninguno.
+      Tomarlos todos del árbol del curso agrega columnas fantasma donde nadie tiene nota;
+      tomarlos de acá los incluye exactamente cuando existen.
+    - **Un mismo `cmid` puede tener DOS grade items.** Un foro con calificación de foro y
+      de valoraciones devuelve `itemnumber` 0 y 1 con el mismo cmid. Indexar por `cmid`
+      —que es lo que hacía este módulo— pisaba uno con el otro y perdía la mitad de las
+      notas del foro, en silencio. La clave real es el `id` del grade item.
+
+    El `itemtype: course` (el total del curso) no es una actividad del alumno y no entra:
+    contarlo le sumaba a todo el mundo una actividad que nadie hace.
+    """
+    por_cmid = catalogo.get("por_cmid") or {}
+    eje = catalogo.get("eje") or "unidad"
+    vistos: dict[int, dict] = {}
+    cuenta_cmid: dict[int, int] = {}
+    sin_catalogo: list[str] = []
+
+    for u in usergrades or []:
+        for it in u.get("gradeitems") or []:
+            iid = it.get("id")
+            cmid = it.get("cmid")
+            if iid is None or cmid is None or int(iid) in vistos:
+                continue
+            meta = por_cmid.get(int(cmid))
+            titulo = it.get("itemname") or (meta or {}).get("titulo") or f"cmid {cmid}"
+            if meta is None:
+                # El calificador trae algo que el árbol del curso no mostró (una actividad
+                # oculta, por ejemplo). Se incluye leyendo el título, y se declara: es un
+                # dato real y esconderlo sería peor que no poder agruparlo.
+                sin_catalogo.append(titulo)
+                leido = titulos.leer(titulo)
+                meta = {"tipo": "otro",
+                        "naturaleza": naturaleza_de(titulo, "", "otro"),
+                        "unidad": leido.unidad, "semana": leido.semana,
+                        "seccion": "", "orden": 0, "modname": None}
+            cuenta_cmid[int(cmid)] = cuenta_cmid.get(int(cmid), 0) + 1
+            vistos[int(iid)] = {
+                "item_id": int(iid), "cmid": int(cmid),
+                "itemnumber": it.get("itemnumber"),
+                "titulo": titulo,
+                "sobre": _num(it.get("grademax")),
+                "tipo": meta.get("tipo"), "naturaleza": meta.get("naturaleza"),
+                "unidad": meta.get("unidad"), "semana": meta.get("semana"),
+                "seccion": meta.get("seccion"), "modname": meta.get("modname"),
+                "orden": meta.get("orden", 0),
+            }
+
+    # Cuando un cmid trae dos items, el título solo no los distingue: en la leyenda del PDF
+    # salían dos columnas con el mismo nombre y nadie podía saber cuál era cuál.
+    for it in vistos.values():
+        if cuenta_cmid.get(it["cmid"], 0) > 1 and it["itemnumber"] is not None:
+            it["titulo"] = "{} [nota {}]".format(it["titulo"], int(it["itemnumber"]) + 1)
+
+    items = sorted(vistos.values(), key=lambda it: (
+        (it["semana"] if eje == "semana" else it["unidad"]) is None,
+        (it["semana"] if eje == "semana" else it["unidad"]) or 0,
+        ORDEN_TIPOS.index(it["tipo"]) if it["tipo"] in ORDEN_TIPOS else 9,
+        it["orden"], it["titulo"]))
+    for pos, it in enumerate(items):
+        it["nro"] = pos + 1
+
+    avisos = []
+    if sin_catalogo:
+        avisos.append(
+            f"{len(sin_catalogo)} item(s) del calificador no están en el árbol del curso "
+            "(actividades ocultas, o borradas del aula pero no del libro): "
+            + ", ".join(sin_catalogo[:5]) + ". Se incluyen igual, con la unidad que diga "
+            "su título.")
+    dobles = [c for c, n in cuenta_cmid.items() if n > 1]
+    if dobles:
+        avisos.append(
+            f"{len(dobles)} actividad(es) tienen MÁS DE UNA columna de nota en el "
+            "calificador (típico del foro calificado: una por el foro y otra por las "
+            "valoraciones). Se muestran las dos, numeradas.")
+
+    return {"items": items, "por_id": {it["item_id"]: it for it in items},
+            "unidades": sorted({it["unidad"] for it in items if it["unidad"] is not None}),
+            "semanas": sorted({it["semana"] for it in items if it["semana"] is not None}),
+            "eje": eje, "avisos": avisos}
+
+
+def filas_de_alumnos(usergrades: list[dict], items_cal: dict,
                      accesos: dict | None = None) -> list[dict]:
     """Una fila por alumno con sus notas ya clasificadas. PURA.
 
-    `usergrades` es lo que devuelve `gradereport_user_get_grade_items`; `accesos`, el
-    `{userid: {...}}` del padrón (los dos relojes). Si un alumno no está en `accesos`
-    la fila lo dice con `sin_dato`, no con un cero: "nunca abrió la materia" y "no pude
-    leer cuándo la abrió" son personas distintas y sólo a una hay que escribirle.
+    `items_cal` es lo que devuelve `items_de_calificador` — la lista real de columnas.
+    `accesos`, el `{userid: {...}}` del padrón (los dos relojes). Si un alumno no está en
+    `accesos` la fila lo dice con `sin_dato`, no con un cero: "nunca abrió la materia" y
+    "no pude leer cuándo la abrió" son personas distintas y sólo a una hay que escribirle.
     """
-    por_cmid = catalogo.get("por_cmid") or {}
+    por_id = items_cal.get("por_id") or {}
+    eje = items_cal.get("eje") or "unidad"
     accesos = accesos or {}
     filas = []
 
@@ -245,63 +470,69 @@ def filas_de_alumnos(usergrades: list[dict], catalogo: dict,
         if uid is None:
             continue
         uid = int(uid)
-        notas: dict[int, dict] = {}      # cmid -> nota
-        por_tipo: dict[str, dict] = {t: {"hechas": 0, "total": 0, "suma_pct": 0.0}
-                                     for t in ORDEN_TIPOS}
-        por_unidad: dict[int, dict] = {}
+        notas: dict[int, dict] = {}
+        por_tipo: dict[str, dict] = {}
+        por_eje: dict[int, dict] = {}
+        por_naturaleza: dict[str, dict] = {}
 
         for it in u.get("gradeitems") or []:
-            cmid = it.get("cmid")
-            meta = por_cmid.get(int(cmid)) if cmid is not None else None
+            meta = por_id.get(it.get("id"))
             if meta is None:
-                # `itemtype == 'course'` (el total del curso) y cualquier item que no
-                # sea un módulo del aula caen acá. No son actividades del alumno.
                 continue
-            tipo = meta["tipo"]
+            tipo, nat = meta["tipo"], meta["naturaleza"]
             crudo = _num(it.get("graderaw"))
-            sobre = _num(it.get("grademax"))
-            por_tipo[tipo]["total"] += 1
-            uni = meta["unidad"]
-            if uni is not None:
-                b = por_unidad.setdefault(uni, {t: {"hechas": 0, "total": 0}
-                                                for t in ORDEN_TIPOS})
-                b[tipo]["total"] += 1
+            sobre = _num(it.get("grademax")) or meta.get("sobre")
+            eje_v = meta["semana"] if eje == "semana" else meta["unidad"]
+
+            for balde, clave in ((por_tipo, tipo), (por_naturaleza, nat)):
+                b = balde.setdefault(clave, {"hechas": 0, "total": 0, "suma_pct": 0.0})
+                b["total"] += 1
+            if eje_v is not None:
+                b = por_eje.setdefault(eje_v, {"hechas": 0, "total": 0})
+                b["total"] += 1
+
             if crudo is None:
                 continue  # no la hizo: la celda queda VACÍA, no en cero
             pct = (crudo / sobre * 100) if sobre else None
             por_tipo[tipo]["hechas"] += 1
+            por_naturaleza[nat]["hechas"] += 1
             if pct is not None:
                 por_tipo[tipo]["suma_pct"] += pct
-            if uni is not None:
-                por_unidad[uni][tipo]["hechas"] += 1
-            notas[int(cmid)] = {
-                "cmid": int(cmid), "nro": meta["nro"], "titulo": meta["titulo"],
-                "tipo": tipo, "unidad": uni, "semana": meta["semana"],
+                por_naturaleza[nat]["suma_pct"] += pct
+            if eje_v is not None:
+                por_eje[eje_v]["hechas"] += 1
+            notas[int(meta["item_id"])] = {
+                "item_id": meta["item_id"], "cmid": meta["cmid"], "nro": meta["nro"],
+                "titulo": meta["titulo"], "tipo": tipo, "naturaleza": nat,
+                "unidad": meta["unidad"], "semana": meta["semana"],
                 "nota": round(crudo, 2), "sobre": sobre,
                 "porcentaje": round(pct, 1) if pct is not None else None,
                 "texto": limpiar_nota(it.get("gradeformatted")),
                 "calificado_ts": int(it.get("gradedategraded") or 0),
             }
 
-        for t, b in por_tipo.items():
-            b["promedio_pct"] = (round(b["suma_pct"] / b["hechas"], 1)
-                                 if b["hechas"] else None)
-            b.pop("suma_pct")
+        for balde in (por_tipo, por_naturaleza):
+            for b in balde.values():
+                b["promedio_pct"] = (round(b["suma_pct"] / b["hechas"], 1)
+                                     if b["hechas"] else None)
+                b.pop("suma_pct", None)
 
         hechas = sum(b["hechas"] for b in por_tipo.values())
-        acc = accesos.get(uid) or {}
+        # Hasta dónde llegó ESTE alumno en el eje de la materia. Es lo que separa al que
+        # no arrancó del que venía y paró, y ningún promedio lo muestra.
+        llego = max((k for k, b in por_eje.items() if b["hechas"]), default=None)
         filas.append({
             "userid": uid,
             "nombre": u.get("userfullname") or "",
             "notas": notas,
             "por_tipo": por_tipo,
-            "por_unidad": por_unidad,
+            "por_naturaleza": por_naturaleza,
+            "por_eje": por_eje,
+            "eje": eje,
+            "ultima_con_actividad": llego,
             "actividades_con_nota": hechas,
             "sin_actividad": hechas == 0,
-            # Los dos relojes, crudos y en días. El de LA MATERIA es el que importa;
-            # el del campus está al lado porque los dos juntos separan "abandonó" de
-            # "entra todos los días y no abre esta materia".
-            **_acceso(acc),
+            **_acceso(accesos.get(uid) or {}),
         })
 
     filas.sort(key=lambda f: f["nombre"].upper())
@@ -334,31 +565,184 @@ def _acceso(u: dict) -> dict:
             "ultimo_acceso_aula_ts": ts, "ultimo_acceso_campus_ts": ts_campus}
 
 
-def resumen_de_comision(filas: list[dict], catalogo: dict) -> dict:
-    """Los cuatro números del encabezado del informe. PURO.
+def resumen_de_comision(filas: list[dict], items_cal: dict) -> dict:
+    """Los números del encabezado del informe. PURO.
 
     No hay porcentaje de avance y es deliberado — la misma decisión, con la misma
     evidencia, que hizo que `avance_alumnos` no lo tuviera: un porcentaje necesita saber
-    cuántas actividades ya deberían estar hechas y ese dato no existe (ninguna actividad
-    de Matemática tiene fecha de entrega). Se cuenta lo que pasó, no se estima lo que
-    faltaría.
+    cuántas actividades ya deberían estar hechas y ese dato no existe (32 de los 36
+    cuestionarios de Probabilidad y Estadística no tienen fecha de cierre; ninguna
+    actividad de Matemática tiene fecha de entrega). Se cuenta lo que pasó, no se estima lo
+    que faltaría.
     """
-    total_por_tipo = {t: 0 for t in ORDEN_TIPOS}
-    for it in catalogo.get("items", []):
-        total_por_tipo[it["tipo"]] += 1
-    hechas_por_tipo = {t: sum(f["por_tipo"][t]["hechas"] for f in filas)
-                       for t in ORDEN_TIPOS}
+    items = items_cal.get("items", [])
+    total_por_tipo: dict[str, int] = {}
+    total_por_naturaleza: dict[str, int] = {}
+    for it in items:
+        total_por_tipo[it["tipo"]] = total_por_tipo.get(it["tipo"], 0) + 1
+        total_por_naturaleza[it["naturaleza"]] = total_por_naturaleza.get(it["naturaleza"], 0) + 1
+    hechas_por_tipo = {t: sum((f["por_tipo"].get(t) or {}).get("hechas", 0) for f in filas)
+                       for t in total_por_tipo}
+    hechas_por_nat = {n: sum((f["por_naturaleza"].get(n) or {}).get("hechas", 0) for f in filas)
+                      for n in total_por_naturaleza}
     con_actividad = sum(1 for f in filas if not f["sin_actividad"])
     return {
         "alumnos": len(filas),
         "con_actividad": con_actividad,
         "sin_actividad": len(filas) - con_actividad,
         "actividades_del_curso": total_por_tipo,
+        "actividades_por_naturaleza": total_por_naturaleza,
         "notas_cargadas": hechas_por_tipo,
+        "notas_por_naturaleza": hechas_por_nat,
         "sin_dato_de_acceso": sum(1 for f in filas if f["estado_aula"] == "sin_dato"),
         "nunca_abrieron_la_materia": sum(1 for f in filas
                                          if f["estado_aula"] == "nunca_abrio"),
     }
+
+
+def hasta_donde_llego_el_curso(filas_de_todas: list[dict]) -> int | None:
+    """La última unidad/semana con actividad registrada en TODO el curso. PURA.
+
+    Es la respuesta a "¿hasta dónde va la cursada?" cuando el campus no la da. Y no la da:
+    32 de los 36 cuestionarios de Probabilidad y Estadística no tienen fecha de cierre, y
+    los seis primeros ni siquiera fecha de apertura. Sin esto el informe muestra 16 semanas
+    donde 11 están vacías **por calendario** y se leen como abandono — el mismo error que
+    ya cometimos mostrando exámenes de noviembre como "nadie entregó".
+
+    Se mide contra lo que el curso REALMENTE hizo, que es el único patrón disponible, y el
+    informe lo declara como derivado en vez de presentarlo como un dato del campus.
+    """
+    vistas = [f["ultima_con_actividad"] for f in filas_de_todas
+              if f.get("ultima_con_actividad") is not None]
+    return max(vistas) if vistas else None
+
+
+# ---------------------------------------------------------------------------
+# La vista del COORDINADOR: las comisiones lado a lado. PURO.
+# ---------------------------------------------------------------------------
+#
+# `informe_alumnos` le da a cada tutor su comisión. Al que coordina la materia eso no le
+# sirve: son quince documentos y ninguno le dice dónde mirar primero. Estas dos funciones
+# son los dos cortes de la MISMA información, y el segundo es el que no existía en ningún
+# lado.
+#
+# Por qué el corte por ACTIVIDAD importa tanto: relevado en PyE el 2026-09-03, el foro
+# calificado de la semana 1 tenía 31 notas en la comisión 11, 26 en la 3 … y **CERO en la
+# 4 y una en la 2**. Por comisión eso se ve como "la com4 participa menos"; por actividad
+# se ve lo que realmente pasó, que es que en dos comisiones esa actividad no se calificó.
+# Son dos conclusiones distintas y llevan a llamar a personas distintas.
+
+_DESENGANCHE_DIAS = 7
+
+
+def panorama_por_comision(bloques: list[dict], items_cal: dict,
+                          hasta: int | None = None) -> list[dict]:
+    """Una fila por comisión, con su tutor. PURA.
+
+    `al_dia` es la única columna comparable entre comisiones y por eso existe: cuenta los
+    alumnos con alguna nota en la ÚLTIMA unidad/semana que el curso dictó. No hay
+    porcentaje de avance ni mediana — este proyecto probó los tres y los tres fallan
+    (la mediana da 0 en todas las comisiones cuando más de la mitad del curso está en
+    cero, y el promedio reparte el trabajo de unos pocos entre todos).
+    """
+    filas = []
+    for b in bloques:
+        alumnos = b.get("alumnos") or []
+        res = b.get("resumen") or {}
+        al_dia = sum(1 for a in alumnos
+                     if hasta is not None and (a.get("por_eje") or {}).get(hasta, {}).get("hechas"))
+        deseng = sum(1 for a in alumnos
+                     if (a.get("dias_sin_abrir_la_materia") or 0) >= _DESENGANCHE_DIAS)
+        sin_dato = []
+        if b.get("error"):
+            sin_dato.append(f"No se pudo leer esta comisión: {b['error']}")
+        elif not alumnos:
+            sin_dato.append("La comisión vino sin alumnos: el 0 de acá es 'no se pudo "
+                            "leer el padrón', no 'no hay nadie'.")
+        filas.append({
+            "comision": b.get("comision"),
+            "nombre": b.get("nombre"),
+            "tutor": (b.get("tutor") or {}).get("nombre"),
+            "alumnos": res.get("alumnos", len(alumnos)),
+            "con_actividad": res.get("con_actividad", 0),
+            "sin_actividad": res.get("sin_actividad", 0),
+            "al_dia": al_dia if hasta is not None else None,
+            "nunca_abrieron": res.get("nunca_abrieron_la_materia", 0),
+            "desenganchados": deseng,
+            "notas_cargadas": res.get("notas_cargadas", {}),
+            "avisos": b.get("avisos") or [],
+            "sin_dato": sin_dato,
+        })
+    return filas
+
+
+def panorama_por_actividad(bloques: list[dict], items_cal: dict,
+                           minimo_para_comparar: int = 5) -> list[dict]:
+    """Una fila por ACTIVIDAD, con en cuántas comisiones tiene notas. PURA.
+
+    El corte que ninguna vista por comisión da. Cuando una actividad está calificada en
+    doce comisiones y en cero en dos, el problema no es de los alumnos de esas dos: o no
+    se calificó, o no se dictó, o quedó restringida. Por comisión eso se lee como
+    "participan menos" y manda a llamar a la gente equivocada.
+
+    `minimo_para_comparar` evita el ruido: una actividad que en TODO el curso tiene tres
+    notas todavía no arrancó en ningún lado y sus catorce comisiones en cero no dicen
+    nada. Sólo se marcan huecos donde el resto del curso ya la tiene andando.
+    """
+    con_alumnos = [b for b in bloques if (b.get("alumnos") or [])]
+    filas = []
+    for it in items_cal.get("items", []):
+        iid = it["item_id"]
+        por_comision, total = {}, 0
+        for b in con_alumnos:
+            n = sum(1 for a in b["alumnos"] if iid in (a.get("notas") or {}))
+            por_comision[b.get("comision")] = n
+            total += n
+        en_cero = sorted((c for c, n in por_comision.items() if n == 0),
+                         key=lambda c: int(str(c)[3:]) if str(c)[3:].isdigit() else 0)
+        hueco = (total >= minimo_para_comparar
+                 and len(en_cero) < len(con_alumnos)
+                 and bool(en_cero))
+        filas.append({
+            "nro": it["nro"], "actividad": it["titulo"], "tipo": it["tipo"],
+            "naturaleza": it["naturaleza"], "unidad": it["unidad"],
+            "semana": it["semana"], "cmid": it["cmid"],
+            "notas_en_el_curso": total,
+            "comisiones_con_notas": sum(1 for n in por_comision.values() if n),
+            "comisiones_en_cero": en_cero if hueco else [],
+            "por_comision": por_comision,
+        })
+    return filas
+
+
+def huecos_de_calificacion(por_actividad: list[dict]) -> list[dict]:
+    """Las actividades que andan en el curso y están en cero en alguna comisión.
+
+    Es la lista corta que el coordinador mira primero. Ordenada por cuántas comisiones
+    quedaron afuera: cuantas más, menos se parece a un problema de una persona.
+    """
+    huecos = [f for f in por_actividad if f["comisiones_en_cero"]]
+    huecos.sort(key=lambda f: (-len(f["comisiones_en_cero"]), -f["notas_en_el_curso"]))
+    return huecos
+
+
+def alumnos_sin_comision(padron_curso: dict, uids_en_comisiones: set) -> list[dict]:
+    """Los matriculados en el curso que no están en ninguna comisión. PURA.
+
+    No los ve NINGÚN tutor: toda la skill (y todas las vistas del campus que usa un tutor)
+    trabajan por comisión. Son invisibles por construcción, así que el informe los tiene
+    que nombrar — decir "hay 1" y no cuál es lo deja igual de perdido.
+    """
+    fuera = []
+    for u in (padron_curso.get("sueltos") or []):
+        uid = u.get("id")
+        if uid is None or int(uid) in uids_en_comisiones:
+            continue
+        fuera.append({"userid": int(uid), "nombre": u.get("fullname") or "",
+                      "email": u.get("email") or "",
+                      **_acceso(u)})
+    fuera.sort(key=lambda a: a["nombre"].upper())
+    return fuera
 
 
 # ---------------------------------------------------------------------------
@@ -402,14 +786,15 @@ async def informe(client, course_id: int, comisiones: list[dict],
     `comisiones`: [{comision, group_id, nombre, tutor}] — el tutor ya resuelto por
     `panorama.elegir_tutor`, que es quien sabe distinguir al tutor de la comisión del
     profesor del curso. `padrones`: {group_id: padrón} de `panorama._padrones`.
+
+    Las columnas del informe salen del CALIFICADOR y no del árbol del curso (ver
+    `items_de_calificador`), así que se arman después de la primera lectura y valen para
+    todas las comisiones: el libro de calificaciones es del curso, no del grupo.
     """
     secciones, err = await contenidos(client, course_id)
     if err:
         return {"error": err}
     cat = catalogo_de_actividades(secciones)
-    if not cat["items"]:
-        return {"error": "el curso no tiene ninguna actividad calificable "
-                         "(videos, lecciones, autoevaluaciones ni entregas)."}
 
     sem = asyncio.Semaphore(_SEM)
 
@@ -417,21 +802,49 @@ async def informe(client, course_id: int, comisiones: list[dict],
         async with sem:
             return c, await notas_de_comision(client, course_id, c["group_id"])
 
-    bloques, avisos = [], list(cat["avisos"])
+    crudos, avisos = [], list(cat["avisos"])
     for res in await asyncio.gather(*(_una(c) for c in comisiones),
                                     return_exceptions=True):
         if isinstance(res, BaseException):
             avisos.append(f"Una comisión no se pudo leer: {type(res).__name__}: {res}")
             continue
-        c, notas = res
+        crudos.append(res)
+
+    # Las columnas se arman con TODAS las comisiones juntas y no con la primera: si a la
+    # primera le falta un item (una actividad restringida a otro grupo, una lectura
+    # incompleta), esa columna desaparecería del informe de las quince.
+    todos = [u for _, n in crudos for u in (n.get("usergrades") or [])]
+    items_cal = items_de_calificador(todos, cat)
+    avisos.extend(items_cal["avisos"])
+    if not items_cal["items"]:
+        return {"error": "el calificador de este curso no devolvió ninguna actividad con "
+                         "nota. Puede ser que tu rol no tenga permiso sobre el libro de "
+                         "calificaciones: no es lo mismo que un curso sin actividad.",
+                "avisos": avisos}
+
+    bloques = []
+    for c, notas in crudos:
         if notas.get("error"):
             avisos.append(f"{c['comision']}: {notas['error']}")
             bloques.append({**c, "error": notas["error"], "alumnos": []})
             continue
         accesos = (padrones.get(c["group_id"], {}) or {}).get("accesos") or {}
-        filas = filas_de_alumnos(notas["usergrades"], cat, accesos)
+        filas = filas_de_alumnos(notas["usergrades"], items_cal, accesos)
         bloques.append({**c, "alumnos": filas,
-                        "resumen": resumen_de_comision(filas, cat)})
+                        "resumen": resumen_de_comision(filas, items_cal)})
 
-    return {"ok": True, "course_id": course_id, "catalogo": cat,
+    # Hasta dónde llegó la cursada, medido sobre el curso entero y no sobre una comisión:
+    # una comisión atrasada correría el punto de referencia para todas las demás.
+    hasta = hasta_donde_llego_el_curso([f for b in bloques for f in (b.get("alumnos") or [])])
+    if hasta is not None:
+        eje = items_cal["eje"]
+        tope = (items_cal["semanas"] or items_cal["unidades"] or [hasta])[-1]
+        avisos.append(
+            f"La cursada va por la {eje.upper()} {hasta} de {tope}. Es un dato DERIVADO "
+            f"(la última {eje} con alguna nota cargada en el curso), no una fecha del "
+            "campus — el campus no la expone. Lo que está vacío más adelante está vacío "
+            "por calendario, no por atraso.")
+
+    return {"ok": True, "course_id": course_id, "catalogo": items_cal,
+            "estructura": cat, "hasta_donde_llego": hasta,
             "comisiones": bloques, "avisos": avisos}

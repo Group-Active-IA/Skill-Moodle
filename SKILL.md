@@ -1,9 +1,9 @@
 ---
 name: tup-campus-navigator
 description: >-
-  Operar el campus Moodle de la TUP (UTN) — Programación I a IV y Matemática — por la API
+  Operar el campus Moodle de la TUP (UTN) — Programación I a IV, Matemática y Probabilidad y Estadística — por la API
   REST oficial, desde Claude Code. Usá esta skill cuando el usuario mencione "campus
-  TUP", "moodle TUP", "tup.sied", "Programación 1/2/3", "Matemática", una "comisión" (C1/C2/C3),
+  TUP", "moodle TUP", "tup.sied", "Programación 1/2/3", "Matemática", "Probabilidad y Estadística", "PyE", una "comisión" (C1/C2/C3),
   "informe de seguimiento", "qué me falta corregir", "quién no entregó", "cargar
   nota", "pendientes", "mapeá mis comisiones", "actualizá mis datos", o pida revisar
   entregas / calificaciones / parciales por comisión. También cubre **auditoría de aula
@@ -570,6 +570,56 @@ hallazgo es para la cátedra— o un criterio que el campus no expresa. Las dos 
 > actividad que CIERRA una unidad es la de mayor semana, y (b) si "Entrega trabajo 1 y 2"
 > cuentan para la cursada o no. Si hablás con él, esas dos van primero.
 
+## Probabilidad y Estadística — la tercera forma de cursar
+
+Course 79, relevado en vivo el 2026-09-03: **15 comisiones, 580 alumnos, 16 semanas
+agrupadas en 4 unidades**. No se parece ni a Programación ni a Matemática, y hasta esta
+versión **la skill no la veía en absoluto**.
+
+**Por qué era invisible.** Sus grupos se llaman `Comisión 1`…`Comisión 15`, no
+`A26 C1-01`. El criterio de "qué grupo es una comisión" estaba escrito dos veces
+(`panorama` y `ws_api`), las dos exigían el prefijo de cohorte, y las dos descartaban las
+15. Sin comisiones no hay padrón, y sin padrón `reporte_coordinacion`, `informes_nexos`,
+`demora_correccion` e `informe_alumnos` **no daban error: daban un curso vacío**. Ahora el
+criterio vive sólo en `moodle/grupos.py` y entiende los dos vocabularios — no vuelvas a
+parsear el nombre de un grupo a mano.
+
+Cuatro cosas que se pueden decir mal sin que salte ningún error:
+
+1. **El número de una sección es la SEMANA, no la unidad.** `5- Aprender a Contar` es la
+   semana 5 y contiene el foro *"dudas sobre la **Unidad N° 2**"*. Aplicarle el criterio de
+   Matemática devuelve "unidad 16" en una materia de cuatro. `calificador.eje_de_secciones`
+   lo **deriva** cruzando el prefijo `S«n»-` de los títulos contra el número de sección (41
+   coincidencias de 42 en PyE; cero en Matemática) — no está configurado por materia y no
+   hay que decírselo.
+
+2. **La cursada son 36 cuestionarios, no las entregas.** Más 4 **foros calificados** (que
+   no existen en ninguna otra materia), 2 lecciones y un glosario. Los 9 `assign` sí tienen
+   entregas reales —344 en el curso, a diferencia de Matemática— pero son el TAI y no la
+   cadencia. `reporte_coordinacion` mira sólo los `assign`: en esta materia eso es el 20%.
+   Para el avance usá **`informe_alumnos`**.
+
+3. **Tres de los 9 `assign` no son entregas.** `CONDICIONES FINALES` (escala de 4 valores),
+   `Promedio Trabajo Práctico Integrador` y `Calificación Coloquio` son casillas donde el
+   docente vuelca una nota. Salen marcadas `naturaleza: administrativa` y quedan fuera de
+   las tablas, declaradas. Por el título solo no alcanzaba: "Calificación Coloquio" se lee
+   como el coloquio; lo que las delata es la **sección** que las contiene.
+
+4. **La cursada va por la semana 5 de 16, y el campus no lo dice.** 32 de los 36
+   cuestionarios no tienen fecha de cierre. `calificador.hasta_donde_llego_el_curso` lo
+   deriva de la última semana con alguna nota cargada, el informe lo **declara como
+   derivado**, y las semanas posteriores salen con «·» en vez de «0/4». Un cero y un
+   "todavía no pasó" son cosas distintas, y once columnas de ceros se leen como abandono.
+
+Y un bug que esta materia destapó y afectaba a todas: la lista de "instancias fuera de la
+cadencia" contenía `"tio"` como substring suelto, que matchea **"cues-tio-nario"**. En
+Programación y Matemática nunca se disparó; acá excluía los 36 cuestionarios de su propia
+cadencia. Ahora va con límites de palabra.
+
+> El tutor de cada comisión se resuelve **en vivo**, como en Matemática. Los 15 tienen rol
+> `teacher`; sólo la Comisión 15 trae un segundo docente y ahí el desempate lo hace el rol,
+> y el informe lo dice: *"se toma X sólo por el rol, que es un criterio más débil"*.
+
 ## Cosas que NO hacer
 
 - No mapear a mano ni hardcodear IDs de cohortes viejas.
@@ -634,6 +684,29 @@ solo: las 13 tareas `ENTREGA U{n}S{m}` caen 13 de 13 en la unidad que dice su pr
 ruta del PDF) más los alumnos que no hicieron nada. El alumno por alumno con su nota sale
 pidiendo **una** comisión (`group_id`), donde `detalle` se prende sola. Con 562 alumnos × 81
 actividades el detalle completo no entra en una respuesta y no lo lee nadie.
+
+#### Sin `group_id` suma la vista del COORDINADOR
+
+Otro documento y otro destinatario: `coordinacion_calificador_curso«N».pdf` pone las
+comisiones **lado a lado** con su tutor, y por eso NO lleva nombres de alumnos salvo donde el
+nombre ES la acción. Trae dos cortes que ninguna vista por comisión da:
+
+- **`huecos_de_calificacion`** — actividades que andan en el curso y están en **CERO** en
+  alguna comisión. Es el corte que no existía, y encuentra lo que a ojo no se ve: en PyE
+  destapó que el cuestionario de la semana 3 tiene 98 notas en el curso y **ninguna en seis
+  comisiones**, y que el de la semana 2 tiene **324** y cero en una. Sólo se listan
+  actividades con al menos 5 notas en el curso: una que todavía no arrancó en ningún lado
+  tiene catorce comisiones en cero y no dice nada.
+  **Esto NO dice que esos alumnos no participaron.** Dice que ahí la actividad no tiene una
+  sola nota mientras en el resto sí — puede ser que no se calificó, que no se dictó o que
+  quedó restringida, y las tres se arreglan hablando con alguien distinto.
+- **`alumnos_sin_comision`**, con nombre y mail. No los ve ningún tutor porque toda la skill
+  trabaja por comisión: son invisibles por construcción. Decir "hay 1" no le sirve a nadie.
+
+La columna **`al_dia`** (alumnos con alguna nota en la última unidad/semana que el curso
+dictó) es la única comparable entre comisiones, y aun así no del todo. **Se audita el
+TRABAJO, nunca se califica a la PERSONA**: nombrar al tutor es ruteo —a quién llamar— y va;
+un ranking o un puntaje NO va, ni en la tabla ni en cómo lo contás.
 
 `reporte_coordinacion(course_id, cmids?, incluir_foros?, pdf=True)` — el trabajo de corrección
 del curso, cortado de **tres** maneras, con PDF:

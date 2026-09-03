@@ -120,6 +120,86 @@
           ]
         }
       ]
+    },
+    {
+      "materia": "Probabilidad y Estadística",
+      "course_id": 79,
+      "aprendizajes": [
+        {
+          "fecha": "2026-09-03",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "La cursada de Probabilidad y Estadística son 36 CUESTIONARIOS, 4 FOROS CALIFICADOS, 2 lecciones y un glosario — no las entregas. Los 9 `assign` sí tienen entregas reales (344 en el curso, a diferencia de Matemática) pero son el Trabajo de Aplicación Integrador, que se entrega por partes, y no la cadencia semanal. `reporte_coordinacion` mira sólo los `assign`: en esta materia eso es el 20% de lo que pasa. Para el avance de los alumnos usá `informe_alumnos`.",
+          "estado": "confirmado",
+          "verificacion": "`gradereport_user_get_grade_items` (courseid 79, groupid 7815, Comisión 1, 39 alumnos): 118 notas de quiz, 22 de forum, 22 de assign, 0 de lesson y 0 de glossary. `core_course_get_contents` da 36 quiz, 9 assign, 4 forum calificables, 2 lesson y 1 glossary. Corrido sobre las 15 comisiones: 1467 notas de cuestionario contra 325 de entrega.",
+          "afecta": [
+            "informe_alumnos",
+            "reporte_coordinacion",
+            "calificador",
+            "sumario"
+          ]
+        },
+        {
+          "fecha": "2026-09-03",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "El número de las secciones del aula de PyE es la SEMANA, no la unidad: son 16 semanas agrupadas en 4 unidades. La sección '5- Aprender a Contar' contiene el foro de dudas de la Unidad N° 2, y '10- Modelar lo Aleatorio' el de la Unidad 3. La unidad la abre el foro de consultas de cada bloque; las semanas 8, 9, 15 y 16 son repaso y parciales y no son de ninguna unidad. NO le apliques a esta materia el criterio de Matemática, donde la sección numerada sí es la unidad: devuelve 'unidad 16' en una materia de cuatro.",
+          "estado": "confirmado",
+          "verificacion": "`core_course_get_contents` (courseid 79): 73 secciones, 16 encabezados numerados. Los títulos traen prefijo `S{n}-` y coincide con el número de su sección en 41 de 42 actividades (la única que no, 'S14- Cuestionario de repaso Semana 13 Unidad 4', está puesta en la sección 15 del aula). En Matemática la misma medición da CERO, y por eso `calificador.eje_de_secciones` puede derivar el eje sin configuración.",
+          "afecta": [
+            "calificador.eje_de_secciones",
+            "informe_alumnos",
+            "titulos.semana_prefijo"
+          ]
+        },
+        {
+          "fecha": "2026-09-03",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "Tres de los 9 `assign` de PyE NO son entregas del alumno: 'CONDICIONES FINALES' (escala de 4 valores, no un número), 'Promedio Trabajo Práctico Integrador' y 'Calificación Coloquio' son casillas donde el docente vuelca una nota. Nadie entrega nada ahí y nunca lo va a hacer. Lo que las delata es la SECCIÓN que las contiene ('Condiciones Finales'), no el título: 'Calificación Coloquio' leído solo parece el coloquio mismo.",
+          "estado": "confirmado",
+          "verificacion": "`mod_assign_get_submissions` sobre los 9 assign del course 79: los cmid 19071, 19072 y 19073 tienen 0 enviadas y 0 notas, sin `duedate`, mientras que 18909 tiene 332 enviadas. El 19071 declara `grade: -13` (escala de 4 valores según `grademax` del calificador), no una nota numérica.",
+          "afecta": [
+            "informe_alumnos",
+            "reporte_coordinacion",
+            "calificador.naturaleza_de"
+          ]
+        },
+        {
+          "fecha": "2026-09-03",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "PyE nombra sus grupos 'Comisión 1'…'Comisión 15' y NO 'A26 C1-01' como el resto del campus. Además de las 15 comisiones el curso tiene los grupos 'Coloquio Final Integrador' y 'Tutores Académicos', que NO son comisiones, más las 17 regionales R-*. Hay 580 alumnos en el curso y 579 en alguna comisión: UNO está matriculado en ninguna y no lo ve ningún tutor.",
+          "estado": "confirmado",
+          "verificacion": "`core_group_get_course_groups` (courseid 79) y `core_enrol_get_enrolled_users` con y sin groupid, el 2026-09-03. Antes de unificar el criterio en `grupos.py`, `panorama._comisiones_del_curso` devolvía 0 comisiones y 34 grupos ignorados para este curso — sin error, con el curso vacío.",
+          "afecta": [
+            "grupos",
+            "panorama",
+            "ws_api.clasificar_grupo",
+            "informes_nexos"
+          ]
+        },
+        {
+          "fecha": "2026-09-03",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "La cursada de PyE iba por la SEMANA 5 de 16 al 2026-09-03, y el campus no expone esa fecha: 32 de los 36 cuestionarios no tienen `timeclose` y los seis primeros tampoco `timeopen`. Se deriva de la última semana con alguna nota cargada en el curso. Al presentar el avance de un alumno, las semanas posteriores a ésa están vacías por CALENDARIO y no por atraso — no las cuentes como actividades no hechas.",
+          "estado": "confirmado",
+          "verificacion": "`mod_quiz_get_quizzes_by_courses` (courseid 79): 4 de 36 con `timeclose`. Cruzado con las notas del calificador: las hay hasta la semana 5 (cmid 18921, 'S5-Cuestionario: técnicas de conteo') y de la 6 en adelante están todas en cero, en las 15 comisiones.",
+          "afecta": [
+            "calificador.hasta_donde_llego_el_curso",
+            "informe_alumnos",
+            "alumnos_en_riesgo"
+          ]
+        },
+        {
+          "fecha": "2026-09-03",
+          "quien": "relevamiento en vivo (sin docente presente)",
+          "regla": "En PyE hay actividades que están calificadas en la mayoría de las comisiones y en CERO en algunas — no unas pocas notas menos: ninguna. Al 2026-09-03: el cuestionario 'S3-Análisis de Informe Técnico' tiene 98 notas en el curso y cero en SEIS comisiones (2, 5, 7, 9, 10 y 14); 'S2-Ejercitación: interpretación de tablas de frecuencias' tiene 324 y cero en la com2; el foro calificado de la S1 tiene 274 y cero en la com4. Antes de leerlo como que esos alumnos no participaron, PREGUNTALE A LA CÁTEDRA: puede ser que no se calificó, que esa comisión no lo dictó, o que la actividad esté restringida por grupo. Las tres se arreglan hablando con alguien distinto.",
+          "estado": "dicho",
+          "verificacion": "Contado con `informe_alumnos(79)` sobre las 15 comisiones: es un HECHO del calificador y está verificado. Lo que NO está verificado —y por eso esta entrada es `dicho`— es la CAUSA. Nadie de la cátedra la confirmó.",
+          "afecta": [
+            "informe_alumnos",
+            "huecos_de_calificacion",
+            "reporte_coordinacion"
+          ]
+        }
+      ]
     }
   ]
 }

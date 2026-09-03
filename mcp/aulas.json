@@ -23,6 +23,10 @@
     {
       "materia": "Matemática",
       "course_id": 77
+    },
+    {
+      "materia": "Probabilidad y Estadística",
+      "course_id": 79
     }
   ]
 }

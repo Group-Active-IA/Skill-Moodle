@@ -43,7 +43,7 @@ import statistics
 import time
 from pathlib import Path
 
-from . import titulos
+from . import grupos, titulos
 from .cliente import MoodleWSError
 from .ws_api import (
     _AULA_DESENGANCHE_DIAS,
@@ -63,13 +63,10 @@ from .ws_api import (
 # que usan `buscar_alumnos` y `foros_pendientes`.
 _SEM = 5
 
-# Etiqueta de comisión del campus TUP: "A26 C1-06", "M26 C2-01", "A25 C3-14". La letra es
-# el cuatrimestre de INGRESO del alumno (Agosto/Marzo) y no el del aula — ese gotcha ya está
-# documentado en comisiones.json y acá solo hay que no tropezarlo.
-# Lo que NO matchea a propósito: los grupos regionales ("R-Rosario", "R-Chubut") y los
-# auxiliares ("Grupo_2", "Entrego_1er_examen"), que no son comisiones de tutoría. Nunca se
-# descartan en silencio: vuelven en `grupos_ignorados`.
-_RE_COMISION = re.compile(r"^\s*([A-Z]\d{2})\s+C(\d+)\s*-\s*(\d+)\s*$", re.I)
+# QUÉ grupo es una comisión vive en `grupos.py`, no acá. Estaba escrito en este módulo y
+# otra vez en `ws_api`, con dos regex parecidas y distintas, y las dos daban CERO en
+# Probabilidad y Estadística —que nombra sus comisiones "Comisión 7"— dejando el curso
+# entero sin padrón y sin que ningún número dijera por qué.
 
 # Moodle guarda "sin calificar" como -1 en el campo `grade` (llega como "-1.00000").
 _SIN_CALIFICAR = -1.0
@@ -119,15 +116,8 @@ def _dias(desde_ts: int, hasta_ts: int) -> float | None:
 
 
 def _etiqueta_comision(nombre: str) -> str | None:
-    """'A26 C1-06' -> 'com6'. `None` si el grupo no es una comisión de tutoría.
-
-    Se devuelve la forma corta porque es la que usan el reparto interno, `mi_comision` y
-    los tutores al hablar. El nombre completo del campus viaja igual en cada fila.
-    """
-    m = _RE_COMISION.match(nombre or "")
-    if not m:
-        return None
-    return f"com{int(m.group(3))}"
+    """'A26 C1-06' / 'Comisión 6' -> 'com6'. `None` si el grupo no es una comisión."""
+    return grupos.etiqueta(nombre)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +137,7 @@ _CAMPOS_ACCESO = ("id", "fullname", "email", "lastaccess", "lastcourseaccess", "
 #
 # Los grupos `R-*` son justamente los que `_RE_COMISION` descarta como comisión y devuelve en
 # `grupos_ignorados`: lo que para una mitad del módulo es ruido, para ésta es el dato.
-_RE_REGIONAL = re.compile(r"^\s*R\s*-\s*(.+?)\s*$")
+# La regional también vive en `grupos.py`: es la otra cara del mismo criterio.
 
 # Número de unidad del título. Es la única forma de saber qué actividad corresponde a qué
 # unidad: el campus no lo expone como campo. QUÉ dice el título vive en `titulos.py` — acá
@@ -208,9 +198,9 @@ def cierres_por_unidad(meta: dict) -> dict[int, dict]:
 def _regional_de(u: dict) -> str | None:
     """Regional (sede) del alumno, de sus grupos. `None` si no está en ninguna `R-*`."""
     for g in u.get("groups") or []:
-        m = _RE_REGIONAL.match(g.get("name") or "")
-        if m:
-            return m.group(1)
+        r = grupos.regional_de(g.get("name") or "")
+        if r:
+            return r
     return None
 
 
@@ -334,7 +324,7 @@ async def _comisiones_del_curso(client, course_id: int) -> tuple[list[dict], lis
             ignorados.append(nombre)
             continue
         comisiones.append({"comision": etiqueta, "group_id": g.get("id"), "nombre": nombre})
-    comisiones.sort(key=lambda c: int(c["comision"][3:]))
+    comisiones.sort(key=lambda c: grupos.numero(c["comision"]))
     return comisiones, ignorados, None
 
 
