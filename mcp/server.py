@@ -30,6 +30,7 @@ from moodle import (
     almacen,
     auditoria,
     calificador,
+    encuentros,
     informes,
     panorama,
     snapshot,
@@ -691,6 +692,38 @@ async def crear_discusion(forum_id: int, asunto: str, mensaje: str,
     grupo va y **a cuántos alumnos llega**, verificado en vivo. Mostráselo al tutor —
     sobre todo ese número — y recién con su OK explícito repetí con `confirmado=true`."""
     return await ws_api.crear_discusion(_cli(), forum_id, asunto, mensaje, group_id, confirmado)
+
+
+# ---------- ENCUENTROS ----------
+
+@mcp.tool()
+async def material_encuentro(course_id: int, url: str | None = None) -> dict:
+    """El MATERIAL del encuentro vigente, para contestarle una duda a un alumno.
+
+    En la modalidad de Encuentros el alumno mira cápsulas de video a su ritmo y pregunta
+    en el foro durante la ventana horaria. Esta tool trae el **apunte interactivo** de esa
+    unidad —escrito video por video, con los mismos ejemplos y gotchas que dio el
+    docente— para que la respuesta salga del material y no de Python genérico.
+
+    LLAMALA ANTES DE CONTESTAR, no después. Una respuesta de memoria en ese foro la ven
+    las 27 comisiones y va firmada por el tutor.
+
+    LA REGLA: se contesta con lo que está en el apunte. Si la duda cae afuera, decilo y
+    pasásela al tutor — no la completes con lo que sabés de Python. Que suene bien no lo
+    hace lo que el docente enseñó, y contradecirlo confunde más que no contestar.
+
+    La URL del apunte NO está hardcodeada: sale del label de la sección de Encuentros del
+    propio campus, y cambia con cada unidad. Si no puede determinar cuál es, devuelve
+    `ok: false` con los candidatos — nunca cae al apunte de la unidad pasada.
+
+    Pasá `url` sólo para forzar un apunte puntual (típico: el equipo todavía no actualizó
+    el link en el campus y el encuentro de hoy es de otra unidad). Mirá `apunte.titulo`:
+    ahí se ve de qué unidad es lo que bajaste.
+
+    Read-only: no escribe nada en el campus. Para publicar la respuesta, `responder_foro`
+    (que pide tu OK, como siempre)."""
+    base = os.environ.get("MOODLE_URL", _BASE_DEFAULT).rstrip("/")
+    return await encuentros.material_encuentro(_cli(), base, course_id, url)
 
 
 @mcp.tool()

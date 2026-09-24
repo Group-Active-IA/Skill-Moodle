@@ -336,6 +336,7 @@ Detalle completo de tools, catálogo y gotchas en `references/clickup-tareas.md`
 | Foros del curso · hilos de un foro | `listar_foros` · `leer_foro` |
 | Mensajes de una discusión | `leer_discusion` |
 | Responder en el foro (pide OK) | `responder_foro` |
+| **El material del encuentro, para contestarle una duda a un alumno** | `material_encuentro` |
 | **Abrir un tema nuevo: aviso, bienvenida** (pide OK) | `crear_discusion` |
 | Ver el mapa Moodle ↔ Active-IA | `activeia_pendientes` |
 | **Qué corrigió Active-IA de verdad, con su nota** | `activeia_correcciones` |
@@ -370,6 +371,50 @@ Tres cosas que conviene saber para explicárselo:
   confirme en pantalla.
 
 Si responde que no está compilado, la instalación es vieja: `actualizar_skill`.
+
+## Encuentros — contestarle la duda a un alumno
+
+En la modalidad de Encuentros el alumno no viene a una clase: mira **cápsulas de video** a
+su ritmo, repasa con un **apunte interactivo** y, durante la ventana horaria del encuentro,
+pregunta en un **foro** donde el tutor está de guardia. El foro es la única pata sincrónica
+de todo el esquema, y es lo que esta sección ordena.
+
+El flujo, cuando llega una duda:
+
+```
+material_encuentro(course_id)   el apunte de ESA unidad, video por video
+leer_discusion(discussion_id)   la duda completa, no sólo el título
+   → redactá la respuesta CON el apunte a la vista
+responder_foro(..., confirmado=false)   preview
+   → el tutor lo lee y da el OK
+responder_foro(..., confirmado=true)    recién acá se publica
+```
+
+**`material_encuentro` va ANTES de redactar, no después.** El apunte está escrito video por
+video y trae los mismos ejemplos y los mismos gotchas que el docente dio en cámara. Esa es
+toda la razón por la que existe la tool.
+
+Cuatro reglas, y la primera es la que sostiene a las otras tres:
+
+1. **Se contesta con lo que está en el apunte.** Si la duda cae afuera, decilo y pasásela al
+   tutor. No la completes con lo que sabés de Python: que suene bien no lo hace lo que el
+   docente enseñó, y contradecirlo confunde más que no contestar. Es la misma regla que
+   ordena el resto de la skill —**verificar, nunca inventar**— aplicada a un texto en vez de
+   a un ID.
+2. **Ese foro es del CURSO ENTERO**, no de una comisión (27 en Prog I). La duda que atendés
+   puede ser de un alumno de otro tutor, y está bien: para eso hay alguien de guardia. Pero
+   la respuesta la van a leer todas las comisiones, y va firmada con el nombre del tutor.
+3. **Mirá `apunte.titulo` antes de usar el material.** Dice de qué unidad es. El link sale
+   del campus y lo actualiza el equipo docente en cada encuentro: si quedó en la unidad
+   pasada, la tool baja ese con total confianza y no tiene cómo saberlo. Un título que no
+   coincide con el tema del encuentro es la señal — ahí pasá la `url` correcta a mano.
+4. **Publicar sigue pidiendo OK**, como toda escritura. El tutor decide qué se le dice a un
+   alumno; la IA prepara y ejecuta.
+
+> El label de la modalidad y el foro suelen estar **ocultos a los estudiantes** fuera del
+> horario (`visible=0`, verificado en vivo). Eso es a propósito: el foro se habilita para la
+> ventana del encuentro. Si el foro está vacío y todavía no es la hora, **no es que nadie
+> preguntó** — es que todavía no pueden.
 
 ## Reglas de oro (no negociables)
 
